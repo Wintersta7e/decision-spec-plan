@@ -9,11 +9,17 @@
 # `reviewed=<sha> base=<sha> blocking=0` (full SHAs), the reviewed commit an ancestor of the pushed
 # one, every commit between them on an `after=` line (fixes made after the review), and the base
 # an ancestor of the remote-tracking ref when there is one (nothing older than the base is unsent).
+# Every `git push` in the command is checked, each in the repository its preceding `cd`s reach. A
+# push with no refspec, with git options before `push` other than `-C <dir>`, after a GIT_*
+# variable is set or a `pushd`/`popd` in the command is held: what it would send cannot be read
+# from the command. The last three are held wherever they run while any route on the account is
+# active, since they can point at a route's repository from outside it.
 #
 # Why: on 2026-10-07 a lead pushed main twice without a gate and both CI runs went red; CI
 # confirms a state already proven green locally, it never discovers one (failure-modes F56). A
 # finished lane whose full gate was green still carried two new high defects a review found (F70).
-# Every other command, and every repository without the marker, exits 0 at once.
+# Only the first push of a command was checked until 2026-10-17: `git push --dry-run … && git push …`
+# went through. Every other command, and every repository without the marker, exits 0 at once.
 #
 # Bypass, only on the user's explicit word: DSP_SKIP_PUSH_GUARD=1 in the command skips both
 # checks; DSP_SKIP_REVIEW=1 skips only the review.
@@ -26,63 +32,15 @@ case "$CMD" in *push*) ;; *) exit 0 ;; esac
 case "$CMD" in *DSP_SKIP_PUSH_GUARD=1*) exit 0 ;; esac
 
 # A command position: start, or after ; & | or a newline. Without it `grep "git push"` matches.
+# A push run through a wrapper (`bash -c`, `env`, `xargs`) is not seen.
 AT_CMD='(^|[;&|]|\n)[[:space:]]*([A-Za-z_][A-Za-z0-9_]*=[^[:space:]]*[[:space:]]+)*'
-GIT_PUSH='git([[:space:]]+-C[[:space:]]+[^[:space:];&|]+)?[[:space:]]+push'
-grep -qE "${AT_CMD}${GIT_PUSH}([[:space:]]|$)" <<<"$CMD" || exit 0
+# git's own options before `push`, each with at most one value word (`-C <dir>`, `-c k=v`, `--no-pager`).
+GIT_PUSH='git([[:space:]]+-[^[:space:];&|]*([[:space:]]+[^-[:space:];&|][^[:space:];&|]*)?)*[[:space:]]+push'
+PUSHES=$(grep -oE "${AT_CMD}${GIT_PUSH}([[:space:]][^;&|]*|$)" <<<"$CMD") || exit 0
 
 CWD=$(jq -r '.cwd // empty' <<<"$INPUT" 2>/dev/null)
-SEGMENT=$(grep -oE "${GIT_PUSH}[^;&|]*" <<<"$CMD" | sed -n '1p')
-# The repository: the cwd, moved by each `cd <dir>` before the push, then by `git -C <dir>`. A
-# target this cannot resolve (a variable, a missing directory) leaves the repository unknown: exit 0.
-# Why: falling back to the cwd blocked an agent's push in its own throwaway repository, because its
-# cwd was a lane worktree of an active route.
-BEFORE=${CMD%%"$SEGMENT"*}
-TARGETS=$(grep -oE "(^|[;&|(])[[:space:]]*cd[[:space:]]+(\"[^\"]*\"|'[^']*'|[^[:space:];&|)]+)" <<<"$BEFORE" |
-	sed -E "s/^[;&|([:space:]]*cd[[:space:]]+//")
-grep -qE '^git[[:space:]]+-C' <<<"$SEGMENT" && TARGETS+=$'\n'$(awk '{print $3}' <<<"$SEGMENT")
-REPO=${CWD:-$PWD}
-while IFS= read -r t; do
-	[ -n "$t" ] || continue
-	case "$t" in \"*\" | \'*\') t=${t:1:-1} ;; esac
-	case "$t" in *'$'* | *'`'*) exit 0 ;; esac
-	t=${t/#\~/$HOME}
-	[ "${t:0:1}" = / ] || t=$REPO/$t
-	[ -d "$t" ] || exit 0
-	REPO=$t
-done <<<"$TARGETS"
-
-COMMON=$(git -C "$REPO" rev-parse --path-format=absolute --git-common-dir 2>/dev/null) || exit 0
-MARKER="$COMMON/dsp-route.json"
-[ -f "$MARKER" ] || exit 0
-PLANNING=$(jq -r '.planning_dir // empty' "$MARKER" 2>/dev/null)
-[ -n "$PLANNING" ] || exit 0
-RUNG=$(jq -r '.rung // empty' "$MARKER" 2>/dev/null)
-REVIEW=
-case "$RUNG" in M | L) REVIEW=1 ;; esac
-case "$CMD" in *DSP_SKIP_REVIEW=1*) REVIEW= ;; esac
-
-ARGS=$(sed -E "s/^${GIT_PUSH}//" <<<"$SEGMENT")
-read -ra WORDS <<<"$ARGS"
-POS=()
-SKIP_NEXT=
-for w in "${WORDS[@]}"; do
-	if [ -n "$SKIP_NEXT" ]; then
-		SKIP_NEXT=
-		continue
-	fi
-	case "$w" in
-	# A redirection, never a refspec; a bare operator's target is the next word.
-	*'>' | *'<') SKIP_NEXT=1 ;;
-	*'>'* | *'<'*) ;;
-	# Sends nothing, or sends no commit.
-	--dry-run | -n | --help | -h | --delete | -d) exit 0 ;;
-	--all | --mirror | --tags | --branches) POS=(__ALL__) && break ;;
-	# Options whose value is the next word.
-	-o | --push-option | --repo | --receive-pack | --exec) SKIP_NEXT=1 ;;
-	-*) ;;
-	*) POS+=("$w") ;;
-	esac
-done
+REVIEW_SKIP=
+case "$CMD" in *DSP_SKIP_REVIEW=1*) REVIEW_SKIP=1 ;; esac
 
 gated() {
 	local log
@@ -114,17 +72,121 @@ reviewed() {
 	return 1
 }
 
-BRANCH=$(git -C "$REPO" symbolic-ref -q --short HEAD)
-REMOTE=${POS[0]:-}
-[ -n "$REMOTE" ] || REMOTE=$(git -C "$REPO" config "branch.$BRANCH.remote" 2>/dev/null || echo origin)
+# The marker of any route registered on this account (route_state.py --activate) that is still active.
+active_route() {
+	local f m
+	for f in "$HOME"/.claude/dsp-routes/*.json; do
+		m=$(jq -r '.marker // empty' "$f" 2>/dev/null)
+		[ -n "$m" ] && [ -f "$m" ] && echo "$m" && return 0
+	done
+	return 1
+}
 
 MISSING=()
 UNREVIEWED=()
-if [ "${POS[0]:-}" = "__ALL__" ]; then
-	MISSING+=("every ref (--all/--mirror/--tags/--branches) — push explicit refs")
-else
-	SPECS=("${POS[@]:1}")
-	[ "${#SPECS[@]}" -eq 0 ] && SPECS=(HEAD)
+
+# One push: $1 the segment from `git` on, $2 the command text before it, $3 the separator and
+# variable assignments in front of it.
+check() {
+	local SEGMENT=$1 BEFORE=$2 PREFIX=$3 TARGETS t COMMON ARGS OPTS FORM WORDS POS SKIP_NEXT w BRANCH REMOTE SPECS spec src sha dst onto
+	local had=$((${#MISSING[@]} + ${#UNREVIEWED[@]}))
+	ARGS=$(sed -E "s/^${GIT_PUSH}//" <<<"$SEGMENT")
+	OPTS=${SEGMENT%"$ARGS"}
+	OPTS=${OPTS#git}
+	read -ra WORDS <<<"${OPTS%push}"
+	# Only the plain form is checked: git's options or GIT_* variables can change which repository,
+	# config or refs a push uses, so with them the push is held.
+	FORM=
+	if [ "${#WORDS[@]}" -eq 2 ] && [ "${WORDS[0]}" = -C ]; then
+		:
+	elif [ "${#WORDS[@]}" -gt 0 ]; then
+		FORM="git options before push (${WORDS[*]})"
+	fi
+	[[ "$BEFORE$PREFIX" =~ (^|[^A-Za-z0-9_])GIT_[A-Za-z0-9_]*= ]] && FORM="a GIT_* variable set before the push"
+	grep -qE "(^|[;&|(])[[:space:]]*(pushd|popd)([[:space:]]|$)" <<<"$BEFORE" && FORM="pushd/popd before the push"
+	# The repository: the cwd, moved by each `cd <dir>` before the push, then by `git -C <dir>`. A
+	# target this cannot resolve (a variable, a missing directory) leaves the repository unknown until
+	# an absolute one follows; unknown at the push: skip it.
+	# Why: falling back to the cwd blocked an agent's push in its own throwaway repository, because its
+	# cwd was a lane worktree of an active route.
+	TARGETS=$(grep -oE "(^|[;&|(])[[:space:]]*cd[[:space:]]+(\"[^\"]*\"|'[^']*'|[^[:space:];&|)]+)" <<<"$BEFORE" |
+		sed -E "s/^[;&|([:space:]]*cd[[:space:]]+//")
+	[ -z "$FORM" ] && [ "${#WORDS[@]}" -eq 2 ] && TARGETS+=$'\n'${WORDS[1]}
+	REPO=${CWD:-$PWD}
+	local unknown=
+	while IFS= read -r t; do
+		[ -n "$t" ] || continue
+		case "$t" in \"*\" | \'*\') t=${t:1:-1} ;; esac
+		case "$t" in *'$'* | *'`'*)
+			unknown=1
+			continue
+			;;
+		esac
+		t=${t/#\~/$HOME}
+		if [ "${t:0:1}" != / ]; then
+			[ -z "$unknown" ] || continue
+			t=$REPO/$t
+		fi
+		if [ -d "$t" ]; then
+			REPO=$t
+			unknown=
+		else
+			unknown=1
+		fi
+	done <<<"$TARGETS"
+
+	MARKER=
+	if [ -z "$unknown" ] && COMMON=$(git -C "$REPO" rev-parse --path-format=absolute --git-common-dir 2>/dev/null); then
+		[ -f "$COMMON/dsp-route.json" ] && MARKER=$COMMON/dsp-route.json
+	fi
+	# A held form may push a route's repository from anywhere (`--git-dir=`, `GIT_DIR=`, `pushd`).
+	[ -z "$MARKER" ] && [ -n "$FORM" ] && MARKER=$(active_route)
+	[ -n "$MARKER" ] || return 0
+	PLANNING=$(jq -r '.planning_dir // empty' "$MARKER" 2>/dev/null)
+	[ -n "$PLANNING" ] || return 0
+	RUNG=$(jq -r '.rung // empty' "$MARKER" 2>/dev/null)
+	REVIEW=
+	case "$RUNG" in M | L) REVIEW=1 ;; esac
+	[ -z "$REVIEW_SKIP" ] || REVIEW=
+	if [ -n "$FORM" ]; then
+		MISSING+=("$FORM — push with plain \`git [-C <dir>] push <remote> <refs>\`")
+		BLOCKED_MARKER=$MARKER BLOCKED_PLANNING=$PLANNING BLOCKED_RUNG=$RUNG
+		return 0
+	fi
+
+	read -ra WORDS <<<"$ARGS"
+	POS=()
+	SKIP_NEXT=
+	for w in "${WORDS[@]}"; do
+		if [ -n "$SKIP_NEXT" ]; then
+			SKIP_NEXT=
+			continue
+		fi
+		case "$w" in
+		# A redirection, never a refspec; a bare operator's target is the next word.
+		*'>' | *'<') SKIP_NEXT=1 ;;
+		*'>'* | *'<'*) ;;
+		# Sends nothing, or sends no commit.
+		--dry-run | -n | --help | -h | --delete | -d) return 0 ;;
+		--all | --mirror | --tags | --branches) POS=(__ALL__) && break ;;
+		# Options whose value is the next word.
+		-o | --push-option | --repo | --receive-pack | --exec) SKIP_NEXT=1 ;;
+		-*) ;;
+		*) POS+=("$w") ;;
+		esac
+	done
+
+	BRANCH=$(git -C "$REPO" symbolic-ref -q --short HEAD)
+	REMOTE=${POS[0]:-}
+	SPECS=()
+	if [ "${POS[0]:-}" = "__ALL__" ]; then
+		MISSING+=("every ref (--all/--mirror/--tags/--branches) — push explicit refs")
+	else
+		SPECS=("${POS[@]:1}")
+		# Without a refspec, what goes out depends on push.default, push refspecs, mirror and
+		# pushRemote config: never guessed.
+		[ "${#SPECS[@]}" -gt 0 ] || MISSING+=("a push with no refspec — name the remote and the refs: git push <remote> <ref>")
+	fi
 	for spec in "${SPECS[@]}"; do
 		src=${spec%%:*}
 		src=${src#+}
@@ -144,8 +206,24 @@ else
 			reviewed "$sha" "$onto" || UNREVIEWED+=("$src = ${sha:0:12}${onto:+ (remote-tracking $REMOTE/$dst = ${onto:0:12})}")
 		fi
 	done
-fi
+	[ $((${#MISSING[@]} + ${#UNREVIEWED[@]})) -gt "$had" ] || return 0
+	# The message names the route of the push that failed.
+	BLOCKED_MARKER=$MARKER BLOCKED_PLANNING=$PLANNING BLOCKED_RUNG=$RUNG
+}
+
+# Each push with the whole command text before it, so a `cd` anywhere earlier counts.
+DONE=
+REST=$CMD
+while IFS= read -r m; do
+	[ -n "$m" ] || continue
+	BEFORE=$DONE${REST%%"$m"*}
+	DONE=$BEFORE$m
+	REST=${REST#*"$m"}
+	seg=$(sed -E "s/^[;&|]?[[:space:]]*([A-Za-z_][A-Za-z0-9_]*=[^[:space:]]*[[:space:]]+)*//" <<<"$m")
+	check "$seg" "$BEFORE" "${m%"$seg"}"
+done <<<"$PUSHES"
 [ "${#MISSING[@]}" -eq 0 ] && [ "${#UNREVIEWED[@]}" -eq 0 ] && exit 0
+MARKER=$BLOCKED_MARKER PLANNING=$BLOCKED_PLANNING RUNG=$BLOCKED_RUNG
 
 {
 	if [ "${#MISSING[@]}" -gt 0 ]; then

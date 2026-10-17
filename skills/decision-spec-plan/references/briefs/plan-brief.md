@@ -94,6 +94,10 @@ to keep a checker quiet is a lie about the plan set — once, the collisions it 
   source*. Where a store CHECK mirrors a generated enum, the two are one value stated twice: carry a
   test that inserts **every** variant against a **real migrated store** and **prints the count
   inserted**.
+- **A rule every instance must keep is tested over the instances the test finds in the code** —
+  every handler, every control that writes — and prints their count; never over a hand-kept list,
+  which misses each one added after it. *A gate stayed green while 31 write controls broke such a
+  rule: its test checked a list kept by hand.*
 - **Check the contract before naming any type or command.** A type it declares must not also be
   hand-written.
 - **A producer must distinguish *absent* from *unreadable*** before it may create or open anything

@@ -6,9 +6,12 @@ Reports, never rules. Expected files come from the round's own indexes: the deci
 file that exists it flags the ends a lead must not misread (F38): empty, an unpaired code fence,
 written in the last two minutes. With --repo it also reads git: each lane checkpoint's
 `Final SHA:` line, whether the main branch contains it (by ancestry, or by patch for a rebased
-lane), and a lane branch that moved past a merged checkpoint (F41). Every gate log's last `exit=`
+lane), and a lane branch that moved past a merged checkpoint (F41); each lane not merged gets a
+line with its commits since the main branch, the gate log at its SHA, their trailers and what its
+worktree left uncommitted — the check of a group's return (F80). A lane is any
+`lanes/*-checkpoint.md` but another phase's `p<Q>-…`. Every gate log's last `exit=`
 line is reported; a log without one is still running or was piped. A HANDOFF.md over 40 KB and an
-unmerged lane's checkpoint over 35 lines are flagged (F76).
+unmerged lane's checkpoint over 35 lines are flagged (F76), and its rulings file over 12 KB (F67).
 
 Usage:
     route_state.py <planning-dir> --phase P [--repo DIR] [--main BRANCH] [--sections 38-48 | 38-]
@@ -30,11 +33,16 @@ each new lead session; delete the marker to end the route.
 
 --budget records a Stage 5 wave's estimate in M units (costs.md) and the `exec-` agents it covers
 in the marker (execution.md). Registered for PreToolUse (Agent|Bash), the hook then holds the
-lead's dispatch of an `exec-` agent until the phase has a budget and the user has answered after
-it, and again once the dispatches since it pass 125% of its agents or the spend since it 125% of
+lead's dispatch of an `exec-` agent until the phase has a budget recorded in this session and the
+user has answered after it here, and again once the dispatches since it pass 125% of its agents or the spend since it 125% of
 its estimate (F74). Inside an `exec-` agent it tells a group past 200k tokens of context to finish
-its task and return (F75), and holds a `git commit` while a rulings file named in the agent's
-transcript changed after the agent last read it (F59). A check that fails lets the call through.
+its task and return (F75), and holds a `git commit` while its own lane's rulings file changed after
+the agent last read it (F59). In a session with no active route it holds
+a `dsp-deep` or `dsp-mechanical` dispatch until the route is activated (F79). While a route is
+active it asks the user before the lead's `gh pr close|merge`, `gh issue close|delete`, `gh release
+create|delete|edit|upload`, `gh repo delete|archive|rename`, a `gh api` write, `--delete-branch`
+or a remote branch delete by `git push`, and refuses them inside a route agent (F81). A check
+that fails lets the call through.
 
 Registration, in ~/.claude/settings.json `hooks`, the command
 `python3 ~/.claude/skills/decision-spec-plan/scripts/route_state.py --hook` under: SessionStart
@@ -50,6 +58,7 @@ import json
 import os
 import pathlib
 import re
+import statistics
 import subprocess
 import sys
 import time
@@ -66,13 +75,33 @@ FRESH_S = 120
 THROTTLE_S = 20
 # Stage 5 agents are named `exec-<plan-id>-<group>` (execution.md); an agent's id is `a<name>-<hash>`.
 EXEC = "exec-"
+# The agent types only the route dispatches (agents/dsp-*.md), bare or plugin-qualified.
+ROUTE_AGENTS = ("dsp-deep", "dsp-mechanical")
 SLACK = 1.25
 CONTEXT_STOP = 200_000
 HANDOFF_MAX = 40_000
 CHECKPOINT_MAX = 35
+RULINGS_MAX = 12_000
 # The tools whose input naming a rulings file counts as the agent reading it.
 READS = ("Read", "Bash", "Grep")
 GIT_COMMIT = re.compile(r"\bgit(?:\s+-[cC]\s+\S+)*\s+commit\b")
+# Outward actions on the hosted repository, one command at a time (up to `;`, `&`, `|`, newline):
+# the lead asks the user each time and a route agent never runs one (F81). Each noun and verb may
+# have any options between them, as gh accepts. A false match only asks.
+WORDS = r"[^;&|\n]*?\s"
+OUTWARD = re.compile(
+    rf"\bgh\s{WORDS}?(?:pr\s{WORDS}?(?:close|merge)|issue\s{WORDS}?(?:close|delete)|"
+    rf"release\s{WORDS}?(?:create|delete|edit|upload)|repo\s{WORDS}?(?:delete|archive|rename))\b"
+    # `gh api` that writes: a method other than GET, or a field (which makes it a POST)
+    rf"|\bgh\s{WORDS}?api\b[^;&|\n]*?(?:\s(?:-X|--method)[=\s]*['\"]?(?i:POST|PATCH|PUT|DELETE)\b"
+    r"|\s(?:-[fF]|--field\b|--raw-field\b|--input\b))"
+    # remote refs deleted by `git push`: --delete, -d (alone or grouped), --prune, --mirror, or a
+    # refspec with no source (`:<ref>`, `+:<ref>`, quoted or not)
+    rf"|\bgit\s{WORDS}?push\b[^;&|\n]*?(?:\s(?:--delete|--prune|--mirror)\b|\s-[a-zA-Z]*d[a-zA-Z]*\b"
+    r"|\s['\"]?\+?:[^\s;&|'\"]+)"
+    r"|--delete-branch\b"
+)
+PLAN_ID = re.compile(r"p\d+-\d+[a-z]?(?=-|$)")
 SHA = re.compile(r"\b[0-9a-f]{7,40}\b")
 FINAL_SHA = re.compile(
     r"^\W*Final SHA:\W*([0-9a-f]{7,40})\b", re.MULTILINE | re.IGNORECASE
@@ -302,6 +331,7 @@ def budget(argv):
         "groups": a.groups,
         "phase": phase,
         "at": now(),
+        "session": session,
     }
     marker.setdefault("budgets", []).append(record)
     path.write_text(json.dumps(marker) + "\n")
@@ -376,13 +406,14 @@ def leads(event, marker):
     return list(dict.fromkeys(found))
 
 
-def since_budget(paths, since, current):
-    """(the user answered, other `exec-` dispatches) in these transcripts from `since` on."""
+def since_budget(paths, since, current, own):
+    """(the user answered in this session's transcript `own`, other `exec-` dispatches in all of
+    these transcripts) from `since` on. An answer in another lead session never counts (F74)."""
     answered = ever = False
     sent = set()
     for path in paths:
         for r in read_records(path):
-            is_human = r.get("type") != "assistant" and human(r)
+            is_human = path == own and r.get("type") != "assistant" and human(r)
             ever = ever or is_human
             if (r.get("timestamp") or "") < since:
                 continue
@@ -410,13 +441,13 @@ def spend(paths, since):
     return total
 
 
-def deny(reason):
+def deny(reason, decision="deny"):
     print(
         json.dumps(
             {
                 "hookSpecificOutput": {
                     "hookEventName": "PreToolUse",
-                    "permissionDecision": "deny",
+                    "permissionDecision": decision,
                     "permissionDecisionReason": f"route_state.py (hook): {reason}",
                 }
             }
@@ -425,9 +456,33 @@ def deny(reason):
     return 0
 
 
+def outward(event, entry):
+    """The outward action an active route's Bash command takes on the hosted repository, if any."""
+    marker = entry.get("marker")
+    if event.get("tool_name") != "Bash" or not (
+        marker and pathlib.Path(marker).exists()
+    ):
+        return None
+    command = str((event.get("tool_input") or {}).get("command") or "")
+    return " ".join(command.split())[:120] if OUTWARD.search(command) else None
+
+
+def unrouted(event, entry_path):
+    """The lead dispatching a route agent (`dsp-deep`, `dsp-mechanical`) with no active route:
+    the skill was never loaded or the route ended, and every hook is off (F79)."""
+    if event.get("agent_id") or event.get("tool_name") != "Agent":
+        return False
+    kind = str((event.get("tool_input") or {}).get("subagent_type") or "")
+    if kind.rpartition(":")[2] not in ROUTE_AGENTS:
+        return False
+    marker = load_json(entry_path).get("marker")
+    return not (marker and pathlib.Path(marker).exists())
+
+
 def gate_dispatch(event, entry):
     """The lead dispatching an `exec-` agent: held until the wave's budget is recorded and
-    answered, and once the wave runs more than 25% over it (execution.md, F74)."""
+    answered, and once the wave runs more than 25% over it (execution.md, F74); an allowed one
+    gets its ETA (F83)."""
     path = pathlib.Path(entry["marker"])
     marker = json.loads(path.read_text())
     phase = parser().parse_args(marker["args"]).phase
@@ -445,11 +500,20 @@ def gate_dispatch(event, entry):
         )
     b = budgets[-1]
     paths = leads(event, path)
-    answered, sent = since_budget(paths, b["at"], event.get("tool_use_id"))
+    own = pathlib.Path(event.get("transcript_path") or "").resolve()
+    answered, sent = since_budget(paths, b["at"], event.get("tool_use_id"), own)
     head = (
         f"budget '{b['label']}' ({b['estimate']:g}M, {b['groups']} exec- agents, "
         f"recorded {b['at']})"
     )
+    # Why: "read the handoff and proceed" in a new session once counted as the answer to the
+    # previous session's figure, which this session never told the user.
+    if b.get("session") != event.get("session_id"):
+        return deny(
+            f"{head} was recorded in another lead session. Price the remaining work, record it "
+            f"from this session with {record}, tell the user the figure and wait for their "
+            "answer (F74)."
+        )
     if not answered:
         return deny(
             f"{head}: the user has not answered since it was recorded. Tell them the "
@@ -469,7 +533,60 @@ def gate_dispatch(event, entry):
         return deny(
             f"{head}: {used / 1e6:.1f}M spent since — more than 25% over. " + over
         )
+    emit("PreToolUse", eta(paths, str((event.get("tool_input") or {}).get("name"))))
     return 0
+
+
+def lane_of(name):
+    found = PLAN_ID.search(name)
+    return found and found.group(0)
+
+
+def eta(paths, name):
+    """The `exec-` dispatch `name`'s ETA: the median minutes of the route's finished agents of its
+    kind — integrators (`exec-wave*`) or task groups — its lane's first (F83)."""
+    wave = name.startswith(EXEC + "wave")
+    kind = "integrator" if wave else "task group"
+    spans = []
+    for path in paths:
+        for meta in (path.parent / path.stem / "subagents").glob("agent-*.meta.json"):
+            agent = str(load_json(meta).get("name") or "")
+            if not agent.startswith(EXEC) or agent.startswith(EXEC + "wave") != wave:
+                continue
+            first = last = None
+            for r in read_records(
+                meta.with_name(meta.name[: -len(".meta.json")] + ".jsonl")
+            ):
+                first = first or r.get("timestamp")
+                message = r.get("message")
+                if r.get("type") == "assistant" and isinstance(message, dict):
+                    # Finished: its last turn ended with no tool call pending.
+                    last = (
+                        r.get("timestamp")
+                        if message.get("stop_reason") == "end_turn"
+                        else None
+                    )
+            if first and last:
+                spans.append((lane_of(agent), (epoch(last) - epoch(first)) / 60))
+    route = [m for _, m in spans]
+    if not route:
+        return (
+            f"ETA {name}: none yet — no {kind} of this route has finished. Tell the user so with "
+            "this dispatch (F83)."
+        )
+    lane = lane_of(name)
+    mine = [m for own, m in spans if lane and own == lane]
+    n = len(mine or route)
+    finished = f"{n} finished {kind}{'' if n == 1 else 's'}"
+    source = (
+        f"lane {lane}'s {finished} (the route's {len(route)}: {statistics.median(route):.0f} min)"
+        if mine
+        else f"the route's {finished}"
+    )
+    return (
+        f"ETA {name}: about {statistics.median(mine or route):.0f} min, the median of {source}. "
+        "Tell the user with this dispatch: this ETA and, for a lane, this × its groups left (F83)."
+    )
 
 
 def agent_transcript(event, session, agent):
@@ -511,11 +628,38 @@ def context(transcript):
     return 0
 
 
-def unread_rulings(transcript, planning):
-    """Rulings files named in an agent's transcript that changed after its last read of them."""
-    files = sorted((planning / "lanes").glob("*-rulings.md"))
-    text = transcript.read_text(errors="replace") if files else ""
-    files = [f for f in files if f.name in text]
+def dispatch_text(transcript):
+    """The prompt an agent was dispatched with: its transcript's first user record."""
+    for r in read_records(transcript):
+        if r.get("type") == "user":
+            content = (r.get("message") or {}).get("content")
+            if isinstance(content, list):
+                content = " ".join(
+                    str(b.get("text") or "") for b in content if isinstance(b, dict)
+                )
+            return str(content or "")
+    return ""
+
+
+def own_rulings(planning, name, dispatch):
+    """The lane rulings files that are this `exec-` agent's: its name opens with the lane's name or
+    plan id (`exec-p4-09-n` → `p4-09-ui-truth-rulings.md`), or its dispatch prompt names the file."""
+    group = name.removeprefix(EXEC)
+    own = []
+    for f in sorted((planning / "lanes").glob("*-rulings.md")):
+        lane = f.name.removesuffix("-rulings.md")
+        ids = [lane] + ([m.group(0)] if (m := PLAN_ID.match(lane)) else [])
+        if f.name in dispatch or any(
+            group == i or group.startswith(i + "-") for i in ids
+        ):
+            own.append(f)
+    return own
+
+
+def unread_rulings(transcript, planning, name):
+    """The agent's own rulings files that changed after its last read of them. Only its own: a
+    listing of `lanes/` in its transcript once made every lane's file count as its (F59)."""
+    files = own_rulings(planning, name, dispatch_text(transcript))
     last = {}
     for r in read_records(transcript) if files else ():
         # An api-request-blob record repeats an earlier tool_use with no timestamp; letting it
@@ -538,11 +682,13 @@ def agent_pre(event, session, entry):
     if transcript is None:
         return 0
     name = load_json(transcript.with_name(transcript.stem + ".meta.json")).get("name")
-    if not (str(name or "").startswith(EXEC) or agent.startswith("a" + EXEC)):
+    # An agent's id is `a<name>-<hash>` when the meta file lacks the name.
+    name = str(name or re.sub(r"-[0-9a-f]{8,}$", "", agent.removeprefix("a")))
+    if not name.startswith(EXEC):
         return 0
     command = str((event.get("tool_input") or {}).get("command") or "")
     if event.get("tool_name") == "Bash" and GIT_COMMIT.search(command):
-        stale = unread_rulings(transcript, pathlib.Path(entry["planning_dir"]))
+        stale = unread_rulings(transcript, pathlib.Path(entry["planning_dir"]), name)
         if stale:
             return deny(
                 f"re-read {', '.join(str(f) for f in stale)} before you commit: the lead "
@@ -579,7 +725,7 @@ def stage_docs(a, rung):
     base, p = pathlib.Path(a.planning_dir), a.phase
     sins = ", references/sins/lead.md" if rung in ("M", "L") else ""
     dec = base / "decisions" / f"phase{p}"
-    if any((base / "lanes").glob(f"p{p}-*")):
+    if any((base / "lanes").glob(f"p{p}-*")) or lane_checkpoints(base / "lanes", p):
         return 5, "references/execution.md" + sins
     if any(
         not f.name.startswith(f"p{p}-00") for f in (base / "plans").glob(f"p{p}-*.md")
@@ -614,8 +760,10 @@ def emit(name, text):
 def hook():
     """The hooks, for a session `--activate` registered.
 
-    PreToolUse holds the lead's `exec-` dispatches to the recorded budget and, inside an `exec-`
-    agent, applies the context stop and the rulings check. The other events put the round's state
+    PreToolUse holds the lead's `exec-` dispatches to the recorded budget, gives each one it
+    allows an ETA from the route's finished groups and, inside an `exec-`
+    agent, applies the context stop and the rulings check; it asks the user before the lead's
+    outward action on the hosted repository and refuses an agent's. The other events put the round's state
     into the lead's context, never a subagent's or teammate's (agent_id): PostToolUse checks at
     most every THROTTLE_S and, like an agent's return as a prompt, injects only the lines that
     changed since the last injection — nothing when none did. SessionStart (compact, resume)
@@ -628,12 +776,32 @@ def hook():
         return 0
     session = event.get("session_id") or ""
     entry_path = REGISTRY / f"{session}.json"
+    name = event.get("hook_event_name", "")
+    if session and name == "PreToolUse" and unrouted(event, entry_path):
+        return deny(
+            "this session has no active decision-spec-plan route, so the route's budget gate, "
+            "push review and state reports are all off; dsp-deep and dsp-mechanical serve only "
+            "that route. Load the decision-spec-plan skill with the Skill tool and follow "
+            "SKILL.md — the rung announcement with its cost, then "
+            f"`python3 {pathlib.Path(__file__).resolve()} <planning-dir> --phase <P> --repo "
+            "<repo> --activate --rung <S|M|L>` — before you dispatch (F79)."
+        )
     if not session or not entry_path.exists():
         return 0
     entry = load_json(entry_path)
-    name = event.get("hook_event_name", "")
     if name == "PreToolUse":
         try:
+            if act := outward(event, entry):
+                if event.get("agent_id"):
+                    return deny(
+                        f"`{act}` acts on the hosted repository, and a route agent never runs "
+                        "one: name it in your return and the lead asks the user (F81)."
+                    )
+                return deny(
+                    f"`{act}` acts on the hosted repository: the user approves it here, each "
+                    "time — an earlier answer authorizes only what it named (F81).",
+                    "ask",
+                )
             if event.get("agent_id"):
                 return agent_pre(event, session, entry)
             dispatch = event.get("tool_input") or {}
@@ -733,6 +901,57 @@ def main():
     if code == 0 and a.activate:
         code = activate(a, a.main or (default_branch(a.repo) if a.repo else "main"))
     return code
+
+
+def lane_checkpoints(lanes, phase):
+    """Every lane checkpoint but another phase's: `p<P>-<id>-…` and lanes named any other way."""
+    return [
+        c
+        for c in sorted(lanes.glob("*-checkpoint.md"))
+        if not ((m := re.match(r"p(\d+)-", c.name)) and m.group(1) != phase)
+    ]
+
+
+def gate_logs(lanes):
+    """(log, the commit and dirty count of its first `sha=` line within 20 lines, its last `exit=`
+    or None) for each gate log — the line push_guard.sh reads."""
+    out = []
+    for log in sorted(lanes.glob("*-gate.log")):
+        text = log.read_text(errors="replace")
+        first = next((ln for ln in text.splitlines()[:20] if ln.startswith("sha=")), "")
+        head = re.fullmatch(r"sha=([0-9a-f]{40}) dirty=(\d+)\s*", first)
+        exits = re.findall(r"^exit=(\d+)\s*$", text, re.MULTILINE)
+        sha, dirty = head.groups() if head else ("", "")
+        out.append((log, sha, dirty, exits[-1] if exits else None))
+    return out
+
+
+def lane_check(repo, main, full, gates, worktree):
+    """What the lead checked by hand on a group's return: the lane's commits since the main branch,
+    the gate at its SHA, their trailers, and what its worktree left uncommitted (F80)."""
+    parts = [f"{git(repo, 'rev-list', '--count', f'{main}..{full}')[1]} commits"]
+    at = [(dirty, code) for _, sha, dirty, code in gates if sha == full]
+    if any(at_ == ("0", "0") for at_ in at):
+        parts.append("gate exit=0")
+    elif at:
+        parts.append(f"gate exit={at[-1][1] or 'none yet'} dirty={at[-1][0]}")
+    else:
+        parts.append("no gate log at this SHA")
+    trailers = git(repo, "log", "--format=%(trailers:only,unfold)", f"{main}..{full}")[
+        1
+    ]
+    keys = {}
+    for key in (ln.split(":", 1)[0] for ln in trailers.splitlines() if ":" in ln):
+        keys[key] = keys.get(key, 0) + 1
+    parts.append(
+        "trailers "
+        + (", ".join(f"{k} ×{n}" for k, n in sorted(keys.items())) or "none")
+    )
+    if worktree and worktree[1] == full:
+        changed = git(worktree[0], "status", "--porcelain", "--untracked-files=no")[1]
+        if changed:
+            parts.append(f"{len(changed.splitlines())} uncommitted in its worktree")
+    return " · ".join(parts)
 
 
 def report(a, fresh=True, extra=()):
@@ -853,7 +1072,8 @@ def report(a, fresh=True, extra=()):
     )
 
     lanes = base / "lanes"
-    checkpoints = sorted(lanes.glob(f"p{p}-*-checkpoint.md"))
+    checkpoints = lane_checkpoints(lanes, p)
+    gates = gate_logs(lanes)
     merged = 0
     worktrees = {}
     if a.repo:
@@ -884,6 +1104,7 @@ def report(a, fresh=True, extra=()):
             )
         state = "no SHA"
         inside = False
+        full = None
         if sha and a.repo:
             rc, full = git(
                 a.repo, "rev-parse", "--verify", "--quiet", f"{sha}^{{commit}}"
@@ -929,7 +1150,22 @@ def report(a, fresh=True, extra=()):
                 f"{f'checkpoint over {CHECKPOINT_MAX} lines':<34} lanes/{c.name} ({size} — "
                 "the next group overwrites it with the lane's state and map)"
             )
-        if a.all:
+        # Every group reads its lane's rulings file whole; applied rulings belong in the archive,
+        # read only for an id the dispatch names (F67).
+        rulings = c.with_name(plan_id + "-rulings.md")
+        if not inside and rulings.exists() and rulings.stat().st_size > RULINGS_MAX:
+            rep.flag(
+                f"{f'rulings over {RULINGS_MAX // 1000} KB':<34} lanes/{rulings.name} "
+                f"({rulings.stat().st_size // 1000} KB — between groups, move the applied ones "
+                f"to {plan_id}-rulings-archive.md)"
+            )
+        # Every open lane gets its line, so a group's return changes it and the next injection
+        # carries the check the lead used to make by hand (F80).
+        if full and not inside:
+            state += " · " + lane_check(
+                a.repo, main, full, gates, worktrees.get(plan_id)
+            )
+        if a.all or not inside:
             rep.lines.append(f"    {plan_id:<48} {state}")
     lane_trees = sum(1 for b in worktrees if b != main)
     out.append(
@@ -942,18 +1178,15 @@ def report(a, fresh=True, extra=()):
     )
 
     green = red = running = 0
-    for log in sorted(lanes.glob("*-gate.log")):
-        exits = re.findall(
-            r"^exit=(\d+)\s*$", log.read_text(errors="replace"), re.MULTILINE
-        )
-        if not exits:
+    for log, _, _, code in gates:
+        if code is None:
             running += 1
             rep.flag(f"{'gate log has no exit= line':<34} lanes/{log.name}")
-        elif exits[-1] == "0":
+        elif code == "0":
             green += 1
         else:
             red += 1
-            rep.flag(f"{'RED exit=' + exits[-1]:<34} lanes/{log.name}")
+            rep.flag(f"{'RED exit=' + code:<34} lanes/{log.name}")
     waves = sorted(lanes.glob("wave*-integration.md"))
     for w in waves:
         rep.file(w, base)

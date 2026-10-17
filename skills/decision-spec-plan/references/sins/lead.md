@@ -1,5 +1,10 @@
 # Seven-sins review — the lead's procedure (rungs M and L)
 
+**Asked for on its own** ("summon the sins team"): read `SKILL.md` first and run it as a route —
+a review and its fix round are rung S (its rung table): announce the headcount and cost, then
+`route_state.py <planning-dir> --phase <P> --repo <repo> --activate --rung S`. The hook refuses a
+`dsp-deep` dispatch from a session with no active route (`failure-modes` F79).
+
 Seven `dsp-deep` reviewers, one sin and one domain each (`pride` architecture/API, `greed`
 performance/cost, `lust` UX, `envy` prior art, `gluttony` deps/docs/config/CI/logs, `wrath`
 security, `sloth` simplification), review independently, reproduce each other's high findings and

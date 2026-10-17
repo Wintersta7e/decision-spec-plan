@@ -48,10 +48,13 @@ still holds. Why: four of seven reviewers compacted once in a measured review an
 
 Rulings arrive in a file. In a lane, re-read `<planning-dir>/lanes/<plan-id>-rulings.md` before
 you start each task and before each commit; apply every entry you have not applied yet and name
-the ids in your checkpoint. A ruling that changes work you already committed in this group is fixed
-in a new commit. Never wait for a message from the lead: one reaches you only when you go idle. Why:
-a correction sent a minute after a group's dispatch reached it two hours later, after it had built
-on the superseded text.
+the ids in your checkpoint. Applied entries move to `<plan-id>-rulings-archive.md`: read from it
+only the ids your dispatch names, by `grep -n -A<n> '<id>'`, never the whole file. A ruling that
+changes work you already committed in this group is fixed in a new commit. Never wait for a message
+from the lead: one reaches you only when you go idle. Why: a correction sent a minute after a
+group's dispatch reached it two hours later, after it had built on the superseded text; groups
+that read a whole 38 KB rulings file of mostly applied entries before their first edit read 471 KB
+between them.
 
 No progress, stop. When the same failing tests come back after two fix attempts on one failure,
 stop: commit nothing red, write the checkpoint with the failing test names, each hypothesis you

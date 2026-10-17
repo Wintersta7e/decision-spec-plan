@@ -10,11 +10,17 @@ run `criteria_check.py` on the one spec file.)
   still running.
 - Record the **baseline gate with its SHA**: every suite's count, and the failing-test *identities*
   if any are red.
+- **Lanes that run at once share no file.** `scope_check.py <plans-dir> --waves <index>` lists every
+  file two plans of one wave change while neither waits for the other: move one to a later wave, or
+  give the change to one plan. At S, with no plans per lane, list each lane's files before its
+  dispatch; lanes sharing one run one after the other. **Why:** three lanes of one wave edited the
+  same four UI files; of the seam defects that left, the integrator fixed four and three stayed open
+  (`failure-modes` F82).
 - **Price each wave before its first dispatch** (`costs.md`, Stage 5) and record it:
   `python3 <skill-dir>/scripts/route_state.py --budget "<wave>" --estimate <M> --groups <n>`, `<n>`
   the `exec-` agents it covers (task groups, fix groups, the integrator). Tell the user the figure
   and wait for their answer. The hook holds every `exec-` dispatch until the user has answered
-  after the record, and again once the dispatches since pass 125% of `<n>` or the spend 125% of
+  after the record in the session that made it — a new lead session records its own — and again once the dispatches since pass 125% of `<n>` or the spend 125% of
   the estimate: record the remaining work's figure, say what ran over and why, and wait again.
   **Why:** one run quoted its Stage 5 figure half a minute after its first dispatches, from the
   older group median five times too high; in another, a wave ran 42% over and the headcount rule
@@ -27,13 +33,19 @@ run `criteria_check.py` on the one spec file.)
 - Dispatch the lane's execution agents **one task group at a time**, sequentially in the lane's
   worktree: a group is about 100 turns — **size it by what its tasks run, not by their count**: up to
   ~5 consecutive tasks that stay on one side of the stack, **2** when a task's steps run an
-  end-to-end or GUI suite or change both sides of a process boundary (`failure-modes` F60). A ruling
-  that adds work counts as a task: a group already at size gets it in the next group's dispatch.
+  end-to-end or GUI suite or change both sides of a process boundary (`failure-modes` F60). Once the
+  lane or an earlier route of the project has groups, **size by their measure instead**:
+  `usage_report.py --groups` prints each group's context at its first edit and per commit, and how
+  many commits fit between the median first edit and the 200k stop — that many tasks a group (one
+  fix round's groups first edited at a median 122k and fit 2; another route's added 67k a commit and
+  fit 1, F60). A ruling that adds work counts as a task: a group already at size gets it in the next
+  group's dispatch.
   **The lane's last group runs the plan's final gate task**: the lane's full gate on the SHA it
   reports, into `<planning-dir>/lanes/<plan-id>-gate.log` (the format under *Push only gated
   commits*), a red fixed under `dsp-deep`'s no-progress rule; the integrator refuses a lane SHA
   without it (`prompts.md` §5). Each agent gets the plan path, its task numbers, the
-  previous group's checkpoint, the lane's rulings file, the brief's house rules, the
+  previous group's checkpoint, the lane's rulings file and any archived ruling ids its tasks need,
+  the brief's house rules, the
   commit-message rules (subject length, body length, trailers — **state them; subagents default to
   adding their own trailers**), and "commit, **overwrite** `<planning-dir>/lanes/<plan-id>-checkpoint.md`
   with the lane's current state — ≤15 lines: the lane's tasks done with SHAs, gate state, what the
@@ -44,8 +56,14 @@ run `criteria_check.py` on the one spec file.)
   what the map names before it explores. **Why:** fresh groups reached 120–245k tokens of context
   before their first edit, mostly reading code the previous group had already read (`failure-modes`
   F67); with the map they reached a median ~85k, but checkpoints that kept every earlier group's
-  part grew to 91 lines and each group re-read the stack (F76). On its return, dispatch the next
-  group as a **new agent** — no user step. **Name every Stage 5 agent `exec-<plan-id>-<group>`** (a
+  part grew to 91 lines and each group re-read the stack (F76). **On its return, the hook's line
+  for the lane is the check** — its SHA, commits since the main branch, the gate at that SHA, the
+  commits' trailers, uncommitted work — never a hand probe of the tree (one lead spent 74% of its
+  cost hand-checking 18 returns, F80); then dispatch the next group as a **new agent** — no user step.
+  **Tell the user the ETA the hook answers each `exec-` dispatch with** — the median minutes of the
+  route's finished groups, the lane's first — and the lane's, that × its groups left: one wave ran
+  3 h 37 m with no ETA in any report until the user paused it (`failure-modes` F83).
+  **Name every Stage 5 agent `exec-<plan-id>-<group>`** (a
   fix group `exec-<review>-fixes`, an integrator `exec-wave<w>`): `route_state.py`'s hooks find
   them by that prefix — they tell a group past 200k tokens of context to finish its task and
   return, and hold its `git commit` while its rulings file has an entry it has not read.
@@ -67,6 +85,12 @@ run `criteria_check.py` on the one spec file.)
   still running**, never to a finished one: it wakes to answer (seven pointers to finished groups
   cost 0.33M in one run). The agent re-reads the file before each task and before each commit, and
   the hook holds an `exec-` agent's `git commit` while the file changed after its last read.
+  Between groups, with none of the lane's running, move each ruling the lane has applied and no
+  later task depends on, verbatim, to `<plan-id>-rulings-archive.md`; the dispatch names any
+  archived id a task still needs, and the agent reads only those entries (`grep -n -A<n> '<id>'`).
+  `route_state.py` flags an open lane's file over 12 KB. **Why:** every group read the whole file
+  before its first edit — one lane's 38 KB of mostly applied entries cost its route's groups
+  471 KB of reading (`failure-modes` F67).
   **Why:** a message reaches a busy agent only when it goes idle — a correction sent 52 s after a
   dispatch arrived 119 min later, and the group had built on the superseded text; in a later run
   every pointer still arrived 5–14 min late (`failure-modes` F59). A ruling that cannot wait for
@@ -115,6 +139,8 @@ line (within its first 20 lines) is `sha=<that commit> dirty=0` and whose last `
 `exit=0` — the integrator's last log covers the main it returns; a commit you add after it needs
 its own full gate first:
 `{ echo "sha=$(git rev-parse HEAD) dirty=$(git status --porcelain --untracked-files=no | grep -c .)"; <full gate>; echo "exit=$?"; } > <planning-dir>/lanes/<name>-gate.log 2>&1`.
+Push as `git [-C <dir>] push <remote> <ref>…`: a push with no refspec, other git options before
+`push`, a `GIT_*` variable or a `pushd` is held, since what it would send cannot be read from it.
 **Every gate run — yours included — goes to such a log**, read by its last `exit=` line and a grep
 for failing tests, never piped through `tail` or `head` (`failure-modes` F31): one lead piped 22
 gates through `tail`, and one hid the lint error of a red commit. A gate log is never edited — a
@@ -132,6 +158,15 @@ A new high is fixed by a fresh task group from the debate-amended recommendation
 user as a U-ruling; pre-existing highs go to the next phase's Lane 0. **Why:** a finished lane
 whose full gate was ALL GREEN 25/25 still carried two new highs, and the debate struck a
 first-proposed fix that would have crashed at every launch (`failure-modes` F70).
+
+**Outward actions are the user's, each time.** A push, a PR closed or merged, a branch deleted, an
+issue closed, a release: ask for each when it happens — an earlier answer authorizes only what its
+option named. While a route is active the hook asks the user before your `gh pr close|merge`,
+`gh issue close|delete`, `gh release create|delete|edit|upload`, `gh repo delete|archive|rename`, a
+`gh api` write, `--delete-branch` or a remote branch delete by `git push`, and refuses them to every
+route agent. **Why:** a lead closed nine
+dependency-update PRs with `--delete-branch`, unasked, 16 minutes after the user's last answer
+(`failure-modes` F81).
 
 **CI**, after you push (an outward action — yours and the user's): one background blocking watch
 (`gh run watch <run-id> --exit-status`, or the CI's equivalent) — one notification, no polling loop;

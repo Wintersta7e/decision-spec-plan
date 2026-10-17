@@ -1,6 +1,6 @@
 ---
 name: decision-spec-plan
-description: "Run the decision → spec → plan route for a large phase, milestone or multi-subsystem feature: harvest what exists, rule each open decision with one agent per decision, cross-model and seam review, ask the user the few calls that matter, write an arbiter, then write the spec one author per file, reconcile by seam, and write executable plans one per lane for wave execution. Use this whenever the user asks to spec, specify, design or plan a phase, milestone, version or roadmap item that has several open design questions or will be built by parallel agents — 'spec the next phase', 'write the decision brief', 'plan v2', 'do it the way we did the last phase', 'let's plan the next milestone properly' — even if they don't name the route. Not for a single feature with one obvious design (use brainstorming + test-driven-development) or for a bug."
+description: "Run the decision → spec → plan route for a large phase, milestone or multi-subsystem feature: harvest what exists, rule each open decision with one agent per decision, cross-model and seam review, ask the user the few calls that matter, write an arbiter, then write the spec one author per file, reconcile by seam, and write executable plans one per lane for wave execution. Use this whenever the user asks to spec, specify, design or plan a phase, milestone, version or roadmap item that has several open design questions or will be built by parallel agents — 'spec the next phase', 'write the decision brief', 'plan v2', 'do it the way we did the last phase', 'let's plan the next milestone properly' — even if they don't name the route. Not for a single feature with one obvious design (use brainstorming + test-driven-development) or for a bug. Load it first for a seven-sins review too ('summon the sins team', 'run the seven sins on this'): the sins run inside this route."
 ---
 
 # Decision → Spec → Plan
@@ -67,8 +67,7 @@ loses them silently. Replace `‹ADAPT›` blocks with the project's own facts, 
 block does not apply, say so in one line rather than deleting the heading. **An unmarked sentence
 false for this project** (it names a mechanism the project lacks) is rewritten to name what plays
 that role — kept verbatim, such a line failed two graded runs.
-A rung omits only what its row in the rung table names; a brief that is copied keeps its unmarked
-rules.
+A rung omits only what its row in the rung table names.
 
 ## Precedence — state it in every brief
 
@@ -106,8 +105,7 @@ harvester names the question only it answers**, and the announcement carries its
 (`failure-modes` F51). Below L you may
 harvest yourself — the same three questions still get answered. **Tell every harvester to probe, not just read**: a claimed defect gets a throwaway
 reproduction, a third-party figure gets a cheap read-only request, and each fact is labelled
-*measured* or *by reading*. The runs that found the most (a command injection, a branch-deleting
-fetch, a data-loss path) found it by running something.
+*measured* or *by reading*. The runs that found the most found it by running something.
 
 **Gate**: you have read the three files' conflict, unspecified and defect sections, and
 **reproduced any claimed shipped defect yourself** (a probe repo, a query, a run). A verified
@@ -178,19 +176,19 @@ and L the seven sins review the same sections beside them for what goes wrong on
    rulings, and a **reading map** — per plan, the anchors it reads beyond its own section.
 2. **Write the plan brief** (`briefs/plan-brief.md`); dispatch one author per plan (`prompts.md` §4),
    each writing a plan and a manifest.
-3. **Lint mechanically**: `scripts/plan_lint.py <plans-dir>` (tasks, column-0 Produces/Consumes,
-   checkboxes, fences, header fields) and `scripts/scope_check.py <plans-dir>` (every file a
-   File-structure table promises is created somewhere). Both print counts and exit non-zero on a
-   problem; `scope_check` is a heuristic (`failure-modes` F25).
+3. **Lint mechanically**: `scripts/plan_lint.py <plans-dir>`, `scripts/scope_check.py <plans-dir>`
+   (every file a File-structure table promises is created somewhere) and `scope_check.py
+   <plans-dir> --waves <index>` (no file changed by two plans that run at once; F82). Each prints
+   counts and exits non-zero on a problem; `scope_check` is a heuristic (`failure-modes` F25).
 4. Rule the plan authors' challenges — they find arbiter mistakes; that is the round working.
 
-**Gate**: every plan lints `ok`, scope-check reports 0, and `criteria_check.py --plans <plans-dir>`
+**Gate**: every plan lints `ok`, scope-check reports 0 both ways, `criteria_check.py --plans <plans-dir>`
 exits 0 — every criterion maps to a task and a test file, and you read every printed MANUAL line.
 
 ### Stage 5 — Execution
 
 `references/execution.md`: lanes of fresh task-group agents, one integrator per wave, you check
-its SHAs first-hand. Every outward action (push, PR, release) stays with you and the user, and a
+its SHAs first-hand. Every outward action (push, PR, release) is asked for when it happens (F81), and a
 push sends only commits a full gate passed (`push_guard.sh`) — at M and L, only ones a seven-sins
 verdict covers (`sins/lead.md`, code mode; F70).
 
@@ -198,7 +196,7 @@ verdict covers (`sins/lead.md`, code mode; F70).
 
 - Agents: the Agent tool, `run_in_background: true`, independent dispatches in **one message, at
   most 8 per message** — larger fan-outs hit "Lock file is already being held", and a spawn that
-  hit it never started: dispatch it again (`failure-modes` F65). Each role on its tier from the
+  hit it never started: dispatch it again (F65). Each role on its tier from the
   `prompts.md` header (`dsp-deep`, `dsp-mechanical`, or `general-purpose` for a tool outside their
   lists). The Workflow tool only with the user's explicit opt-in (`/effort ultracode` is one).
 - A prompt no brief covers (a repair round, an ad-hoc role) ends with `prompts.md`'s closing lines
@@ -207,7 +205,7 @@ verdict covers (`sins/lead.md`, code mode; F70).
 - The second model (`codex-delegation`), where the user has one, reviews: the framing, seam and
   cross-model passes, read-only; its usage is not Claude's. Its model and effort come from its own
   configuration, never from this skill. Poll a background job by its **state line**, never a
-  keyword (`failure-modes` F39).
+  keyword (F39).
 - **The second model unavailable** (none, quota, outage): run its prompt on a `dsp-deep` agent now;
   the review lands in the file the prompt names either way. Record which ran in the handoff and
   the arbiter header. On its return it reviews the earliest artefact nothing is built on yet:
@@ -218,7 +216,7 @@ verdict covers (`sins/lead.md`, code mode; F70).
   file.
 - **Never rewrite a ruling in place while an agent may be reading it** — append, mark the old text,
   and quote rulings verbatim in any message about them. **A `SendMessage` reaches a busy agent only
-  when it goes idle** — after it has replied (`failure-modes` F59); a ruling for a running lane goes
+  when it goes idle** — after it has replied (F59); a ruling for a running lane goes
   to its rulings file (`execution.md`). An idle notice repeating a return you have: one line, no
   tool call (F69).
 - **Never batch several edits to one file in one message**, yours or an agent's.
@@ -227,8 +225,8 @@ verdict covers (`sins/lead.md`, code mode; F70).
 - **Quota.** Routes on one account share its weekly limit — four at once hit it in a day and
   stalled 62.7 h (`failure-modes` F63). Before dispatching a stage estimated at ≥20M, quote
   `usage_report.py`'s figures so far and the stage's estimate; a Stage 5 wave's goes to
-  `route_state.py --budget`, whose hook holds `exec-` dispatches until the user answers
-  (`execution.md`). When a stage runs >25% over its announced headcount, or the round grows into
+  `route_state.py --budget`, whose hook holds `exec-` dispatches until the user answers, then
+  gives each an ETA to tell them (`execution.md`, F83). When a stage runs >25% over its announced headcount, or the round grows into
   the next rung, re-announce and wait for the user.
 - **The route runs unattended** — never ask the user to `/clear` or restart mid-route. The lead's
   context stays small through an auto-compact window ≈ 300000 (`autoCompactWindow` in settings, per
@@ -237,9 +235,8 @@ verdict covers (`sins/lead.md`, code mode; F70).
   announcement, say so.
 - **A stopped agent is resumed, not re-dispatched.** After a session or spend limit, `SendMessage`
   the same agent to continue from its file — its transcript survives; a fresh dispatch repays its
-  whole exploration (one round re-ran seven decision agents from scratch). Check its file's end
-  first (`failure-modes` F38). Resuming finishes the agent's own work; new work — an execution
-  lane's next task group above all — goes to a fresh agent (`execution.md`). **After a lead
-  restart, `ListAgents` first**: an agent not listed is unreachable ("No agent named … is
-  reachable") — dispatch a fresh one told to continue from its file, whose skeleton the closing
-  lines had it write first (`failure-modes` F64).
+  whole exploration (`failure-modes` F49). Check its file's end first (F38). Resuming finishes the
+  agent's own work; new work — an execution lane's next task group above all — goes to a fresh
+  agent (`execution.md`). **After a lead restart, `ListAgents` first**: an agent not listed is
+  unreachable ("No agent named … is reachable") — dispatch a fresh one told to continue from its
+  file, whose skeleton the closing lines had it write first (F64).
