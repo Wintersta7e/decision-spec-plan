@@ -2,26 +2,33 @@
 
 Every dispatch is `run_in_background: true`, all independent ones in **one message** — at most 8 per
 message; a spawn that returns "Lock file is already being held" never started, so dispatch it again
-(`failure-modes` F65) — and runs on
-the **tier** its role has in the table below (the second model keeps its own configuration). The
-lead announces every role's tier with the rung and headcount (SKILL.md, "Pick a rung"); at M and L
-the user may move a role to the other tier before the first dispatch.
+(`failure-modes` F65). **You pick each dispatch's model and effort** by what it must get right:
+`subagent_type: "dsp-deep"` (`~/.claude/agents/dsp-deep.md`, a restricted tool list) with the Agent
+call's `model` (omitted: the session's) and `effort`. Announce each role's pair with a one-line reason beside the rung and
+headcount (SKILL.md, "Pick a rung"); the user may overrule any before the first dispatch. The second
+model keeps its own configuration.
 
-| Tier | How to dispatch | Default for |
+| Role | Default | The cheaper pair (`model: "sonnet"`, `effort: "medium"`) |
 |---|---|---|
-| **deep** | `subagent_type: "dsp-deep"` (`~/.claude/agents/dsp-deep.md`: `model: inherit`, no effort — the session's model and `/effort`; a restricted tool list) | **every role**: harvesters, the framing, seam and S reviews when no second model runs them, decision agents, markers, spec authors, the register folder, reconcilers, plan authors, Stage 5 task groups, the seven-sins reviewers |
-| **mechanical** | `subagent_type: "dsp-mechanical"` (`~/.claude/agents/dsp-mechanical.md`: `model: sonnet`, `effort: medium`, the same tool list) | none — only a role the user moved at the announcement |
+| Framing, seam, S and docs reviews as an agent; the seven-sins reviewers | the session's model and effort | never: a Sonnet docs review passed a commit message that a deep review rated Major (F88) |
+| Decision agents | the session's model and effort | only a narrow docs or convention decision that cites no code fact and places no other decision's output: a Sonnet placement ruling (which commit holds what) drew a seam blocker and was rewritten (F88) |
+| Spec and design harvesters; supersede markers; the register folder | the session's model and effort | allowed with a reason, and you check the output against its inputs: live runs did as well as deep peers (F88), one replay dropped items (F45) |
+| Code harvester, spec authors, reconcilers, plan authors, Stage 5 task groups, integrators | the session's model and effort | never measured on Sonnet |
 
-The Agent tool takes `model` per call but no effort — effort comes only from an agent definition's
-frontmatter, which is why the mechanical tier is a named agent; a Workflow script picks a tier with
-`agentType: 'dsp-deep'` or `'dsp-mechanical'` in the `agent()` options. **Why deep is a named agent
-too:** `general-purpose` carries every tool schema and the skill listing, so its first turn started
+**Effort.** By default omit `effort`: the dispatch takes the session's `/effort` and follows it when
+the user changes it mid-run (measured: a task group went from `xhigh` to `high` with its lead).
+Depart from the default wherever the task calls for it, with a one-line reason in the announcement:
+`effort: "xhigh"` for a role whose call is hard to get right (a concurrency or distributed-state
+decision, conflicting hypotheses, a cross-component seam), less for the cheaper rows above. Every
+measured run used `xhigh` for every role, so a session at `high` is itself unmeasured (run set I):
+record each agent's model and effort with its cost in the handoff (`usage_report.py` prints both). A Workflow script picks
+the pair with `agentType: 'dsp-deep'` (the session's model and effort) or `'dsp-mechanical'`
+(Sonnet, medium) in the `agent()` options. **Why `dsp-deep` is a named agent:** `general-purpose` carries every tool schema and the skill listing, so its first turn started
 at 29.5k tokens against 15.1k for `dsp-deep` (same headless session, same prompt, 2026-10-06;
 40.8k for `general-purpose` from an interactive session; another machine: 55.9k against 40.9k), and every later turn re-sends the difference. A role that needs a
 tool outside the list (a browser MCP) is dispatched as `general-purpose`.
 
-**Why every role defaults to deep.** Every recorded run used the session model at xhigh, and a
-written tier alias can resolve to another version or a smaller context window than the session's.
+**Why the default is the session's model.** Every recorded run used it, and a written model alias can resolve to another version or a smaller context window than the session's.
 **Three roles were replayed on `sonnet` against a session-model control over one finished phase
 (2026-09-29); none held.** Markers: 66 of the original's 77 (file, ruling) pairs to the control's
 73, and one sequencing ruling missing from all five files that carried it. Design harvester: 14 of
@@ -29,7 +36,8 @@ the decision round's 20 open questions fully covered to the control's 20, missin
 spec cluster. Register fold: the checker's table copied exactly, but 38 of 45 moved criteria to the
 control's 44. Session-model wall-clock: markers 25 min, design harvest 23, register fold 45;
 `sonnet` ran each in roughly half. Run set B put exactly those roles on the mechanical tier by
-judgement, unmeasured. Before moving a role, offer the user a replay: strip that role's output from
+judgement, unmeasured; run set I's live Sonnet roles are F88. To settle a role's pair for a
+project, replay it: strip that role's output from
 a copy of a finished round **and every annotation added to its inputs since**; re-run its prompt on
 the cheaper tier **and on the session setting as a control** — inputs drift, and one run differs
 from the next (the control reproduced 88% of the original's markers); compare at the unit the next
@@ -115,7 +123,8 @@ Substitute `<repo>`, `<planning-dir>`, `<P>`, `<scratchpad>`.
 > under 1500 words: 1. MISSING DECISIONS (owned by no row — which D<n> should take
 > it, or does it need its own; do not manufacture one). 2. MIS-PARTITIONS (a row that is two
 > decisions; one question split across two rows so both will rule on it). 3. WRONG SETTLED ROWS
-> (misquoted, over-stated, contradicted by a later ruling — verify quotes). 4. WRONG CLAIMS about the
+> (misquoted, over-stated, contradicted by a later ruling — verify quotes — or recording what today's
+> code does as a ruling: name the fix it forecloses, F86). 4. WRONG CLAIMS about the
 > code in the defects table or rows. 5. The single riskiest framing error, and the one question
 > agents are most likely to answer inconsistently. 6. TEMPLATE LINES — against <the decision-brief
 > template>: every brief sentence false for this repo (a mechanism it lacks), and every unmarked
@@ -147,7 +156,9 @@ Substitute `<repo>`, `<planning-dir>`, `<P>`, `<scratchpad>`.
 > natural owner) · D. SETTLED-ROW OVERTURNS (does the argument hold?) · E. SAFETY (anything that
 > could still destroy data or claim a guarantee the product lacks — be adversarial, probe) ·
 > F. SCHEMA/MIGRATION COLLISIONS (every delta by ruling; same name twice; one table rebuilt twice) ·
-> G. USER DECISIONS (deduplicated, grouped by how much each changes what gets built). Write the file
+> G. USER DECISIONS (deduplicated, grouped by how much each changes what gets built) · H. UNASKED
+> (a ruling that changes something no row of the index's asks names, or an item on its Do not touch
+> list — quote the nearest ask). Write the file
 > first; reply <3 KB: counts per heading, the five worst blockers, the path.
 
 ## §1d — Supersede markers (one agent judges, a script inserts)
@@ -177,12 +188,15 @@ Substitute `<repo>`, `<planning-dir>`, `<P>`, `<scratchpad>`.
 > below: report what they miss, not what they print. Consult the code to verify. Answer as a
 > numbered list with file:line on every side, blunt: 1. THE DECISION DOCUMENT — MISSING DECISIONS
 > (owned by no row; do not manufacture one) and WRONG SETTLED ROWS (misquoted, over-stated,
-> contradicted by a later ruling — verify quotes). 2. ITS RULINGS AGAINST THE CODE — A. BLOCKERS
+> contradicted by a later ruling — verify quotes — or recording what today's code does as a ruling:
+> name the fix it forecloses; the lead re-opens that row and never adopts the gap as a default,
+> F86). 2. ITS RULINGS AGAINST THE CODE — A. BLOCKERS
 > (cannot both be implemented) · B. WRONG CODE CLAIMS (what is actually there) · C. UNOWNED
 > (assumed landed by someone, taken by no one) · E. SAFETY (anything that could destroy data or
 > claim a guarantee the product lacks — be adversarial, probe). 3. THE SPEC — a value with two
 > owners; a criterion that cannot fail. 4. THE PLAN — a criterion with no task or no test file; a
-> promised file with no task; a task that names no test. Reply <3 KB, the answer itself, counts
+> promised file with no task; a task that names no test; a change no ask names, or an item on the
+> Do not touch list. Reply <3 KB, the answer itself, counts
 > per heading first; the lead saves it as `<planning-dir>/decisions/phase<P>/00-seams.md`.
 
 ---
@@ -215,8 +229,8 @@ re-derived — plus the earlier criteria that move and the gates that are wrong 
 > the delta, the rulings — they are requirements — and your reading-map row: read other sections at
 > its anchors, not whole). YOUR PLAN: **p<P>-<nn>-<slug>** for §<n>, wave
 > <w>, depends on <plans>. Write `<planning-dir>/plans/p<P>-<nn>-<slug>.md` and
-> `<planning-dir>/manifests/p<P>-<nn>-<slug>.json`. Run `plan_lint.py` and `scope_check.py` on your
-> file before replying; both must pass. <closing lines> Reply per the brief's output list, <3 KB.
+> `<planning-dir>/manifests/p<P>-<nn>-<slug>.json`. Run `plan_lint.py`, `scope_check.py` and
+> `scope_check.py --asks <decision-index> <arbiter>` on your file before replying; all must pass. <closing lines> Reply per the brief's output list, <3 KB.
 
 ---
 
@@ -231,7 +245,10 @@ It commits merges and runs gates, so it does not end with the closing lines. Its
 > <counts; failing-test identities>. For each lane: 1. confirm its checkpoint
 > (`<planning-dir>/lanes/<plan-id>-checkpoint.md`) names that SHA and its lane gate log
 > (`<planning-dir>/lanes/<plan-id>-gate.log`) opens `sha=<that SHA> dirty=0` and ends `exit=0` — a
-> lane SHA without one: stop and record it — and merge exactly that SHA, never the branch name. 2. Resolve conflicts; regenerate every derived file and count (<codegen, locks>),
+> lane SHA without one: stop and record it — and that
+> `<skill-dir>/scripts/scope_check.py <planning-dir>/plans --glob '<plan-id>-*.md' --diff <wave base>..<SHA> --repo <repo>`
+> exits 0 — a file outside the lane's plan: stop and record it — then merge exactly that SHA, never
+> the branch name. 2. Resolve conflicts; regenerate every derived file and count (<codegen, locks>),
 > never hand-merge them. 3. Run the full gate with its whole output to
 > `<planning-dir>/lanes/wave<w>-<plan-id>-gate.log` — never piped through `tail` or `head` — exactly
 > `{ echo "sha=$(git rev-parse HEAD) dirty=$(git status --porcelain --untracked-files=no | grep -c .)"; <command>; echo "exit=$?"; } > <log> 2>&1`
@@ -240,7 +257,8 @@ It commits merges and runs gates, so it does not end with the closing lines. Its
 > leave the merge as it is and record it — the lead rules the fix. Then clean <the build caches that
 > accumulate stale artefacts>. <Last feature wave: also run the unwired-producer audit (<command>).
 > After the register lane: drive the real product once (<how>) and record what you ran and saw, with
-> screenshot paths.> Commit messages: <the commit rules — state them; subagents default to adding
+> screenshot paths.> Commit messages: <the commit rules — the subject convention the repo's `git log`
+> shows (a `type:` prefix, a scope), lengths, trailers; state them; subagents default to adding
 > their own trailers>. Write `<planning-dir>/lanes/wave<w>-integration.md` first: per lane a line
 > `Merged <plan-id> <lane SHA> → <the merge commit's SHA on <main-branch>>`, each conflict and its resolution, the files regenerated, the gate's exit
 > status, counts and failing-test identities against the baseline, the files both sides touched and

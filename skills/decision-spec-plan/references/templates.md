@@ -48,6 +48,15 @@ Before writing the first number, **look at what the previous phase used** and fo
 
 <charter paragraph; what joins the phase from earlier deferrals>
 
+## The asks — what the requester literally asked for
+Every change the round makes cites one of these or a user ruling (`scope_check.py --asks`).
+| Ask | Verbatim — quoted, never paraphrased | Source (ticket, review comment, the user's message, with date) |
+|---|---|---|
+| **Ask1** | "<the sentence>" | <where> |
+### Do not touch
+- <a file in backticks, a version, another ticket's or person's work, an unmerged branch, an asset
+  another role owns — each with who said so; the files in backticks fail `scope_check.py --asks`>
+
 **Harvest references** carry a prefix so numbering schemes cannot collide with decision numbers:
 `hd:` design, `hs:` spec, `hc:` code.
 
@@ -77,7 +86,7 @@ Every row is already ruled; contradicting one needs an explicit argument with fi
 Not a spec · not a plan · not a re-litigation · not a fix round.
 ```
 
-**At rung S** this file is the whole decision round: omit the fences; under each decision's row write
+**At rung S** this file is the whole decision round: keep the asks, omit the "may NOT decide" fences; under each decision's row write
 its ruling with the decision brief's output items 1–3, 5 and 6; put the user's rulings (U1…) at the
 top; apply the §1e review's corrections here and carry any changed ruling into the spec and the plan
 before execution — no decision agent reads it. The briefs' reading lists name files S omits (arbiter,
@@ -85,6 +94,9 @@ decision files, plan index): read this document in their place.
 
 **Before dispatch, check the index against this list** — each item was a real framing error
 somewhere:
+- every ask is the requester's own sentence, from every source they wrote in (ticket, each review
+  comment, the user's messages), and a decision row that serves no ask is a question for the user,
+  not a row (F89);
 - every SETTLED row quotes its source correctly and is not contradicted by a later ruling or the
   owning spec section (check the spec, not just the concept);
 - every claim about the code in the index was opened by you;

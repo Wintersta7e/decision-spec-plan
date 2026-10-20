@@ -67,6 +67,13 @@ the first `## Task`/`## Tasks`/`## Global`/`## Interfaces`), collects every file
 shipping a File structure table and no tasks for the UI it promised** — *the table makes the gap
 invisible, because a named file reads as owned.* **Do not list a file you do not give a task.**
 
+**The table lists every file your plan creates or changes, tests included, and each row cites the
+ask (`Ask<n>`) or user ruling (`U<n>`) that wants it**; `scope_check.py <plans-dir> --asks
+<decision-index> <arbiter>` must report 0. A change you think is needed that no ask covers — a
+refactor, a rename, a version, a file on the index's Do not touch list — is not planned: name it in
+your reply, and the lead asks the user. *Unasked changes were the largest class of corrections in
+one project's review rounds, and each cost a cleanup round* (`failure-modes` F89).
+
 Shape: goal, architecture paragraph, what is actually broken (*measured*), File structure, then
 numbered tasks, each with Requirements / Interfaces / Steps / the test that proves it.
 
@@ -87,7 +94,9 @@ to keep a checker quiet is a lie about the plan set — once, the collisions it 
   can pass for the wrong reason.* Say how the executor proves the test bites — usually *revert the
   fix and watch it fail*.
 - **A gate whose passing run scans zero files is a failing gate.** Every scanning or parsing check
-  prints its count and fails at zero.
+  prints its count and fails at zero. The count is the checker's own output or an assertion: never
+  a logger, a log config or a print added to tests or product code for it — 83 such lines in 21
+  files were a reviewer's cleanup round (F89).
 - **Declare a seam and its production implementation in the same task.** Five recorded instances of
   the opposite each compiled, passed against the fake, and failed at assembly.
 - **One owner per value.** A cross-language mirror needs a test that *reads the other language's
@@ -106,7 +115,8 @@ to keep a checker quiet is a lie about the plan set — once, the collisions it 
   and no implementing task — *the structure that makes something checkable gets built, and the thing
   itself is assumed to be somebody's next step.* Your last task normally lands your section's suite
   and says which file it creates.
-- **Every task is one commit.** ‹ADAPT: the commit rules — subject length, body length, trailers.›
+- **Every task is one commit.** ‹ADAPT: the commit rules — the subject convention the repo's
+  `git log` shows (a `type:` prefix, a scope), subject length, body length, trailers.›
 - **Size.** ‹ADAPT: the project's task range per plan, or "none".› A task that cannot be described
   in a paragraph plus a test is two tasks.
 
@@ -169,8 +179,8 @@ split across a boundary its dependency row cannot express.
 
 ## Output
 
-**Your plan file and your manifest.** Run `plan_lint.py` and `scope_check.py` on your plan first;
-both must pass. Then a reply under 3 KB: 1. your plan-index row (plan, one-line contents, task count,
+**Your plan file and your manifest.** Run `plan_lint.py`, `scope_check.py` and `scope_check.py
+--asks` on your plan first; all must pass. Then a reply under 3 KB: 1. your plan-index row (plan, one-line contents, task count,
 line count); 2. your contract delta and migration contents; 3. the criteria → task → test-file
 mapping as a count plus any id you could not place; 4. what you superseded, with the task number that
 applies it; 5. any disagreement, file:line both sides; 6. what you refused to specify and who owns

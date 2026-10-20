@@ -1,6 +1,6 @@
 ---
 name: dsp-mechanical
-description: "Mechanical-tier role of the decision-spec-plan route, used only for a role the user moved to this tier at the rung announcement. Dispatched only by that skill's lead, whose prompt names the role and the brief."
+description: "Sonnet-at-medium role of the decision-spec-plan route, for a Workflow script's agent() (an Agent call sets dsp-deep's model and effort instead). Dispatched only by that skill's lead, whose prompt names the role and the brief."
 model: sonnet
 effort: medium
 tools: Read, Grep, Glob, Bash, Write, Edit, ToolSearch, Monitor, TaskStop, SendMessage, WebFetch, WebSearch, mcp__serena__find_symbol, mcp__serena__find_referencing_symbols, mcp__serena__get_symbols_overview, mcp__context7__resolve-library-id, mcp__context7__query-docs

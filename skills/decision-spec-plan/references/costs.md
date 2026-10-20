@@ -22,10 +22,15 @@ seven-sins review per push at M and L. Run set F's groups had orientation maps (
 B's 3.1M predates them — about five times run set F's median. Record each wave's figure with
 `route_state.py --budget` (`execution.md`).
 
-**Rung S**: two MR reviews cost ~8M and ~9M (B) — review only, no execution. One S round with
+**Rung S**: two MR reviews cost ~8M and ~9M (B) — review only, no execution; 15 reviews of another
+developer's MR (run set I, 2026-10-07..20) a median 4.2M (1.6–10.8M), and the five with no
+harvester 1.6–2.6M against 4.9–8.0M for the four with one (`failure-modes` F87). One S round with
 execution cost ~19M (run set D, `failure-modes` F68): lead ~15M, five agents ~4M, with the lead
 executing post-lane work itself. Announce an S build as the lead's writing plus its execution
-priced per task group from the row above. A seven-sins review with its fix round (run set G,
+priced per task group from the row above. Two S builds of one task measured in today's units (run
+set H, `failure-modes` F85): 5.7M in 1 h 45 min — lead 2.8M, the S review as an agent 0.6M, six
+task groups 2.3M (median 0.4M and 11 min each) — and 6.7M in 1 h 54 min (lead 3.8M, five groups
+at a median 0.5M). A seven-sins review with its fix round (run set G,
 measured in today's units; the lead never loaded the skill, `failure-modes` F79) cost 56.7M in ~7 h:
 lead 7.8M, seven sin reviewers 11.2M, 27 task groups 30.6M (median 1.1M, 0.2–1.9M; 78 commits),
 three integrators 3.7M, hook sessions 1.6M. Announce a review-fix round as the review, plus its

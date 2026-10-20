@@ -2,7 +2,8 @@
 """Cost of a decision-spec-plan run, read from Claude Code's session transcripts.
 
 Prints the lead's and every subagent's cost with turns and mean/max context per turn, so a gate can
-report what the round cost and which agent ran long. Units are Opus 5.5 input tokens — 1M units is
+report what the round cost and which agent ran long, and each one's model and effort (every effort
+its requests ran at, `high/xhigh` for a change mid-run), so a role's tier can be judged afterwards. Units are Opus 5.5 input tokens — 1M units is
 about $4 at API prices (read 2026-10-17): 5-minute cache write x1.25, 1-hour cache write x2, output
 x5, cache read x0.05; Sonnet 5.5 costs x0.5 of that with the same cache-read share, Haiku 5.5 x0.025
 (x0.125 for a prompt over 100k tokens) with cache reads at x0.1 of its input. Before 2026-10-17
@@ -64,6 +65,7 @@ def scan(path, since, until=None):
     units = 0.0
     contexts = []
     model = None
+    efforts = []
     first = last = None
     with open(path, encoding="utf-8", errors="replace") as fh:
         for line in fh:
@@ -83,6 +85,8 @@ def scan(path, since, until=None):
                 continue
             seen.add(key)
             model = message.get("model") or model
+            if record.get("effort") and record["effort"] not in efforts:
+                efforts.append(record["effort"])
             first = first or stamp
             last = stamp or last
             write_all = usage.get("cache_creation_input_tokens", 0) or 0
@@ -105,6 +109,8 @@ def scan(path, since, until=None):
         "units": units,
         "contexts": contexts,
         "model": model,
+        # every effort its requests ran at, in order: the lead may set it per dispatch
+        "effort": "/".join(efforts) or "-",
         "first": first,
         "last": last,
     }
@@ -271,7 +277,9 @@ def group_lines(agents, since, until=None):
 
 
 def main():
-    parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
+    parser = argparse.ArgumentParser(
+        description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter
+    )
     parser.add_argument("session", nargs="?")
     parser.add_argument("--project-dir", type=pathlib.Path)
     parser.add_argument("--since", type=timestamp)
@@ -304,10 +312,11 @@ def main():
         f"total {total / 1e6:.1f}M = lead {lead['units'] / 1e6:.1f}M + {len(agents)} agents "
         f"{agent_units / 1e6:.1f}M + {len(sdk)} hook sessions {sdk_units / 1e6:.1f}M"
     )
-    print(f"lead   {describe(lead)}")
+    print(f"lead   {describe(lead)}  effort {lead['effort']}")
     for row in sorted(agents, key=lambda a: -a["units"])[: args.top]:
         print(
-            f"agent  {describe(row)}  {str(row['model'])[:18]:18s}  {row['label'][:60]}"
+            f"agent  {describe(row)}  {str(row['model'])[:18]:18s}  {row['effort']:11s}  "
+            f"{row['label'][:60]}"
         )
     if len(agents) > args.top:
         print(f"... {len(agents) - args.top} more agents")

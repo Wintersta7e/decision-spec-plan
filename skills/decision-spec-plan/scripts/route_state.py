@@ -35,10 +35,14 @@ each new lead session; delete the marker to end the route.
 in the marker (execution.md). Registered for PreToolUse (Agent|Bash), the hook then holds the
 lead's dispatch of an `exec-` agent until the phase has a budget recorded in this session and the
 user has answered after it here, and again once the dispatches since it pass 125% of its agents or the spend since it 125% of
-its estimate (F74). Inside an `exec-` agent it tells a group past 200k tokens of context to finish
+its estimate (F74). A session whose transcript holds no prompt the user typed (headless
+`claude -p`) has no answer to wait for, so the hold lets its dispatches through: record the budget
+anyway and report it at the end. Inside an `exec-` agent it tells a group past 200k tokens of context to finish
 its task and return (F75), and holds a `git commit` while its own lane's rulings file changed after
 the agent last read it (F59). In a session with no active route it holds
-a `dsp-deep` or `dsp-mechanical` dispatch until the route is activated (F79). While a route is
+a `dsp-deep` or `dsp-mechanical` dispatch until the route is activated (F79). On a route activated
+with `--rung S` it refuses the lead's dispatch of an agent whose name or description says harvest:
+at S the lead harvests itself (F87). While a route is
 active it asks the user before the lead's `gh pr close|merge`, `gh issue close|delete`, `gh release
 create|delete|edit|upload`, `gh repo delete|archive|rename`, a `gh api` write, `--delete-branch`
 or a remote branch delete by `git push`, and refuses them inside a route agent (F81). A check
@@ -168,7 +172,9 @@ class Report:
 
 
 def parser():
-    ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
+    ap = argparse.ArgumentParser(
+        description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter
+    )
     ap.add_argument("planning_dir")
     ap.add_argument("--phase", required=True)
     ap.add_argument("--repo")
@@ -477,6 +483,16 @@ def unrouted(event, entry_path):
         return False
     marker = load_json(entry_path).get("marker")
     return not (marker and pathlib.Path(marker).exists())
+
+
+def s_harvester(event, entry):
+    """The lead dispatching a harvester on a rung-S route, where it harvests itself (F87)."""
+    if event.get("tool_name") != "Agent":
+        return False
+    dispatch = event.get("tool_input") or {}
+    text = f"{dispatch.get('name') or ''} {dispatch.get('description') or ''}"
+    rung = load_json(pathlib.Path(entry["marker"])).get("rung")
+    return rung == "S" and "harvest" in text.lower()
 
 
 def gate_dispatch(event, entry):
@@ -804,6 +820,13 @@ def hook():
                 )
             if event.get("agent_id"):
                 return agent_pre(event, session, entry)
+            if s_harvester(event, entry):
+                return deny(
+                    "rung S has no harvester: read the diff, the ticket and the code yourself "
+                    "(SKILL.md, Stage 0). At S a harvest cost 2–8× the review it fed, and the "
+                    "reviews without one needed no correction (F87). A question only an agent "
+                    "can answer means the round is not S: re-announce it at M."
+                )
             dispatch = event.get("tool_input") or {}
             if event.get("tool_name") == "Agent" and str(
                 dispatch.get("name") or ""

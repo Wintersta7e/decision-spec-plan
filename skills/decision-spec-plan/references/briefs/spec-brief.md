@@ -113,7 +113,7 @@ numbered without ids once hid 17 of 253 criteria from a count. Elsewhere you may
 (`AC-P4-45-9, -11`; `AC-P4-38-1 … -24`). Mandatory shapes:
 
 - **A gate whose passing run scans zero files is a failing gate.** Every scanning check prints its
-  count and fails at zero.
+  count and fails at zero — in the checker's own output, never a log line added to a test (F89).
 - **A test must exercise the shape the product actually has.** A bar written past its defect proves
   the wrong thing — an audit of a command's arguments passed while the user's configuration made the
   same command delete a branch.

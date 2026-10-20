@@ -77,7 +77,9 @@ def apply(text, entries):
 
 
 def main():
-    ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
+    ap = argparse.ArgumentParser(
+        description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter
+    )
     ap.add_argument("decisions_dir")
     ap.add_argument("markers_json")
     ap.add_argument("--check", action="store_true")

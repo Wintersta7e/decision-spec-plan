@@ -46,8 +46,10 @@ run `criteria_check.py` on the one spec file.)
   without it (`prompts.md` §5). Each agent gets the plan path, its task numbers, the
   previous group's checkpoint, the lane's rulings file and any archived ruling ids its tasks need,
   the brief's house rules, the
-  commit-message rules (subject length, body length, trailers — **state them; subagents default to
-  adding their own trailers**), and "commit, **overwrite** `<planning-dir>/lanes/<plan-id>-checkpoint.md`
+  commit-message rules (the subject convention the repo's `git log` shows — a `type:` prefix, a
+  scope — subject length, body length, trailers — **state them; subagents default to adding their
+  own trailers**; one route's briefs left out the repo's `type:` prefix, the lead's rewords collided
+  with the agents' own and voided a gate), and "commit, **overwrite** `<planning-dir>/lanes/<plan-id>-checkpoint.md`
   with the lane's current state — ≤15 lines: the lane's tasks done with SHAs, gate state, what the
   next group must know; then an **orientation map** for the next group's tasks — the files and
   symbols to open, with file:line, and the exact test commands that cover them; last a line
@@ -77,8 +79,8 @@ run `criteria_check.py` on the one spec file.)
   enforces the one-group limit itself, and ends its group at the first task boundary after a
   compaction or once its context passes 200k tokens (the hook tells it; F75) — a group that does
   either has outgrown its size: size the lane's next groups smaller, and when that raises the lane's
-  group count, re-record its wave's budget. Tier deep (`dsp-deep`), unless the user
-  moved lanes at the rung announcement (`prompts.md` header).
+  group count, re-record its wave's budget. `dsp-deep` with the model and effort announced for task
+  groups (`prompts.md` header).
 - **Rulings reach a running lane through its file, never by message alone.** Append each ruling,
   verbatim with its id, to `<planning-dir>/lanes/<plan-id>-rulings.md` — append-only; a correction is
   a new entry naming the one it replaces — then `SendMessage` one line naming the id **to a group
@@ -113,7 +115,10 @@ run `criteria_check.py` on the one spec file.)
 ## Merging — one integrator agent per wave
 Once every lane of a wave has reported, dispatch one fresh `dsp-deep` **wave integrator**
 (`prompts.md` §5). It merges into the main branch locally, lane by lane in the index's order:
-1. **Merge the exact SHA the lane reported**, never the branch name.
+1. **Merge the exact SHA the lane reported**, never the branch name — after
+   `scope_check.py <plans-dir> --glob '<plan-id>-*.md' --diff <wave base>..<SHA> --repo <repo>`
+   exits 0: a file outside the lane's plan stops that lane's merge and is recorded; **you** revert it
+   or ask the user (F89).
 2. Resolve conflicts; **regenerate** every derived file and count (codegen, locks) — never
    hand-merge them.
 3. **Run the full gate after every cross-lane merge**, its whole output to

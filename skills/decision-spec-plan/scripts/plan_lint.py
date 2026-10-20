@@ -50,7 +50,9 @@ def lint(text, required):
 
 
 def main():
-    ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
+    ap = argparse.ArgumentParser(
+        description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter
+    )
     ap.add_argument("plans_dir")
     ap.add_argument("--glob", default="*.md")
     ap.add_argument(

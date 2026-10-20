@@ -13,6 +13,14 @@ session pays ~0.02 s per call.
 Agent teams are required: set `CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS=1` under `env` in
 `~/.claude/settings.json`.
 
+Set an auto-compact window of about 300000 for the lead's model, e.g.
+`"modelSettings": {"claude-opus-5-5": {"autoCompactWindow": 300000}}` (or
+`CLAUDE_CODE_AUTO_COMPACT_WINDOW`): without it leads grew to ~965k context, where every turn costs
+~0.1M (SKILL.md, The route runs unattended). `dsp-deep` runs on the lead's model.
+
+Headless (`claude -p`): set `CLAUDE_CODE_PRINT_BG_WAIT_CEILING_MS=0`. Otherwise background agents
+are stopped 10 minutes after the lead's last turn, and the lead ends its turn to wait for them.
+
 Requires python3, bash, jq and git. `dsp-deep`'s memory cap uses `systemd-run --user`; without it
 the agent falls back to `timeout` + `setsid`.
 

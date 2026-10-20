@@ -24,40 +24,130 @@ file without the other's change and the integrator meets the collision — three
 edited the same four UI files, and of the seven seam defects that left, the integrator fixed four.
 Plans sharing a file go in different waves.
 
+With `--asks <decision-index> [<arbiter>]` it checks the scope fence: every file row of every File
+structure section must cite an ask (`Ask<n>`, a row of the index's asks table) or a user ruling
+(`U<n>`) that one of those files defines, and none may list a file the index's `Do not touch`
+section names. Unasked changes were the largest class of user corrections in one project's
+review-fix rounds: a version bump, files the reviewer had said to leave alone, other tickets' work.
+
+With `--diff <base>..<head>` (in `--repo`, default `.`) it lists every file the range changed that
+no plan's File structure section lists: what a task group added beyond its plan.
+
 Usage:
     scope_check.py <plans-dir> [--list] [--glob 'p4-*.md'] [--ext rs,ts,tsx,py,go,sql,...]
     scope_check.py <plans-dir> --waves <plans-dir>/p<P>-00-index.md [--glob ...]
+    scope_check.py <plans-dir> --asks <decisions-dir>/00-index.md [<decisions-dir>/00-arbiter.md]
+    scope_check.py <plans-dir> --diff <base>..<head> [--repo <repo>] [--glob ...]
 
 Exit 0 when nothing is unimplemented, 1 otherwise (a File structure section that lists no file
 counts), 2 when no plan matched or no plan has a File structure section. With `--waves`: 0 when
 no wave shares a file, 1 when one does or a plan is missing from the index's plan set, 2 when the
-index has no table with `Plan` and `Wave` columns.
+index has no table with `Plan` and `Wave` columns. With `--asks`: 0 when every row cites an ask,
+1 when one does not or lists a file not to touch, 2 when the plans list no file. With `--diff`: 0
+when every changed file is planned, 1 when one is not, 2 when the range changed nothing or git
+failed.
 """
 
 import argparse
 import pathlib
 import re
+import subprocess
 import sys
 
-DEFAULT_EXT = "rs,ts,tsx,js,jsx,mjs,cjs,css,scss,json,sql,yml,yaml,toml,py,go,java,kt,swift,c,h,cpp,hpp,cs,rb,sh,md,html"
+DEFAULT_EXT = "rs,ts,tsx,js,jsx,mjs,cjs,css,scss,json,sql,yml,yaml,toml,py,go,java,kt,swift,c,h,cpp,hpp,cs,rb,sh,md,html,xml,properties,gradle,kts"
 SECTION_RE = re.compile(
     r"^#{2,3} File structure\s*$(.*?)^#{2,3} (Task|Tasks|Global|Interfaces)",
     re.MULTILINE | re.DOTALL | re.IGNORECASE,
 )
 DIR_RE = re.compile(r"`([A-Za-z0-9_./-]*/)`")
 PLAN_ID = re.compile(r"p\d+-\d+[a-z]?(?=-|$)")
+ASK_RE = re.compile(r"\b((?:Ask|U)\d+)\b")
+# an id is defined where a line, heading or table row opens with it
+DEFINED_RE = re.compile(r"^[#>*|\s-]*\**((?:Ask|U)\d+)\b", re.MULTILINE)
+FENCE_RE = re.compile(
+    r"^#{2,4} Do not touch\s*$(.*?)(?=^#{1,4} |\Z)", re.MULTILINE | re.DOTALL
+)
 
 
-def promised(section, file_re):
-    out, cur = set(), ""
+def rows(section, file_re):
+    """(file, its line) for every file the section lists."""
+    cur = ""
     for line in section.split("\n"):
         if line.startswith("#"):
             m = DIR_RE.search(line)
             cur = m.group(1) if m else ""
             continue
         for f in file_re.findall(line):
-            out.add(f if "/" in f else cur + f)
-    return sorted(out)
+            yield (f if "/" in f else cur + f), line
+
+
+def promised(section, file_re):
+    return sorted({f for f, _ in rows(section, file_re)})
+
+
+def unasked(plans, sources, file_re):
+    """Plan rows that cite no ask the index defines, or list a file under its Do not touch."""
+    text = "\n".join(pathlib.Path(s).read_text(errors="replace") for s in sources)
+    known = set(DEFINED_RE.findall(text))
+    m = FENCE_RE.search(text)
+    fenced = set(file_re.findall(m.group(1))) if m else set()
+    print(
+        f"{len(known)} asks and user rulings defined; {len(fenced)} files not to touch"
+    )
+    print(f"{'plan':<40} {'files':>5} {'UNASKED':>7}")
+    print("-" * 54)
+    total, bad = 0, []
+    for name, text in plans.items():
+        m = SECTION_RE.search(text)
+        found = list(rows(m.group(1), file_re)) if m else []
+        total += len(found)
+        miss = [
+            (
+                f,
+                "do not touch"
+                if f in fenced or f.split("/")[-1] in fenced
+                else "no ask",
+            )
+            for f, line in found
+            if f in fenced
+            or f.split("/")[-1] in fenced
+            or not set(ASK_RE.findall(line)) & known
+        ]
+        bad += [(name, f, why) for f, why in miss]
+        print(f"{name:<40} {len(found):>5} {len(miss):>7}")
+    for name, f, why in bad:
+        print(f"   {name}  {f}  ({why})")
+    print(
+        f"\n{len(bad)} of {total} planned files cite no ask (Ask<n> or U<n>) or are not to be touched"
+    )
+    return 2 if not total else 1 if bad else 0
+
+
+def unplanned(plans, rev_range, repo, file_re):
+    """Files a commit range changed that no plan's File structure section lists."""
+    out = subprocess.run(
+        ["git", "-C", repo, "diff", "--name-only", rev_range],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    if out.returncode:
+        print(out.stderr.strip())
+        return 2
+    changed = out.stdout.split()
+    planned = set()
+    for text in plans.values():
+        m = SECTION_RE.search(text)
+        planned.update(promised(m.group(1), file_re) if m else ())
+    extra = [
+        c for c in changed if not any(c == p or c.endswith("/" + p) for p in planned)
+    ]
+    for c in extra:
+        print(f"   {c}")
+    print(
+        f"{len(extra)} of {len(changed)} changed files are in no plan's File structure"
+    )
+    return 2 if not changed else 1 if extra else 0
 
 
 def plan_table(index):
@@ -148,12 +238,17 @@ def overlaps(plans, index, file_re):
 
 
 def main():
-    ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
+    ap = argparse.ArgumentParser(
+        description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter
+    )
     ap.add_argument("plans_dir")
     ap.add_argument("--glob", default="*.md")
     ap.add_argument("--ext", default=DEFAULT_EXT)
     ap.add_argument("--list", action="store_true")
     ap.add_argument("--waves", metavar="PLAN_INDEX")
+    ap.add_argument("--asks", nargs="+", metavar="INDEX")
+    ap.add_argument("--diff", metavar="RANGE")
+    ap.add_argument("--repo", default=".")
     args = ap.parse_args()
     exts = "|".join(re.escape(e.strip()) for e in args.ext.split(",") if e.strip())
     file_re = re.compile(rf"`([A-Za-z0-9_./-]+\.(?:{exts}))`")
@@ -168,6 +263,10 @@ def main():
         return 2
     if args.waves:
         return overlaps(plans, args.waves, file_re)
+    if args.asks:
+        return unasked(plans, args.asks, file_re)
+    if args.diff:
+        return unplanned(plans, args.diff, args.repo, file_re)
 
     def elsewhere(path, owner):
         tail = path.split("/")[-1]

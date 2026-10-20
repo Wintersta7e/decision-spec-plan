@@ -352,6 +352,18 @@ dispatch() { ev PreToolUse s1 "\"tool_name\":\"Agent\",\"tool_input\":{\"name\":
 hook 'deny:phase 1 has no Stage 5 budget' "$(dispatch exec-p1-01-a t1)"
 hook silent "$(dispatch plan-p1-01 t1)"
 hook silent "$(ev PreToolUse s2 '"tool_name":"Agent","tool_input":{"name":"exec-p1-01-a"}')"
+
+# --- rung S: the lead harvests itself, so a harvester dispatch is refused (F87)
+reactivate() { CLAUDE_CODE_SESSION_ID=s1 python3 "$SCRIPTS/route_state.py" "$P" --phase 1 --repo "$R" --sections 1- --activate "$@" >/dev/null; }
+harvester() { ev PreToolUse s1 "\"tool_name\":\"Agent\",\"tool_input\":{\"subagent_type\":\"dsp-deep\",\"name\":\"$1\",\"description\":\"$2\"}"; }
+reactivate --rung S
+hook 'deny:rung S has no harvester.*re-announce it at M' "$(harvester h1 'MR Harvest h1 runtime')"
+hook 'deny:rung S has no harvester' "$(harvester harvest-code 'code facts')"
+hook silent "$(harvester s-review 'S review of the plan')"
+reactivate --rung M
+hook silent "$(harvester h1 'MR Harvest h1 runtime')"
+reactivate
+
 out=$(CLAUDE_CODE_SESSION_ID=s2 python3 "$SCRIPTS/route_state.py" --budget w1 --estimate 10 --groups 4)
 [ $? = 2 ] && ok "--budget without a registered session: exit 2" || bad "--budget unregistered: $out"
 out=$(CLAUDE_CODE_SESSION_ID=s1 python3 "$SCRIPTS/route_state.py" --budget w1 --estimate 10 --groups 4)
@@ -441,6 +453,21 @@ grep -q '^total 1.5M = lead 1.3M + 0 agents 0.0M + 1 hook sessions 0.2M' <<<"$ou
 out=$(python3 "$SCRIPTS/usage_report.py" u1 --project-dir "$U" --until "$(ts -55)" 2>&1)
 grep -q '^total 1.2M = lead 1.0M + 0 agents 0.0M + 1 hook sessions 0.2M' <<<"$out" &&
 	ok "usage_report --until" || bad "usage_report --until: $(head -2 <<<"$out")"
+# each agent's effort as its requests record it, a change mid-run included (the lead sets it per call)
+erec() { jq -nc --arg t "$(ts "$1")" --arg id "$2" --arg f "$3" \
+	'{type:"assistant",timestamp:$t,requestId:$id,message:{id:$id,model:"claude-sonnet-5-5",content:[],usage:{input_tokens:1000}}} + (if $f == "" then {} else {effort:$f} end)'; }
+erec -30 e0 xhigh >"$U/u3.jsonl"
+mkdir -p "$U/u3/subagents"
+{
+	erec -20 e1 high
+	erec -10 e2 xhigh
+	erec -5 e3 high
+} >"$U/u3/subagents/agent-ax.jsonl"
+erec -20 e4 "" >"$U/u3/subagents/agent-ay.jsonl"
+out=$(python3 "$SCRIPTS/usage_report.py" u3 --project-dir "$U" 2>&1)
+grep -q '^lead .* effort xhigh$' <<<"$out" && grep -q '^agent .*claude-sonnet-5-5 *high/xhigh  *agent-ax$' <<<"$out" &&
+	grep -q '^agent .*claude-sonnet-5-5 *-  *agent-ay$' <<<"$out" &&
+	ok "usage_report prints each agent's effort" || bad "usage_report effort: $out"
 # --groups: a task group's context at its first edit, its peak and commits, and how many commits
 # fit under the 200k stop (F60, F75); an integrator (exec-wave*) is not a task group
 grec() { jq -nc --arg t "$(ts "$1")" --arg id "$2" --argjson n "$3" --argjson c "${4:-[]}" \
@@ -504,6 +531,59 @@ code=$?
 out=$(python3 "$SCRIPTS/scope_check.py" "$W" --waves "$W/p1-00-index.md" --glob 'p1-0[134]-*.md')
 [ $? = 0 ] && grep -q '^0 files changed' <<<"$out" && ok "scope_check --waves: exit 0 with no shared file" ||
 	bad "scope_check --waves, no overlap: $out"
+
+# --- scope_check.py --asks: every planned file cites an ask or a user ruling and none is a file not
+# to touch; --diff: every file a range changed is in a plan (unasked changes, F89)
+A=$T/asks
+mkdir -p "$A/plans" "$A/repo/src/core"
+cat >"$A/00-index.md" <<'EOF'
+# Phase 1 — the decision round
+## The asks
+| Ask | Verbatim | Source |
+|---|---|---|
+| **Ask1** | "port the adapter" | review thread |
+### Do not touch
+- `pom.xml` — no version bump (the reviewer)
+## The decisions
+| **D1** | names Ask7 without defining it |
+EOF
+printf '## The user rulings\n### U2 — keep the old test\n' >"$A/00-arbiter.md"
+cat >"$A/plans/p1-01-a.md" <<'EOF'
+# p1-01-a
+## File structure
+### `src/core/`
+| File | Change | Ask |
+|---|---|---|
+| `Adapter.java` | new | Ask1 |
+| `OldTest.java` | keep | U2 |
+| `Extra.java` | refactor | — |
+| `Other.java` | tidy | Ask7 |
+| `pom.xml` | dependency | Ask1 |
+## Task 1
+EOF
+printf '# p1-02-b\n## File structure\n| `src/b.js` | new | Ask1 |\n## Task 1\n' >"$A/plans/p1-02-b.md"
+out=$(python3 "$SCRIPTS/scope_check.py" "$A/plans" --asks "$A/00-index.md" "$A/00-arbiter.md")
+code=$?
+[ $code = 1 ] && grep -q 'p1-01-a.md  src/core/Extra.java  (no ask)$' <<<"$out" &&
+	grep -q 'src/core/Other.java  (no ask)$' <<<"$out" && grep -q 'src/core/pom.xml  (do not touch)$' <<<"$out" &&
+	! grep -q 'Adapter.java\|OldTest.java\|src/b.js' <<<"$out" && grep -q '^3 of 6 planned files' <<<"$out" &&
+	ok "scope_check --asks: a row with no ask, an undefined ask and a file not to touch" ||
+	bad "scope_check --asks (exit $code): $out"
+out=$(python3 "$SCRIPTS/scope_check.py" "$A/plans" --asks "$A/00-index.md" --glob 'p1-02-*.md')
+[ $? = 0 ] && grep -q '^0 of 1 planned files' <<<"$out" && ok "scope_check --asks: exit 0 when every row cites an ask" ||
+	bad "scope_check --asks, all asked: $out"
+git init -q -b main "$A/repo"
+touch "$A/repo/src/core/Adapter.java" "$A/repo/src/core/Stray.java"
+git -C "$A/repo" "${G[@]}" commit -q --allow-empty -m base
+git -C "$A/repo" add src && git -C "$A/repo" "${G[@]}" commit -q -m lane
+out=$(python3 "$SCRIPTS/scope_check.py" "$A/plans" --diff HEAD~1..HEAD --repo "$A/repo")
+code=$?
+[ $code = 1 ] && grep -q '^   src/core/Stray.java$' <<<"$out" && ! grep -q 'Adapter' <<<"$out" &&
+	grep -q '^1 of 2 changed files' <<<"$out" && ok "scope_check --diff: a changed file no plan lists" ||
+	bad "scope_check --diff (exit $code): $out"
+out=$(python3 "$SCRIPTS/scope_check.py" "$A/plans" --diff HEAD..HEAD --repo "$A/repo")
+[ $? = 2 ] && grep -q '^0 of 0 changed files' <<<"$out" && ok "scope_check --diff: an empty range fails" ||
+	bad "scope_check --diff, empty range: $out"
 
 # --- inside an exec- agent: the context stop (F75) and a commit held for an unread ruling (F59)
 SUB=$HOME/.claude/projects/p/s1/subagents
@@ -608,6 +688,23 @@ if [ -f "$AGENTS/dsp-mechanical.md" ]; then
 else
 	echo "SKIP  no agents dir at $AGENTS — the tiers' rules were not compared"
 fi
+
+# --- a script's --help is its whole interface: shown only its docstring's first line, a lead read
+# ~20k characters of the scripts' source to learn their options (F84)
+for s in route_state.py criteria_check.py plan_lint.py scope_check.py usage_report.py apply_markers.py; do
+	last=$(python3 -c 'import ast, sys; print(ast.get_docstring(ast.parse(open(sys.argv[1]).read())).strip().splitlines()[-1].strip())' "$SCRIPTS/$s")
+	python3 "$SCRIPTS/$s" --help 2>&1 | grep -qF -- "$last" && ok "$s --help prints its whole docstring" ||
+		bad "$s --help lacks its docstring's last line: $last"
+done
+python3 "$SCRIPTS/route_state.py" --help | grep -qF 'claude -p' &&
+	ok "route_state.py --help says what the budget hold does headless" ||
+	bad "route_state.py --help does not say what the budget hold does headless"
+python3 "$SCRIPTS/criteria_check.py" --help | grep -qF '<NN>-<slug>.md' &&
+	ok "criteria_check.py --help names the file that holds a section" ||
+	bad "criteria_check.py --help does not name the file that holds a section"
+python3 "$SCRIPTS/criteria_check.py" --help | grep -qF '__tests__' &&
+	ok "criteria_check.py --help shows the --test-re default" ||
+	bad "criteria_check.py --help does not show the --test-re default"
 
 # --- SKILL.md fits what a compaction re-attaches (cut at 20,000 characters; failure-modes F61)
 n=$(python3 -c 'import sys; print(len(open(sys.argv[1], encoding="utf-8").read()))' "$SCRIPTS/../SKILL.md")

@@ -26,6 +26,9 @@ Usage:
     criteria_check.py <spec-dir> --phase P --sections 38-48 [--plans <plans-dir>] [--glob '*.md']
         [--list] [--test-re RE] [--ruling-re RE] [--emit-register]
 
+Section NN is the file `<spec-dir>/<NN>-<slug>.md` (leading zeros allowed: `07-…` is section 7).
+--test-re and --ruling-re replace the defaults their help shows.
+
 --emit-register prints the register's per-section table (count and ids as ranges) after the spec
 check, for the register folder to paste rather than re-derive.
 
@@ -248,7 +251,9 @@ def check_plans(plans, p, defined, show_all, test_re, ruling_re):
 
 
 def main():
-    ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
+    ap = argparse.ArgumentParser(
+        description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter
+    )
     ap.add_argument("spec_dir")
     ap.add_argument("--phase", type=int, required=True)
     ap.add_argument("--sections", required=True, help="e.g. 38-48 or 38,40-41")
@@ -261,12 +266,14 @@ def main():
         help="print the register's per-section table for the register folder to paste",
     )
     ap.add_argument(
-        "--test-re", default=TEST_RE, help="a backticked test path must match this"
+        "--test-re",
+        default=TEST_RE,
+        help="a backticked test path must match this (default: %(default)s)",
     )
     ap.add_argument(
         "--ruling-re",
         default=RULING_RE,
-        help="a manual cell must cite a ruling id matching this",
+        help="a manual cell must cite a ruling id matching this (default: %(default)s)",
     )
     a = ap.parse_args()
     secs = []
