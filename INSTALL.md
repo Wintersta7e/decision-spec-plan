@@ -4,6 +4,11 @@ Paths in this repository are relative to `~/.claude`:
 
     cp -r agents skills ~/.claude/
 
+**Upgrading** an existing install: the copy overwrites `agents/dsp-*.md`, so save each file's
+`tools:` line first if you edited it, and put it back after. A file this package no longer ships
+stays behind: compare `ls -R ~/.claude/skills/decision-spec-plan` with the package. Re-merge
+`settings-hooks.json` only if it changed. Then run the hook suite (last paragraph).
+
 Then merge `settings-hooks.json` into `~/.claude/settings.json`: append each entry to that event's
 existing array, never replace the array. Without these hooks the route's state hook
 (`route_state.py --hook`) and push guard (`push_guard.sh`) stay off, and SKILL.md's claims about
@@ -24,7 +29,7 @@ are stopped 10 minutes after the lead's last turn, and the lead ends its turn to
 Requires python3, bash, jq and git. `dsp-deep`'s memory cap uses `systemd-run --user`; without it
 the agent falls back to `timeout` + `setsid`.
 
-`agents/dsp-*.md` list Serena and Context7 MCP tools — edit their `tools:` line to the MCP servers
+`agents/dsp-*.md` list Context7 MCP tools — edit their `tools:` line to the MCP servers
 you have.
 
 Before editing the skill, and after: `bash ~/.claude/skills/decision-spec-plan-workspace/tools/hooks_test.sh`

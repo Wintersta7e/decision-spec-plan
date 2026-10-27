@@ -82,7 +82,10 @@ running, the file each writes, the next action) **at every dispatch and every re
 session or a compaction must lose nothing.
 **At the rung announcement run `scripts/route_state.py <planning-dir> --phase <P> --repo <repo>
 --activate --rung <S|M|L>`** — again at each new phase, in every new lead session (a `--resume`d one
-stays registered), and with `--sections <first>-` once the first section number is known. Its hook
+stays registered), and with `--sections <first>-` once the first section number is known. **Read the
+CI config before the first push**: a suite CI runs that the local full gate does not (another
+database, container tests) is named once with `--ci-harness <label>`, and each push then needs its
+log too (F90). Its hook
 then injects what changed (every expected file and how it ends, lane SHAs, gate exits) in place of a
 probe per turn — you write the next action (F57, F62); after a compaction or a resume, the whole state
 and what to re-read; after this skill changed, its changed files. Read them before the next action
@@ -132,7 +135,9 @@ data-loss or safety defect goes to the user immediately, with a proposed fix —
    (`prompts.md` §1d).
 
 **Gate**: every decision file exists; every seam blocker is ruled (at S: after the plan, §1e); the
-user's calls are answered; markers applied.
+user's calls are answered; markers applied. **At M and L, `git fetch` before Stage 2 and Stage 4**:
+a base-drift flag (the index's Base and Assumes lines, F91) means re-checking each ruling built on
+the moved ref, and telling the user the re-plan's cost before writing on the old base.
 
 ### Stage 2 — The spec round
 

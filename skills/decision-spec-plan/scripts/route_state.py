@@ -12,29 +12,36 @@ worktree left uncommitted — the check of a group's return (F80). A lane is any
 `lanes/*-checkpoint.md` but another phase's `p<Q>-…`. Every gate log's last `exit=`
 line is reported; a log without one is still running or was piped. A HANDOFF.md over 40 KB and an
 unmerged lane's checkpoint over 35 lines are flagged (F76), and its rulings file over 12 KB (F67).
+With --repo, the decision index's `> **Base**: `<ref>` at `<sha>`` and `> **Assumes**: `<ref>` at
+`<sha>`` lines are checked against the refs as of the last fetch: a base that moved, an assumed
+ref that moved or merged into the base, a ref gone (F91).
 
 Usage:
     route_state.py <planning-dir> --phase P [--repo DIR] [--main BRANCH] [--sections 38-48 | 38-]
-        [--spec-dir DIR] [--all] [--activate [--rung S|M|L]]
+        [--spec-dir DIR] [--all] [--activate [--rung S|M|L] [--ci-harness LABEL]]
     route_state.py --budget LABEL --estimate M --groups N
 
 --main defaults to the repository's default branch. --sections `38-` counts every section from
 §38 on (a phase whose last section is not known yet). --all lists every file with its size, age
 and last line. Exit 0 on a report, 2 when the planning dir does not exist.
 
---activate also writes the arguments to <git-common-dir>/dsp-route.json, which marks the repository
-as running a route (push_guard.sh then holds pushes to gated commits), and registers this session
+--activate also writes the arguments to <git-common-dir>/dsp-route-<id>.json, one per planning dir,
+which marks the repository as running that route (push_guard.sh then holds pushes to gated commits;
+two routes in one repository keep separate phases, budgets and spend, F93), and registers this session
 in ~/.claude/dsp-routes/<session-id>.json, which `route_state.py --hook` reads: after the lead's
 tool calls (PostToolUse, at most every 20 s) and on an agent's return as a prompt
 (UserPromptSubmit) it puts what changed in the report into the lead's context, with the skill's
 files changed since the session read them (F78), and after a compaction or a resume
 (SessionStart) the whole report and what to re-read. Re-run with --activate at each phase and in
-each new lead session; delete the marker to end the route.
+each new lead session; delete the marker to end the route. `--ci-harness <label>` names a suite CI
+runs that the local full gate does not; push_guard.sh then also wants, per pushed commit, a gate
+log whose first 20 lines hold `harness=<label>` (F90).
 
 --budget records a Stage 5 wave's estimate in M units (costs.md) and the `exec-` agents it covers
 in the marker (execution.md). Registered for PreToolUse (Agent|Bash), the hook then holds the
 lead's dispatch of an `exec-` agent until the phase has a budget recorded in this session and the
-user has answered after it here, and again once the dispatches since it pass 125% of its agents or the spend since it 125% of
+user has answered after it here — or answered an AskUserQuestion earlier in the turn that records
+it, so ask, then record, and the one answer is enough (F93) — and again once the dispatches since it pass 125% of its agents or the spend since it 125% of
 its estimate (F74). A session whose transcript holds no prompt the user typed (headless
 `claude -p`) has no answer to wait for, so the hold lets its dispatches through: record the budget
 anyway and report it at the end. Inside an `exec-` agent it tells a group past 200k tokens of context to finish
@@ -57,6 +64,7 @@ matcher `compact|resume`, PostToolUse matcher `*`, UserPromptSubmit, PreToolUse 
 import argparse
 import contextlib
 import datetime
+import hashlib
 import io
 import json
 import os
@@ -113,6 +121,11 @@ FINAL_SHA = re.compile(
 MERGED = re.compile(
     r"^\W*Merged\s+(\S+?)\W+([0-9a-f]{7,40})\W+(?:→|->)\W*([0-9a-f]{7,40})\b",
     re.MULTILINE,
+)
+# The decision index's header: `> **Base**: `main` at `<sha>`` and one `> **Assumes**: `<ref>` at
+# `<sha>`` per unmerged branch the round builds on (templates.md §1).
+BASE = re.compile(
+    r"^>?\s*\*\*(Base|Assumes)\*\*:\s*`([^`]+)`\s+at\s+`([0-9a-f]{7,40})`", re.MULTILINE
 )
 
 
@@ -195,6 +208,13 @@ def parser():
         "pre-push review's verdict",
     )
     ap.add_argument(
+        "--ci-harness",
+        metavar="LABEL",
+        help="with --activate: a suite CI runs that the local full gate does not (another "
+        "database, container tests); push_guard.sh then also requires a gate log with "
+        "`harness=<LABEL>` for each pushed commit. Kept across re-activations; `none` clears it",
+    )
+    ap.add_argument(
         "--activate",
         action="store_true",
         help=f"also write these arguments to <git-common-dir>/{MARKER} and register this session",
@@ -202,11 +222,21 @@ def parser():
     return ap
 
 
-def marker_path(directory):
+def marker_path(directory, planning=None):
+    """The route's marker, one per planning dir (`planning`), else the old one per repository.
+
+    Why: two routes in one repository shared one marker, so the second's --activate replaced the
+    first's phase and budgets and the hold counted both routes' spend: three false holds in one
+    lane (F93)."""
     rc, common = git(
         directory, "rev-parse", "--path-format=absolute", "--git-common-dir"
     )
-    return pathlib.Path(common) / MARKER if rc == 0 and common else None
+    if rc != 0 or not common:
+        return None
+    if planning is None:
+        return pathlib.Path(common) / MARKER
+    slug = hashlib.sha1(planning.encode()).hexdigest()[:10]
+    return pathlib.Path(common) / f"dsp-route-{slug}.json"
 
 
 def default_branch(repo):
@@ -245,12 +275,19 @@ def load_json(path):
 
 def activate(a, main):
     """Record this round's arguments where the hooks and push_guard.sh find them."""
-    path = marker_path(pathlib.Path(a.repo or a.planning_dir).resolve())
+    # Absolute paths, so the hook resolves them from any working directory.
+    planning = str(pathlib.Path(a.planning_dir).resolve())
+    repo = pathlib.Path(a.repo or a.planning_dir).resolve()
+    path = marker_path(repo, planning)
     if path is None:
         print(f"--activate: {a.repo or a.planning_dir} is not inside a git repository")
         return 2
-    # Absolute paths, so the hook resolves them from any working directory.
-    planning = str(pathlib.Path(a.planning_dir).resolve())
+    # A route activated before markers were per planning dir moves to its own.
+    legacy = marker_path(repo)
+    old = load_json(path)
+    if not old and load_json(legacy).get("planning_dir") == planning:
+        old = load_json(legacy)
+        legacy.unlink()
     args = [planning, "--phase", a.phase, "--main", main]
     if a.repo:
         args += ["--repo", str(pathlib.Path(a.repo).resolve())]
@@ -261,11 +298,20 @@ def activate(a, main):
     marker = {"args": args, "planning_dir": planning, "activated": time.time()}
     if a.rung:
         marker["rung"] = a.rung
-    # A re-activation keeps the waves' recorded budgets (--budget).
-    if budgets := load_json(path).get("budgets"):
+    # A re-activation keeps the waves' recorded budgets (--budget) and the CI harness, a fact
+    # about the repository's CI rather than the round.
+    if budgets := old.get("budgets"):
         marker["budgets"] = budgets
+    harness = a.ci_harness or old.get("ci_harness")
+    if harness and harness != "none":
+        marker["ci_harness"] = harness
     path.write_text(json.dumps(marker) + "\n")
     print(f"route active: {path}")
+    if "ci_harness" in marker:
+        print(
+            f"CI harness {harness}: push_guard.sh also holds every push until a gate log with "
+            f"`harness={harness}` passed on that commit (`--ci-harness none` clears it)"
+        )
     if a.rung in ("M", "L"):
         print(
             f"rung {a.rung}: push_guard.sh also holds every push until a pre-push review's "
@@ -339,18 +385,50 @@ def budget(argv):
         "at": now(),
         "session": session,
     }
+    if answered := answered_this_turn(session):
+        record["answered"] = answered
     marker.setdefault("budgets", []).append(record)
     path.write_text(json.dumps(marker) + "\n")
     print(
         f"budget recorded: {a.budget} — {a.estimate:g}M, {a.groups} exec- agents, phase "
         f"{phase}, at {record['at']}"
     )
-    print(
-        "Tell the user this figure and wait for their answer: the hook holds every exec- "
-        f"dispatch until they answer, and again past {a.estimate * SLACK:.3g}M spent or "
-        f"{int(a.groups * SLACK)} exec- dispatches from now."
+    then = (
+        f"again past {a.estimate * SLACK:.3g}M spent or {int(a.groups * SLACK)} exec- "
+        "dispatches from now."
     )
+    if answered:
+        print(
+            f"The user answered your question at {answered}, earlier in this turn: that answer "
+            f"stands for this figure, so the hook lets exec- dispatches through, and holds them "
+            + then
+        )
+    else:
+        print(
+            "Tell the user this figure and wait for their answer: the hook holds every exec- "
+            "dispatch until they answer, and " + then
+        )
     return 0
+
+
+def answered_this_turn(session):
+    """When the user answered an AskUserQuestion in the lead's current turn, else None.
+
+    Why: a lead that asked "raise the budget to 45M?" and recorded it after the answer was held
+    for a second answer, and that question sat 1 h 52 min while finished groups waited (F93)."""
+    answered = None
+    for path in PROJECTS.glob(f"*/{session}.jsonl"):
+        for r in read_records(path):
+            message = r.get("message")
+            if r.get("type") == "assistant" and isinstance(message, dict):
+                if message.get("stop_reason") == "end_turn":
+                    answered = None
+            elif (
+                isinstance(r.get("toolUseResult"), dict)
+                and "answers" in r["toolUseResult"]
+            ):
+                answered = r.get("timestamp")
+    return answered
 
 
 def now():
@@ -530,7 +608,7 @@ def gate_dispatch(event, entry):
             f"from this session with {record}, tell the user the figure and wait for their "
             "answer (F74)."
         )
-    if not answered:
+    if not (answered or b.get("answered")):
         return deny(
             f"{head}: the user has not answered since it was recorded. Tell them the "
             "figure and wait for their answer before dispatching."
@@ -939,7 +1017,7 @@ def gate_logs(lanes):
     """(log, the commit and dirty count of its first `sha=` line within 20 lines, its last `exit=`
     or None) for each gate log — the line push_guard.sh reads."""
     out = []
-    for log in sorted(lanes.glob("*-gate.log")):
+    for log in sorted(lanes.glob("*-gate*.log")):
         text = log.read_text(errors="replace")
         first = next((ln for ln in text.splitlines()[:20] if ln.startswith("sha=")), "")
         head = re.fullmatch(r"sha=([0-9a-f]{40}) dirty=(\d+)\s*", first)
@@ -975,6 +1053,37 @@ def lane_check(repo, main, full, gates, worktree):
         if changed:
             parts.append(f"{len(changed.splitlines())} uncommitted in its worktree")
     return " · ".join(parts)
+
+
+def base_drift(repo, text):
+    """What moved under the round since its decision index recorded the base and the unmerged
+    refs it assumes, as of the last fetch: a round planned on them is planned on a past (F91)."""
+    rows = BASE.findall(text)
+    base_ref = next((ref for kind, ref, _ in rows if kind == "Base"), None)
+    out = []
+    for kind, ref, sha in rows:
+        rc, head = git(repo, "rev-parse", "--verify", "--quiet", f"{ref}^{{commit}}")
+        if rc:
+            out.append(
+                f"{kind.lower() + ' ref gone':<34} {ref} (recorded at {sha[:9]})"
+            )
+            continue
+        if head.startswith(sha):
+            continue
+        if kind == "Base":
+            rc, n = git(repo, "rev-list", "--count", f"{sha}..{head}")
+            out.append(
+                f"{'base moved':<34} {ref} {n if rc == 0 else '?'} commits past {sha[:9]}"
+            )
+            continue
+        landed = base_ref and (
+            git(repo, "merge-base", "--is-ancestor", head, base_ref)[0] == 0
+        )
+        out.append(
+            f"{'assumed ref moved':<34} {ref} {sha[:9]} → {head[:9]}"
+            + (f", merged into {base_ref}" if landed else "")
+        )
+    return out
 
 
 def report(a, fresh=True, extra=()):
@@ -1034,6 +1143,9 @@ def report(a, fresh=True, extra=()):
         + (f"; pending {pending(waiting)}" if waiting else "")
         + f") · markers {markers}, header in {headers}/{len(have)} · {present}"
     )
+    if a.repo and index.exists():
+        for line in base_drift(a.repo, index.read_text(errors="replace")):
+            rep.flag(line)
 
     if a.sections:
         lo, sep, hi = a.sections.partition("-")

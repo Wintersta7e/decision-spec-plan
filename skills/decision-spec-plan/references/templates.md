@@ -45,6 +45,9 @@ Before writing the first number, **look at what the previous phase used** and fo
 # Phase <P> — the decision round
 > **Status**: <drafted | dispatched <date> | arbitrated>. **Route**: decisions → spec → plans.
 > **Reading order**: brief → this file → harvests → your sources.
+> **Base**: `<main branch>` at `<sha>`
+> **Assumes**: `<remote>/<unmerged branch>` at `<sha>` — <what the round takes from it> (one line each;
+> `route_state.py` flags any that moved or merged after a `git fetch`, F91)
 
 <charter paragraph; what joins the phase from earlier deferrals>
 

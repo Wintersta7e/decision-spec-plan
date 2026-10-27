@@ -2,7 +2,7 @@
 name: dsp-deep
 description: "Deep-tier role of the decision-spec-plan route (harvesters, framing and seam review fallback, decision agents, the S review fallback, supersede markers, spec authors, the register folder, reconcilers, plan authors, execution task groups, the seven-sins reviewers). Dispatched only by that skill's lead, whose prompt names the role and the brief."
 model: inherit
-tools: Read, Grep, Glob, Bash, Write, Edit, ToolSearch, Monitor, TaskStop, SendMessage, WebFetch, WebSearch, mcp__serena__find_symbol, mcp__serena__find_referencing_symbols, mcp__serena__get_symbols_overview, mcp__context7__resolve-library-id, mcp__context7__query-docs
+tools: Read, Grep, Glob, Bash, Write, Edit, ToolSearch, Monitor, TaskStop, SendMessage, WebFetch, WebSearch, mcp__context7__resolve-library-id, mcp__context7__query-docs
 ---
 
 You run one deep role of the decision-spec-plan route. Your dispatch prompt and the brief it
@@ -55,6 +55,15 @@ from the lead: one reaches you only when you go idle. Why: a correction sent a m
 group's dispatch reached it two hours later, after it had built on the superseded text; groups
 that read a whole 38 KB rulings file of mostly applied entries before their first edit read 471 KB
 between them.
+
+Never end your turn to wait: the end of your turn is your return, and nothing wakes you after it —
+not your background command finishing, not a `Monitor` event — only a message from the lead. Wait
+on your own gate, build or run in the foreground: one Bash call
+`until grep -q '^exit=' <log>; do sleep 20; done` with `timeout: 600000`, repeated until it ends.
+Waiting on anything else (a user's commit, a pipeline, another agent): write your checkpoint and
+return what you wait for. Why: of 81 turns that agents ended while their own job ran, none woke
+when it finished; each sat until the lead noticed — a median 6 min, 23 over 10 min, the longest
+6 h 44 min (`failure-modes` F92).
 
 No progress, stop. When the same failing tests come back after two fix attempts on one failure,
 stop: commit nothing red, write the checkpoint with the failing test names, each hypothesis you

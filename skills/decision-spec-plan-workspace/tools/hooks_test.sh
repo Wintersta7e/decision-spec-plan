@@ -43,6 +43,9 @@ guard() { # expected-exit cwd command
 
 LAST=""
 RS=$SCRIPTS/route_state.py
+MK() { # repo [planning-dir, default <repo>/.plan] — that route's marker
+	echo "$1/.git/dsp-route-$(realpath "${2:-$1/.plan}" | tr -d '\n' | sha1sum | cut -c1-10).json"
+}
 hook() { # expect(silent | report | delta | /regex/ | deny:regex | ask:regex) json
 	local out want=$1
 	out=$(echo "$2" | python3 "$RS" --hook 2>&1)
@@ -77,12 +80,12 @@ hook silent "$(route_agent s1 general-purpose)"
 hook silent "$(ev PreToolUse s1 '"agent_id":"a1","tool_name":"Agent","tool_input":{"subagent_type":"dsp-deep"}')"
 
 out=$(cd "$R" && env -u CLAUDE_CODE_SESSION_ID python3 "$SCRIPTS/route_state.py" "$P" --phase 1 --repo "$R" --activate)
-[ $? = 1 ] && [ -f "$R/.git/dsp-route.json" ] && grep -q "CLAUDE_CODE_SESSION_ID is unset" <<<"$out" &&
+[ $? = 1 ] && [ -f "$(MK "$R")" ] && grep -q "CLAUDE_CODE_SESSION_ID is unset" <<<"$out" &&
 	ok "activate without a session id: marker written, exit 1, says so" || bad "activate without a session id: $out"
 hook silent "$(ev PostToolUse s1 '"tool_name":"Read"')"
 
 out=$(CLAUDE_CODE_SESSION_ID=s1 python3 "$SCRIPTS/route_state.py" "$P" --phase 1 --repo "$R" --sections 1- --activate)
-[ -f "$HOME/.claude/dsp-routes/s1.json" ] && grep -q '"--main", "main"' "$R/.git/dsp-route.json" &&
+[ -f "$HOME/.claude/dsp-routes/s1.json" ] && grep -q '"--main", "main"' "$(MK "$R")" &&
 	ok "activate registered s1, --main resolved to main" || bad "activate s1: $out"
 hook silent "$(route_agent s1 dsp-deep)"
 hook 'deny:no active decision-spec-plan route' "$(route_agent s2 dsp-deep)" # another session
@@ -132,6 +135,29 @@ guard 2 "$R" "git push origin main feature"
 guard 2 "$T/wt" "git push origin feature"
 guard 2 "$R" "git push origin main && git -C $T/wt push origin feature"
 guard 0 "$R" "git push origin main; git push origin HEAD:main"
+# a tag the same command creates before pushing it: its target is what goes out
+guard 0 "$R" "git tag v9 $MAIN && git push origin v9 2>&1 | tail -2"
+guard 0 "$R" "git tag -a v9 -m \"Release 9\" main && git push origin v9"
+guard 0 "$R" "git tag v9; git push origin v9"
+guard 2 "$R" "git tag v9 feature && git push origin v9"
+guard 2 "$R" "git tag -d v9 && git push origin v9"
+guard 2 "$R" "git tag v8 main && git push origin v9"
+guard 2 "$R" "git tag --merged=main v9 main && git push origin v9"
+guard 2 "$R" "git tag v9 feature && git tag v9 main; git push origin v9"
+guard 2 "$R" "git tag feature main && git push origin feature"
+guard 0 "$R" "git tag -l 'v*' && git push origin main"
+# any other `git tag` holds: moving, deleting or re-making a tag, clustered flags, git options
+git -C "$R" tag v7 "$MAIN"
+guard 2 "$R" "git tag -f v7 feature && git push origin v7"
+guard 2 "$R" "git tag -af v7 -m x feature && git push origin v7"
+guard 2 "$R" "git tag -d v7 && git tag v7 feature && git push origin v7"
+guard 2 "$R" "git -C $R tag -f v7 feature && git push origin v7"
+guard 2 "$R" "git tag v7 main; git push origin refs/tags/v7"
+git -C "$R" tag -d v7 >/dev/null
+# a ref moved earlier in the command is not the one read now
+guard 2 "$R" "git commit -qam x && git push origin main"
+guard 2 "$R" "git checkout -q main; git push origin HEAD:main"
+guard 2 "$R" "git -C $R merge -q feature && git push origin main"
 # what a push sends must be readable from the command: no refspec (push.default, push refspecs,
 # mirror and pushRemote config decide), git options before push, or GIT_* variables — held
 guard 2 "$R" "git push"
@@ -162,10 +188,14 @@ guard 2 "$T/wt" "git push origin feature"
 } >"$P/lanes/late-gate.log"
 guard 0 "$T/wt" "git push origin feature"
 rm "$P/lanes/late-gate.log"
+# a rerun's log named after the first one (`-gate2.log`) counts: one green on the pushed commit was held
+printf 'sha=%s dirty=0\nok\nexit=0\n' "$FEAT" >"$P/lanes/p1-01-a-gate2.log"
+guard 0 "$T/wt" "git push origin feature"
+rm "$P/lanes/p1-01-a-gate2.log"
 
 # --- rung M: a gated push also needs a pre-push review's verdict (failure-modes F70)
 out=$(CLAUDE_CODE_SESSION_ID=s1 python3 "$SCRIPTS/route_state.py" "$P" --phase 1 --repo "$R" --sections 1- --activate --rung M)
-grep -q '"rung": "M"' "$R/.git/dsp-route.json" && grep -q "rung M: push_guard.sh" <<<"$out" &&
+grep -q '"rung": "M"' "$(MK "$R")" && grep -q "rung M: push_guard.sh" <<<"$out" &&
 	ok "activate --rung M: rung in the marker, announced" || bad "activate --rung M: $out"
 mkdir -p "$P/reviews"
 verdict() { printf '# pre-push review\n%s\n' "$@" >"$P/reviews/w2-verdict.md"; }
@@ -209,10 +239,33 @@ CLAUDE_CODE_SESSION_ID=s1 python3 "$SCRIPTS/route_state.py" "$P" --phase 1 --rep
 guard 0 "$R" "git push origin main"
 CLAUDE_CODE_SESSION_ID=s1 python3 "$SCRIPTS/route_state.py" "$P" --phase 1 --repo "$R" --sections 1- --activate >/dev/null
 guard 0 "$R" "git push origin main"
-grep -q rung "$R/.git/dsp-route.json" && bad "a marker without --rung keeps a rung" || ok "a marker without --rung has none"
+grep -q rung "$(MK "$R")" && bad "a marker without --rung keeps a rung" || ok "a marker without --rung has none"
 git -C "$R" update-ref -d refs/heads/rel
 git -C "$R" update-ref -d refs/heads/ung
 rm -r "$P/reviews" "$P/lanes/rel-gate.log"
+
+# --- a suite CI runs that the local gate does not: a gated push also needs that harness's log (F90)
+activate_ci() { CLAUDE_CODE_SESSION_ID=s1 python3 "$SCRIPTS/route_state.py" "$P" --phase 1 --repo "$R" --sections 1- --activate "$@"; }
+out=$(activate_ci --ci-harness it-3db)
+grep -q '"ci_harness": "it-3db"' "$(MK "$R")" && grep -q 'CI harness it-3db: push_guard.sh' <<<"$out" &&
+	ok "activate --ci-harness: in the marker, announced" || bad "activate --ci-harness: $out"
+out=$(jq -n --arg c "git push origin main" --arg d "$R" '{tool_input: {command: $c}, cwd: $d}' | bash "$SCRIPTS/push_guard.sh" 2>&1)
+[ $? = 2 ] && grep -q '^  not passed by the CI harness: main = ' <<<"$out" && grep -q 'echo "harness=it-3db"' <<<"$out" &&
+	ok "guard: a commit gated locally only is held, with the harness log's command" || bad "guard, CI harness: $out"
+printf 'sha=%s dirty=0\nharness=it-3db\nok\nexit=1\n' "$MAIN" >"$P/lanes/ci-it-3db-gate.log"
+guard 2 "$R" "git push origin main"
+printf 'sha=%s dirty=0\nharness=other\nok\nexit=0\n' "$MAIN" >"$P/lanes/ci-it-3db-gate.log"
+guard 2 "$R" "git push origin main"
+printf 'sha=%s dirty=0\nharness=it-3db\nok\nexit=0\n' "$MAIN" >"$P/lanes/ci-it-3db-gate.log"
+guard 0 "$R" "git push origin main"
+activate_ci >/dev/null
+grep -q '"ci_harness": "it-3db"' "$(MK "$R")" && ok "a re-activation keeps the CI harness" ||
+	bad "a re-activation dropped the CI harness"
+rm "$P/lanes/ci-it-3db-gate.log"
+guard 2 "$R" "git push origin main"
+activate_ci --ci-harness none >/dev/null
+guard 0 "$R" "git push origin main"
+grep -q ci_harness "$(MK "$R")" && bad "--ci-harness none kept the harness" || ok "--ci-harness none clears it"
 
 # --- the state hook: who it speaks to
 hook report "$(ev PostToolUse s1 '"tool_name":"Agent"')"
@@ -324,9 +377,9 @@ mkdir -p "$M/.plan"
 cp "$HOME/.claude/dsp-routes/s1.json" "$HOME/.claude/dsp-routes/s9.json"
 mkdir -p "$HOME/.claude/projects/p"
 touch -d '5 minutes ago' "$HOME/.claude/projects/p/s9.jsonl"
-touch -d '3 days ago' "$R/.git/dsp-route.json"
+touch -d '3 days ago' "$(MK "$R")"
 out=$(CLAUDE_CODE_SESSION_ID=s3 python3 "$SCRIPTS/route_state.py" "$M/.plan" --phase 1 --repo "$M" --activate)
-grep -q '"--main", "master"' "$M/.git/dsp-route.json" && ok "--main defaults to master" || bad "--main default: $(cat "$M/.git/dsp-route.json")"
+grep -q '"--main", "master"' "$(MK "$M")" && ok "--main defaults to master" || bad "--main default: $(cat "$(MK "$M")")"
 [ "$(grep -c "other route on this account: $P (lead last active 5m ago)" <<<"$out")" = 1 ] &&
 	ok "activate lists the other route once, active as of its lead's transcript" || bad "other routes: $out"
 out=$(python3 "$SCRIPTS/route_state.py" "$M/.plan" --phase 1 --repo "$M" --main main)
@@ -339,6 +392,27 @@ grep -q "spec       2 sections from §1" <<<"$(python3 "$SCRIPTS/route_state.py"
 	ok "--sections 1- counts every section from §1" || bad "open sections"
 grep -q "spec       2/3 sections (pending §3)" <<<"$(python3 "$SCRIPTS/route_state.py" "$P" --phase 1 --sections 1-3)" &&
 	ok "--sections 1-3 lists the pending one" || bad "closed sections"
+
+# --- base drift: the base or an assumed branch moved since the decision index recorded them (F91)
+B=$T/base
+git init -q -b main "$B"
+git -C "$B" "${G[@]}" commit -q --allow-empty -m base
+git -C "$B" branch api
+B0=$(git -C "$B" rev-parse main)
+mkdir -p "$B/.plan/decisions/phase1"
+printf '# Phase 1\n> **Base**: `main` at `%s`\n> **Assumes**: `api` at `%s` — its new endpoints\n> **Assumes**: `gone` at `%s`\n' \
+	"$B0" "${B0:0:12}" "$B0" >"$B/.plan/decisions/phase1/00-index.md"
+out=$(python3 "$SCRIPTS/route_state.py" "$B/.plan" --phase 1 --repo "$B")
+! grep -q 'base moved\|assumed ref moved' <<<"$out" && grep -q "assumes ref gone *gone (recorded at ${B0:0:9})" <<<"$out" &&
+	ok "base drift: nothing moved, one assumed ref gone" || bad "base drift, unmoved: $out"
+git -C "$B" checkout -q api
+git -C "$B" "${G[@]}" commit -q --allow-empty -m endpoint
+git -C "$B" checkout -q main
+git -C "$B" "${G[@]}" merge -q --no-ff -m merge api
+out=$(python3 "$SCRIPTS/route_state.py" "$B/.plan" --phase 1 --repo "$B")
+grep -q "base moved *main 2 commits past ${B0:0:9}" <<<"$out" &&
+	grep -q "assumed ref moved *api ${B0:0:9} → [0-9a-f]\{9\}, merged into main" <<<"$out" &&
+	ok "base drift: the base moved and an assumed branch merged into it" || bad "base drift, moved: $out"
 
 # --- Stage 5 budget: the lead's exec- dispatches wait for a recorded, answered budget (F74)
 ts() { python3 -c 'import datetime as d, sys; print((d.datetime.now(d.UTC) + d.timedelta(seconds=int(sys.argv[1]))).isoformat(timespec="milliseconds").replace("+00:00", "Z"))' "$1"; }
@@ -367,7 +441,7 @@ reactivate
 out=$(CLAUDE_CODE_SESSION_ID=s2 python3 "$SCRIPTS/route_state.py" --budget w1 --estimate 10 --groups 4)
 [ $? = 2 ] && ok "--budget without a registered session: exit 2" || bad "--budget unregistered: $out"
 out=$(CLAUDE_CODE_SESSION_ID=s1 python3 "$SCRIPTS/route_state.py" --budget w1 --estimate 10 --groups 4)
-[ $? = 0 ] && jq -e '.budgets[-1] | .label == "w1" and .groups == 4 and .phase == "1"' "$R/.git/dsp-route.json" >/dev/null &&
+[ $? = 0 ] && jq -e '.budgets[-1] | .label == "w1" and .groups == 4 and .phase == "1"' "$(MK "$R")" >/dev/null &&
 	grep -q "past 12.5M spent or 5 exec- dispatches" <<<"$out" && ok "--budget records the wave in the marker" || bad "--budget: $out"
 hook 'deny:has not answered' "$(dispatch exec-p1-01-a t1)"
 peer 1 >>"$LEAD"
@@ -377,7 +451,7 @@ hook 'deny:has not answered' "$(dispatch exec-p1-01-a t1)"
 human 1 >>"$LEAD"
 hook '/^ETA exec-p1-01-a: none yet — no task group of this route has finished/' "$(dispatch exec-p1-01-a t1)"
 CLAUDE_CODE_SESSION_ID=s1 python3 "$SCRIPTS/route_state.py" "$P" --phase 1 --repo "$R" --sections 1- --activate >/dev/null
-jq -e '.budgets | length == 1' "$R/.git/dsp-route.json" >/dev/null && ok "a re-activation keeps the budgets" || bad "re-activation dropped the budgets"
+jq -e '.budgets | length == 1' "$(MK "$R")" >/dev/null && ok "a re-activation keeps the budgets" || bad "re-activation dropped the budgets"
 unthrottle
 hook '/budget     w1 · 10M · 4 exec- agents/' "$(ev PostToolUse s1 '"tool_name":"Agent"')"
 for i in 1 2 3 4; do sent 2 "t$i" "exec-p1-0$i-a" >>"$LEAD"; done
@@ -399,6 +473,24 @@ hook 'deny:recorded in another lead session' "$(dispatch exec-p1-07-a t7)"
 CLAUDE_CODE_SESSION_ID=s1 python3 "$SCRIPTS/route_state.py" --budget w3 --estimate 50 --groups 9 >/dev/null
 human 3 >>"$LEAD"
 hook '/^ETA exec-p1-07-a/' "$(dispatch exec-p1-07-a t7)"
+# asked first, recorded after the answer in the same turn: that one answer is enough (F93); a
+# prompt that opened the turn, or an answer in an earlier turn, is not
+endturn() { jq -nc --arg t "$(ts "$1")" '{type:"assistant",timestamp:$t,message:{id:"e",stop_reason:"end_turn",content:[{type:"text",text:"ok"}]}}'; }
+auq() { jq -nc --arg t "$(ts "$1")" '{type:"user",timestamp:$t,toolUseResult:{answers:{"Raise the budget?":"Raise"}},message:{role:"user",content:[{type:"tool_result",tool_use_id:"q",content:"answered"}]}}'; }
+sleep 4 # past the answers stamped up to 3 s ahead above
+endturn -2 >>"$LEAD"
+human -1 >>"$LEAD"
+CLAUDE_CODE_SESSION_ID=s1 python3 "$SCRIPTS/route_state.py" --budget w4 --estimate 50 --groups 9 >/dev/null
+hook 'deny:has not answered' "$(dispatch exec-p1-07-a t7)"
+auq -1 >>"$LEAD"
+out=$(CLAUDE_CODE_SESSION_ID=s1 python3 "$SCRIPTS/route_state.py" --budget w5 --estimate 50 --groups 9)
+grep -q "answered your question at .*earlier in this turn" <<<"$out" && ok "--budget after an answer in the turn says so" ||
+	bad "--budget after an answer: $out"
+hook '/^ETA exec-p1-07-a/' "$(dispatch exec-p1-07-a t7)"
+endturn 0 >>"$LEAD"
+CLAUDE_CODE_SESSION_ID=s1 python3 "$SCRIPTS/route_state.py" --budget w6 --estimate 50 --groups 9 >/dev/null
+hook 'deny:has not answered' "$(dispatch exec-p1-07-a t7)"
+human 3 >>"$LEAD"
 # an allowed dispatch's ETA: the median minutes of the route's finished agents of its kind, its
 # lane's first (one route ran 3 h with no ETA in any report, until the user paused it, F83)
 EA=$HOME/.claude/projects/p/s1/subagents
@@ -420,6 +512,34 @@ hook '/^ETA exec-p1-08-d: about 20 min, the median of lane p1-08.s 2 finished ta
 hook '/^ETA exec-p1-10-a: about 30 min, the median of the route.s 3 finished task groups\. Tell the user/' \
 	"$(dispatch exec-p1-10-a t9)"
 hook '/^ETA exec-wave2: about 120 min, the median of the route.s 1 finished integrator\./' "$(dispatch exec-wave2 t10)"
+
+# --- two routes in one repository: each keeps its own phase, budgets, spend and push checks (F93)
+P2=$R/.plan2
+mkdir -p "$P2/lanes"
+CLAUDE_CODE_SESSION_ID=s5 python3 "$RS" "$P2" --phase 4 --repo "$R" --activate --rung M >/dev/null
+jq -e '.args[2] == "1" and (.budgets | length) == 7' "$(MK "$R")" >/dev/null && jq -e '.args[2] == "4"' "$(MK "$R" "$P2")" >/dev/null &&
+	ok "a second route in the repository leaves the first's phase and budgets" || bad "second route: $(cat "$(MK "$R")")"
+L5=$HOME/.claude/projects/p/s5.jsonl
+CLAUDE_CODE_SESSION_ID=s5 python3 "$RS" --budget w9 --estimate 1 --groups 9 >/dev/null
+human 1 >"$L5"
+used 2 u9 5000000 >>"$HOME/.claude/projects/p/s9.jsonl" # 5M by the first route's other lead
+hook '/^ETA exec-p4-01-a/' "$(ev PreToolUse s5 "\"tool_name\":\"Agent\",\"tool_input\":{\"name\":\"exec-p4-01-a\"},\"tool_use_id\":\"v1\",\"transcript_path\":\"$L5\"")"
+# the pushing session's own route decides; with no session, the newest route
+gs() { jq -n --arg c "$2" --arg d "$R" --arg s "$1" '{tool_input: {command: $c}, cwd: $d, session_id: $s}' | bash "$SCRIPTS/push_guard.sh" >/dev/null 2>&1; }
+printf 'sha=%s dirty=0\nok\nexit=0\n' "$(git -C "$R" rev-parse main)" >"$P/lanes/two-gate.log"
+gs s1 "git push origin main" && ok "guard: s1's route has main's gate log" || bad "guard: s1's own route"
+gs s5 "git push origin main" && bad "guard: s5's route has no gate log, yet passed" || ok "guard: s5's route holds main"
+gs "" "git push origin main" && bad "guard: no session took the older route" || ok "guard: no session, the newest route holds main"
+rm "$(MK "$R" "$P2")" "$HOME/.claude/dsp-routes/s5.json" "$P/lanes/two-gate.log"
+# a route activated under the one-per-repository marker moves to its own, budgets and all
+X=$T/xrepo
+git init -q -b main "$X"
+mkdir -p "$X/.plan"
+echo "{\"planning_dir\": \"$(realpath "$X/.plan")\", \"budgets\": [{\"label\": \"old\"}]}" >"$X/.git/dsp-route.json"
+CLAUDE_CODE_SESSION_ID=s6 python3 "$RS" "$X/.plan" --phase 1 --repo "$X" --activate >/dev/null
+[ ! -e "$X/.git/dsp-route.json" ] && jq -e '.budgets[0].label == "old"' "$(MK "$X")" >/dev/null &&
+	ok "a legacy marker moves to the route's own, budgets kept" || bad "legacy marker: $(ls "$X/.git")"
+rm "$HOME/.claude/dsp-routes/s6.json"
 
 # --- usage_report.py: without --since, and a --since in another zone than the transcripts' UTC
 UR=(python3 "$SCRIPTS/usage_report.py" s1 --project-dir "$HOME/.claude/projects/p")
@@ -672,10 +792,11 @@ unthrottle
 hook silent "$(ev PostToolUse s1 '"tool_name":"Read"')" # told once
 RS=$SCRIPTS/route_state.py
 # the route ended (its marker deleted): a registered session's next route agent waits for --activate
-mv "$R/.git/dsp-route.json" "$T/marker.bak"
+MKR=$(MK "$R")
+mv "$MKR" "$T/marker.bak"
 hook 'deny:no active decision-spec-plan route' "$(route_agent s1 dsp-deep)"
 hook silent "$(leadbash s1 'gh pr close 5')"
-mv "$T/marker.bak" "$R/.git/dsp-route.json"
+mv "$T/marker.bak" "$MKR"
 
 # --- the mechanical tier carries the deep tier's role rules: a lane moved to it once ran with no
 # one-group limit, context stop, rulings, no-progress or heavy-run rule

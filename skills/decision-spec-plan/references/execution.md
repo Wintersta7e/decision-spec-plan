@@ -19,7 +19,8 @@ run `criteria_check.py` on the one spec file.)
 - **Price each wave before its first dispatch** (`costs.md`, Stage 5) and record it:
   `python3 <skill-dir>/scripts/route_state.py --budget "<wave>" --estimate <M> --groups <n>`, `<n>`
   the `exec-` agents it covers (task groups, fix groups, the integrator). Tell the user the figure
-  and wait for their answer. The hook holds every `exec-` dispatch until the user has answered
+  and wait for their answer — one question: an AskUserQuestion answered earlier in the turn that
+  records the figure counts (F93). The hook holds every `exec-` dispatch until the user has answered
   after the record in the session that made it — a new lead session records its own — and again once the dispatches since pass 125% of `<n>` or the spend 125% of
   the estimate: record the remaining work's figure, say what ran over and why, and wait again.
   **Why:** one run quoted its Stage 5 figure half a minute after its first dispatches, from the
@@ -106,6 +107,9 @@ run `criteria_check.py` on the one spec file.)
 - **A group that stops on no progress** (`dsp-deep`: the same failing tests after two fix attempts)
   returns a checkpoint naming the failing tests and the hypotheses it ruled out. You rule: a fresh
   agent told what is already ruled out, a plan fix, or a question to the user (`failure-modes` F58).
+- **An idle notice that says the agent waits** on its own gate, build or run is a stall, not a
+  return: nothing wakes it when that job ends (`failure-modes` F92). Message it at once to wait in
+  the foreground (`dsp-deep`); one that waits on anything else has returned — rule it like a return.
 - **Work after a lane closes is a fresh group's, never yours** — a post-merge bug, a real-data run,
   an install, a decompile or any other investigation gets a group with its own checkpoint. At S
   too: a plan never names the lead as a task's executor. **Why:** an S lead that ran a plan task
@@ -144,6 +148,9 @@ line (within its first 20 lines) is `sha=<that commit> dirty=0` and whose last `
 `exit=0` — the integrator's last log covers the main it returns; a commit you add after it needs
 its own full gate first:
 `{ echo "sha=$(git rev-parse HEAD) dirty=$(git status --porcelain --untracked-files=no | grep -c .)"; <full gate>; echo "exit=$?"; } > <planning-dir>/lanes/<name>-gate.log 2>&1`.
+On a route activated with `--ci-harness <label>` the commit also needs a log of the CI's own suite,
+`echo "harness=<label>"` after the `sha=` line — never a local stand-in for it (a stub in place of
+the CI's database harness passed four times locally and failed four CI runs; F90).
 Push as `git [-C <dir>] push <remote> <ref>…`: a push with no refspec, other git options before
 `push`, a `GIT_*` variable or a `pushd` is held, since what it would send cannot be read from it.
 **Every gate run — yours included — goes to such a log**, read by its last `exit=` line and a grep
