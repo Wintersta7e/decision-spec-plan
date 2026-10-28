@@ -87,6 +87,8 @@ hook silent "$(ev PostToolUse s1 '"tool_name":"Read"')"
 out=$(CLAUDE_CODE_SESSION_ID=s1 python3 "$SCRIPTS/route_state.py" "$P" --phase 1 --repo "$R" --sections 1- --activate)
 [ -f "$HOME/.claude/dsp-routes/s1.json" ] && grep -q '"--main", "main"' "$(MK "$R")" &&
 	ok "activate registered s1, --main resolved to main" || bad "activate s1: $out"
+jq -e '.ledger["1"] == true' "$(MK "$R")" >/dev/null && ok "a phase with no index yet is bound by the decision ledger" ||
+	bad "a fresh phase's marker lacks ledger: $(cat "$(MK "$R")")"
 hook silent "$(route_agent s1 dsp-deep)"
 hook 'deny:no active decision-spec-plan route' "$(route_agent s2 dsp-deep)" # another session
 
@@ -192,11 +194,26 @@ rm "$P/lanes/late-gate.log"
 printf 'sha=%s dirty=0\nok\nexit=0\n' "$FEAT" >"$P/lanes/p1-01-a-gate2.log"
 guard 0 "$T/wt" "git push origin feature"
 rm "$P/lanes/p1-01-a-gate2.log"
+# a gate log larger than the memory the report may use is read line by line: whole, it raised ENOMEM
+{
+	printf 'sha=%s dirty=0\n' "$FEAT"
+	yes 'build output line' | head -c 300M
+	printf '\nexit=0\n'
+} >"$P/lanes/big-gate.log"
+out=$( (ulimit -v 250000 && python3 "$SCRIPTS/route_state.py" "$P" --phase 1 --repo "$R") 2>&1)
+! grep -q Traceback <<<"$out" && grep -qE 'gates +[0-9]+ green' <<<"$out" && ok "a 300 MB gate log is reported under a 250 MB memory cap" ||
+	bad "big gate log: $(tail -n2 <<<"$out")"
+rm "$P/lanes/big-gate.log"
 
-# --- rung M: a gated push also needs a pre-push review's verdict (failure-modes F70)
-out=$(CLAUDE_CODE_SESSION_ID=s1 python3 "$SCRIPTS/route_state.py" "$P" --phase 1 --repo "$R" --sections 1- --activate --rung M)
-grep -q '"rung": "M"' "$(MK "$R")" && grep -q "rung M: push_guard.sh" <<<"$out" &&
-	ok "activate --rung M: rung in the marker, announced" || bad "activate --rung M: $out"
+# --- a rung alone asks no review; --sins on (L's phase end, or the user asked): a gated push also
+# needs a seven-sins verdict (failure-modes F70)
+out=$(CLAUDE_CODE_SESSION_ID=s1 python3 "$SCRIPTS/route_state.py" "$P" --phase 1 --repo "$R" --sections 1- --activate --rung L)
+grep -q '"rung": "L"' "$(MK "$R")" && ! grep -q "sins" <<<"$out" &&
+	ok "activate --rung L: rung in the marker, no review announced" || bad "activate --rung L: $out"
+guard 0 "$R" "git push origin main"
+out=$(CLAUDE_CODE_SESSION_ID=s1 python3 "$SCRIPTS/route_state.py" "$P" --phase 1 --repo "$R" --sections 1- --activate --rung L --sins on)
+grep -q '"sins": "on"' "$(MK "$R")" && grep -q "sins on: push_guard.sh" <<<"$out" &&
+	ok "activate --sins on: in the marker, announced" || bad "activate --sins on: $out"
 mkdir -p "$P/reviews"
 verdict() { printf '# pre-push review\n%s\n' "$@" >"$P/reviews/w2-verdict.md"; }
 ONE=$(git -C "$R" rev-parse main~1)
@@ -231,11 +248,39 @@ guard 2 "$R" "git push origin rel"
 guard 2 "$R" "git push origin rel:rel"
 guard 0 "$R" "git push origin rel:other"
 git -C "$R" update-ref -d refs/remotes/origin/rel
+# a phase-end review over more than 30 commits counts only as slices of at most 30 that cover
+# every commit: review recall collapses on a large diff
+C=$MAIN
+for i in $(seq 1 31); do
+	C=$(git -C "$R" "${G[@]}" commit-tree "$TREE" -p "$C" -m "c$i")
+	[ "$i" = 15 ] && C15=$C
+	[ "$i" = 14 ] && C14=$C
+done
+git -C "$R" update-ref refs/heads/wide "$C"
+printf 'sha=%s dirty=0\nexit=0\n' "$C" >"$P/lanes/wide-gate.log"
+verdict "reviewed=$C base=$MAIN blocking=0"
+guard 2 "$R" "git push origin wide"
+verdict "reviewed=$C base=$MAIN blocking=0" "slices=$MAIN..$C15 $C15..$C"
+guard 0 "$R" "git push origin wide"
+verdict "reviewed=$C base=$MAIN blocking=0" "slices=$MAIN..$C14 $C15..$C"
+guard 2 "$R" "git push origin wide"
+verdict "reviewed=$C base=$MAIN blocking=0" "slices=$MAIN..$C"
+guard 2 "$R" "git push origin wide"
+# one lane's merge of 31 commits splits along the lane's own history; the merge is in neither range
+LM=$(git -C "$R" "${G[@]}" commit-tree "$TREE" -p "$MAIN" -p "$C" -m "merge lane")
+git -C "$R" update-ref refs/heads/wide "$LM"
+printf 'sha=%s dirty=0\nexit=0\n' "$LM" >"$P/lanes/wide-gate.log"
+verdict "reviewed=$LM base=$MAIN blocking=0" "slices=$MAIN..$C15 $C15..$C"
+guard 0 "$R" "git push origin wide"
+git -C "$R" update-ref -d refs/heads/wide
+rm "$P/lanes/wide-gate.log"
 rm "$P/reviews/w2-verdict.md"
 guard 0 "$R" "DSP_SKIP_REVIEW=1 git push origin main"
 guard 2 "$R" "DSP_SKIP_REVIEW=1 git push origin ung"
 guard 0 "$R" "DSP_SKIP_PUSH_GUARD=1 git push origin ung"
 CLAUDE_CODE_SESSION_ID=s1 python3 "$SCRIPTS/route_state.py" "$P" --phase 1 --repo "$R" --sections 1- --activate --rung S >/dev/null
+guard 2 "$R" "git push origin main" # --sins on is kept across re-activations
+CLAUDE_CODE_SESSION_ID=s1 python3 "$SCRIPTS/route_state.py" "$P" --phase 1 --repo "$R" --sections 1- --activate --rung S --sins off >/dev/null
 guard 0 "$R" "git push origin main"
 CLAUDE_CODE_SESSION_ID=s1 python3 "$SCRIPTS/route_state.py" "$P" --phase 1 --repo "$R" --sections 1- --activate >/dev/null
 guard 0 "$R" "git push origin main"
@@ -280,6 +325,9 @@ hook silent "$(ev UserPromptSubmit s1 '"prompt":"<task-notification>\n<task-id>x
 # --- pending, not missing: index rows without files
 printf '| D1 | a |\n| D2 | b |\n' >"$P/decisions/phase1/00-index.md"
 echo "ruling" >"$P/decisions/phase1/D1-a.md"
+# this old-format index stands for a phase begun before the ledger check: unbound, as on a route
+# activated while its index already existed
+jq '.ledger["1"] = false' "$(MK "$R")" >"$T/m.json" && mv "$T/m.json" "$(MK "$R")"
 unthrottle
 hook '/decisions  1 D files \(2 in the index; pending D2\)/' "$(ev PostToolUse s1 '"tool_name":"Agent"')"
 jq -e '.hookSpecificOutput.additionalContext | test("missing|written [0-9]+s ago") | not' <<<"$LAST" >/dev/null &&
@@ -810,9 +858,177 @@ else
 	echo "SKIP  no agents dir at $AGENTS — the tiers' rules were not compared"
 fi
 
+# --- an agent that ends its turn while its own background job runs is sent back to wait on it:
+# nothing wakes a teammate when the job ends (F92). The hook reads the agent's transcript for the
+# jobs it started; SubagentStop says which still run, TeammateIdle leaves it to each output file.
+stophook() { # expected-exit regex json
+	local out code
+	out=$(echo "$3" | python3 "$RS" --hook 2>&1)
+	code=$?
+	if [ "$code" = "$1" ] && grep -qE -- "$2" <<<"$out"; then ok "stop $1  $3"; else
+		bad "stop want $1 /$2/ got $code  $3"
+		echo "$out" | sed -n '1,3p'
+	fi
+}
+TASKS=$T/tasks
+mkdir -p "$TASKS"
+tm=$SUB/agent-aexec-p1-02-a-0123456789abcdef.jsonl
+call() { # tool-use-id tool input-json result-text
+	jq -nc --arg i "$1" --arg n "$2" --argjson in "$3" '{type:"assistant",message:{content:[{type:"tool_use",id:$i,name:$n,input:$in}]}}'
+	jq -nc --arg i "$1" --arg r "$4" '{type:"user",message:{content:[{type:"tool_result",tool_use_id:$i,content:$r}]}}'
+}
+{
+	call t1 Bash '{"command":"npm test","run_in_background":true}' "Command running in background with ID: bsh1. Output is being written to: $TASKS/bsh1.output. You will be notified when it completes."
+	call t2 Bash '{"command":"ls"}' "a b"
+} >"$tm"
+idle() { ev TeammateIdle s1 "\"teammate_name\":\"exec-p1-02-a\",\"agent_id\":\"aexec-p1-02-a-0123456789abcdef\",\"transcript_path\":\"$LEAD\""; }
+printf 'running\n' >"$TASKS/bsh1.output"
+stophook 2 'npm test.*bsh1.output.*F92' "$(idle)"
+printf 'running\n\n[exited with code 0]\n' >"$TASKS/bsh1.output"
+stophook 0 '^$' "$(idle)"
+printf '\n[killed]\n' >"$TASKS/bsh1.output"
+stophook 0 '^$' "$(idle)"
+call t3 Monitor '{"command":"until grep -q ^exit= g.log; do sleep 20; done","description":"gate"}' "Monitor started (task bmo1, expires in 30m unless the source ends first)." >>"$tm"
+printf 'x\n' >"$TASKS/bmo1.output"
+stophook 2 'until grep -q \^exit= g.log.*F92' "$(idle)"
+rm "$TASKS/bmo1.output"
+stophook 0 '^$' "$(idle)" # no output file: nothing to tell
+stophook 0 '^$' "$(ev TeammateIdle s1 "\"teammate_name\":\"nobody\",\"agent_id\":\"anobody-00000000\",\"transcript_path\":\"$LEAD\"")"
+# a foreground command past its timeout moves to the background without run_in_background
+call t4 Bash '{"command":"npx eslint . > lint.log"}' "partial output
+Command did not complete within its 300s timeout and was moved to the background (ID: bauto1). Output is being written to: $TASKS/bauto1.output. You will be notified when it completes." >>"$tm"
+printf 'x\n' >"$TASKS/bauto1.output"
+stophook 2 'npx eslint.*bauto1.output.*F92' "$(idle)"
+rm "$TASKS/bauto1.output"
+# SubagentStop lists every background job of the session, a neighbour teammate's too (a plan
+# author was sent back twice to wait on another's probe): only the jobs the stopping agent's own
+# transcript started count, and an agent with no transcript has none.
+tb=$SUB/agent-aexec-p1-02-b-0123456789abcdef.jsonl
+{
+	call u1 Bash '{"command":"npm test > gate.log","run_in_background":true}' "Command running in background with ID: bsb1. Output is being written to: $TASKS/bsb1.output. You will be notified when it completes."
+	call u2 Monitor '{"command":"tail -f x","description":"watch"}' "Monitor started (task bsb2, expires in 30m unless the source ends first)."
+} >"$tb"
+bg() { echo "\"background_tasks\":[{\"id\":\"$1\",\"type\":\"$2\",\"status\":\"$3\",\"command\":\"npm test > gate.log\"}]"; }
+sub() { ev SubagentStop "${2:-s1}" "\"agent_id\":\"aexec-p1-02-b-0123456789abcdef\",\"agent_type\":\"dsp-deep\",\"transcript_path\":\"$LEAD\",$1"; }
+stophook 2 'npm test > gate.log.*bsb1.output.*F92' "$(sub "$(bg bsb1 shell running)")"
+stophook 0 '^$' "$(sub "$(bg bsb1 shell completed)")"
+stophook 0 '^$' "$(sub "$(bg bsb1 subagent running)")"
+stophook 2 'tail -f x.*F92' "$(sub "$(bg bsb2 monitor running)")"
+stophook 0 '^$' "$(sub "$(bg bother shell running)")"                                                 # a neighbour's job
+stophook 0 '^$' "$(ev SubagentStop s1 "\"agent_id\":\"a0123456789abcdef\",$(bg bsb1 shell running)")" # no transcript
+stophook 0 '^$' "$(sub "$(bg bsb1 shell running)" s77)"                                               # no route
+stophook 2 'F92' "$(sub "\"stop_hook_active\":true,$(bg bsb1 shell running)")"
+stophook 0 '^$' "$(sub "\"stop_hook_active\":true,$(bg bsb1 shell running)")" # sent back twice: a hung job is the agent's to report
+
+# --- decision_check.py: a SETTLED row that only describes today's code (F86), a requirement
+# dimension nobody owns, and a review finding declined with no ruling or refuting test
+DC=$T/dc/decisions/phase1
+mkdir -p "$DC/verify"
+dims() {
+	echo "## Requirement dimensions"
+	echo "| Dimension | Owner |"
+	echo "|---|---|"
+	for d in "Actors and workflows" "Data identity" "Ownership and round-trip" "Business rules" "State machines" "Integrations and events" "Validation and exceptions" "Background jobs"; do
+		echo "| $d | D1 |"
+	done
+	echo "| Security and privacy | ${1:-N/A: no accounts, local only} |"
+}
+index() { # settled-row [security-owner] [extra]
+	printf '# Phase 1\n## SETTLED — do not re-open\n### Import\n| # | Ruling | Source |\n|---|---|---|\n%s\n' "$1"
+	printf '### Measured numbers that bind any ruling\n| Figure | Source |\n|---|---|\n| 3 s | `src/a.ts:4` |\n\n'
+	dims "${2:-}"
+	printf '\n## The decisions\n| # | Decision |\n|---|---|\n| D1 | x |\n%s\n' "${3:-}"
+}
+dcheck() { # expected-exit regex [args]
+	local out code want=$1 re=$2
+	shift 2
+	out=$(python3 "$SCRIPTS/decision_check.py" "$DC" "$@" 2>&1)
+	code=$?
+	if [ "$code" = "$want" ] && grep -qE -- "$re" <<<"$out"; then ok "decision_check $want /$re/"; else
+		bad "decision_check want $want /$re/ got $code"
+		echo "$out" | sed -n '1,4p'
+	fi
+}
+dcheck 2 'no index'
+index '| S1 | **Names merge only on email** | U2, the user 10-20 |' >"$DC/00-index.md"
+dcheck 0 '0 failure'
+index '| S1 | **Rows keep 14 columns** | `src/import.ts:40-52` |' >"$DC/00-index.md"
+dcheck 1 "S1 cites only code.*Today's code"
+index '| S1 | **Rows keep 14 columns** | `docs/spec/02-import.md` §3 |' >"$DC/00-index.md"
+dcheck 0 '0 failure'
+index '| **Names merge** | U2 |' >"$DC/00-index.md"
+dcheck 1 'without an S<n> id'
+index '| S1 | **x** | U2 |' 'TBD' >"$DC/00-index.md"
+dcheck 1 "dimension 'security' has no owner"
+index '| S1 | **x** | U2 |' 'N/A:' >"$DC/00-index.md"
+dcheck 1 "dimension 'security' has no owner"
+index '| S1 | **x** | U2 |' | grep -v 'Background jobs' >"$DC/00-index.md"
+dcheck 1 "dimension 'background jobs' has no row"
+# dispositions, once the review exists: at S in the index, at M and L in the arbiter
+printf '# Seams\n## A. BLOCKERS\n**R1** — `src/a.ts:9` merges two people with one name; contradicts S1.\n**R2** — the cache is never cleared.\n## E. SAFETY\n- R3 — a crash loses the draft.\n' >"$DC/00-seams.md"
+index '| S1 | **x** | U2 |' >"$DC/00-index.md"
+dcheck 1 'has no Dispositions table' --rung S
+disp() { printf '\n## Dispositions\n| Finding | Disposition | Basis |\n|---|---|---|\n%s\n' "$1"; }
+index '| S1 | **x** | U2 |' '' "$(disp '| R1 | declined | known limitation |
+| R2 | applied | D1 |')" >"$DC/00-index.md"
+dcheck 1 'R3 has no disposition' --rung S
+dcheck 1 "R1 is declined on 'known limitation'.*--verifier R1" --rung S
+index '| S1 | **x** | U2 |' '' "$(disp '| R1 | re-opened | user asked |
+| R2 | applied | D1 |
+| R3 | declined | U4 |')" >"$DC/00-index.md"
+dcheck 1 'R1 is re-opened against S1, which is still in SETTLED' --rung S
+index '| S2 | **y** | U2 |' '' "$(disp '| R1 | declined | default |
+| R2 | applied | D1 |
+| R3 | declined | S2 |')" >"$DC/00-index.md"
+dcheck 1 "R1 is declined on 'default'" --rung S
+out=$(python3 "$SCRIPTS/decision_check.py" "$DC" --verifier R1 --sha abc123)
+p=$DC/verify/R1.prompt.md
+[ "$out" = "$p" ] && grep -qF 'merges two people with one name' "$p" && grep -qF 'abc123' "$p" &&
+	! grep -qE 'cache|known limitation|Ruling' "$p" && ok "decision_check --verifier writes the claim and commit, nothing else" ||
+	bad "decision_check --verifier: $out"
+echo 'Verdict: REFUTED' >"$DC/verify/R1.md"
+dcheck 0 '0 failure' --rung S
+echo 'Verdict: UPHELD' >"$DC/verify/R1.md"
+dcheck 1 'R1 is declined, but verify/R1.md upheld it' --rung S
+dcheck 1 '00-arbiter.md has no Dispositions table' --rung M
+disp '| R1 | applied | A3 |
+| R2 | applied | A1 |
+| R3 | applied | A2 |' >"$DC/00-arbiter.md"
+dcheck 0 '0 failure' --rung M
+# the hook holds the lead's exec- dispatch while the route's ledger fails, and a verifier whose
+# prompt is not the script-written file
+dispatch() { ev PreToolUse s1 "\"tool_name\":\"Agent\",\"transcript_path\":\"$LEAD\",\"tool_input\":{\"name\":\"$1\",\"prompt\":$(jq -Rs . <<<"$2")}"; }
+index '| S1 | **Rows keep 14 columns** | `src/import.ts:40` |' >"$P/decisions/phase1/00-index.md"
+out=$(dispatch exec-p1-09-a go | python3 "$RS" --hook 2>&1)
+! grep -q 'decision ledger' <<<"$out" && ok "a phase begun before the ledger check is not held by it" ||
+	bad "an unbound phase is held by the ledger: $out"
+jq '.ledger["1"] = true' "$(MK "$R")" >"$T/m.json" && mv "$T/m.json" "$(MK "$R")"
+hook "deny:decision ledger fails(.|\n)*S1 cites only code" "$(dispatch exec-p1-09-a go)"
+index '| S1 | **x** | U2 |' >"$P/decisions/phase1/00-index.md"
+out=$(dispatch exec-p1-09-a go | python3 "$RS" --hook 2>&1)
+! grep -q 'decision ledger' <<<"$out" && ok "a passing ledger releases the exec- dispatch to the budget gate" ||
+	bad "a passing ledger still holds: $out"
+cp "$DC/00-seams.md" "$P/decisions/phase1/"
+python3 "$SCRIPTS/decision_check.py" "$P/decisions/phase1" --verifier R2 --sha abc123 >/dev/null
+hook "deny:verifier's prompt is the file" "$(dispatch verify-R2 "Check R2. The lead thinks it is a known limitation.")"
+hook silent "$(dispatch verify-R2 "$(cat "$P/decisions/phase1/verify/R2.prompt.md")")"
+# a disputed seven-sins finding goes to the same verifier, its claim taken from the sin's report
+RD=$P/reviews/p1-push1
+mkdir -p "$RD"
+printf '# Wrath — x\n## Findings\n| ID | Severity | Age | Where | Finding | Recommendation | Evidence |\n|---|---|---|---|---|---|---|\n| WRA-1 | high | new | `src/t.ts:9` | a crafted tag crashes the parser | bound the read | probes/wrath/tag.sh → crash |\n| WRA-2 | low | new | `a:1` | other | x | y |\n' >"$RD/wrath.md"
+out=$(python3 "$SCRIPTS/decision_check.py" "$RD" --verifier WRA-1 --sha abc123 --from "$RD/wrath.md")
+p=$RD/verify/WRA-1.prompt.md
+[ "$out" = "$p" ] && grep -qF 'a crafted tag crashes the parser' "$p" && grep -qF 'probes/wrath/tag.sh' "$p" &&
+	! grep -qE 'high|bound the read|other' "$p" && ok "decision_check --verifier --from takes a sin's finding, not its severity or fix" ||
+	bad "decision_check --verifier --from: $out"
+hook silent "$(dispatch verify-WRA-1 "$(cat "$p")")"
+hook "deny:verifier's prompt is the file" "$(dispatch verify-WRA-1 "$(cat "$p") Wrath is usually right.")"
+rm -r "$RD"
+rm -r "$P/decisions/phase1/00-index.md" "$P/decisions/phase1/00-seams.md" "$P/decisions/phase1/verify"
+
 # --- a script's --help is its whole interface: shown only its docstring's first line, a lead read
 # ~20k characters of the scripts' source to learn their options (F84)
-for s in route_state.py criteria_check.py plan_lint.py scope_check.py usage_report.py apply_markers.py; do
+for s in route_state.py criteria_check.py plan_lint.py scope_check.py usage_report.py apply_markers.py decision_check.py; do
 	last=$(python3 -c 'import ast, sys; print(ast.get_docstring(ast.parse(open(sys.argv[1]).read())).strip().splitlines()[-1].strip())' "$SCRIPTS/$s")
 	python3 "$SCRIPTS/$s" --help 2>&1 | grep -qF -- "$last" && ok "$s --help prints its whole docstring" ||
 		bad "$s --help lacks its docstring's last line: $last"

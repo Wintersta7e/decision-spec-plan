@@ -51,6 +51,26 @@
           }
         ]
       }
+    ],
+    "SubagentStop": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python3 ~/.claude/skills/decision-spec-plan/scripts/route_state.py --hook"
+          }
+        ]
+      }
+    ],
+    "TeammateIdle": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python3 ~/.claude/skills/decision-spec-plan/scripts/route_state.py --hook"
+          }
+        ]
+      }
     ]
   }
 }

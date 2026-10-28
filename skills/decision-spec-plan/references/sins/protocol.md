@@ -56,10 +56,6 @@ fill it:
 ## Strengths
 ## Reproductions
 | Reproduction | Finding | Owner | Result | Evidence |
-## Challenges sent
-| Challenge | To | Their finding | Claim | Outcome |
-## Challenges received
-| Challenge | From | My finding | Their claim | Verdict | Reason |
 ```
 
 Finding IDs: your prefix and a number (`GRE-1`). Severity: critical, high, medium or low. At most
@@ -77,38 +73,17 @@ are not findings and nobody counts them; leave the section empty when you have n
 path, and last the line `pending: none`. Re-read your report first: every count, ID and outcome in
 the message comes from the file, not from memory. Never also `SendMessage` it.
 
-## Round 2 — the debate (starts when the lead messages `debate open`)
+## Round 2 — reproductions (starts when the lead messages `reproduce`)
 The lead's message assigns each critical and high finding to one sin other than its owner, as
-`REPRODUCE <finding ID> → <sin>`.
-1. **Reproduce first.** For each finding assigned to you, re-run its probe or command, or re-read the
-   cited lines, and try to break the claim — your job is to find out whether it holds, not to agree.
-   Send the owner
-   `REPRODUCED <your prefix>-R<n> on <finding ID>: CONFIRMED | PARTIAL <what differs> | FAILED — evidence: <output or file:line>`
-   and record it under Reproductions. CONFIRMED ends it; the owner adds "reproduced by <you>" to the
-   finding's Evidence cell. PARTIAL or FAILED is handled from step 4 on, as a challenge that does not
-   count toward your 3.
-2. Read the other six reports' Findings tables. Pick **at most 3** findings you can contest with
-   evidence — wrong, overstated, or a recommendation that would do harm in your domain. Your persona's
-   rivals are where to look first. No evidence, no challenge.
-3. Send each to the finding's owner, and record it under Challenges sent:
-   `CHALLENGE <your prefix>-C<n> on <their finding ID>: <claim> — evidence: <file:line or output> — proposed: <change>`
-   Your final message lists the challenges sent and, for each, `pending: <challenge> awaiting <owner>`.
-   **Then end your turn.** An answer, rebuttal or final reaches you only as a new message after you
-   go idle; never record an outcome, or write a reply's text, before that message is in your
-   conversation. Why: a reviewer that kept going wrote an invented answer into its file and
-   returned `pending: none`; the real answer arrived two seconds later and differed.
-4. **A challenge you receive** (a PARTIAL or FAILED reproduction included): answer it once, by
-   message to the sender — `ANSWER <challenge>: ACCEPT | AMEND <new text> | REJECT — <evidence>` —
-   and record it under Challenges received. Accepting or amending changes your Findings row in the
-   same edit.
-5. **An answer you receive**: if it rejects with evidence you can refute, send ONE
-   `REBUT <challenge>: <new evidence>`; otherwise record the outcome and send nothing. A rebuttal you
-   receive gets one `FINAL <challenge>: ACCEPT | AMEND | REJECT — <reason>`, by message, recorded.
-   Nothing follows a FINAL.
-6. **Every final message ends with your pending line**: `pending: none`, or one
-   `pending: <challenge or reproduction> awaiting <name>` per exchange where you wait for a reply.
-   The lead ends the debate when all seven say `pending: none`.
+`REPRODUCE <finding ID> → <sin>`. There is no debate: a claim is settled by a test, not by argument.
+1. For each finding assigned to you, re-run its probe or command, or re-read the cited lines, and
+   try to break the claim — your job is to find out whether it holds, not to agree. Record it under
+   Reproductions as CONFIRMED, PARTIAL <what differs> or FAILED, with the evidence, and send the owner
+   `REPRODUCED <your prefix>-R<n> on <finding ID>: <result> — evidence: <output or file:line>`.
+2. **A reproduction of your finding**: CONFIRMED — add "reproduced by <sin>" to its Evidence cell.
+   PARTIAL — amend the row once if the evidence shows it overstated, citing it; else leave it.
+   FAILED — change nothing: the lead sends the claim to a verifier that writes a test.
+3. Your final message lists your reproductions and their results, and ends `pending: none`.
 
-Edit only your own report. Message only to pass a tip, report a reproduction, challenge, answer,
-rebut or give a final — never chat, and never message the lead (`team-lead`) unless a question
-blocks you.
+Edit only your own report. Message only to pass a tip or report a reproduction — never chat, and
+never message the lead (`team-lead`) unless a question blocks you.

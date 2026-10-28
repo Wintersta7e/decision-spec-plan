@@ -120,8 +120,8 @@ Substitute `<repo>`, `<planning-dir>`, `<P>`, `<scratchpad>`.
 > Read-only. Read <brief>, <index>, and skim the three harvests (their conflicts/unspecified/defect
 > sections). Consult the concept, the spec and the code to verify. Answer in
 > `<planning-dir>/decisions/phase<P>/00-framing-review.md`, a numbered list with file:line, blunt,
-> under 1500 words: 1. MISSING DECISIONS (owned by no row — which D<n> should take
-> it, or does it need its own; do not manufacture one). 2. MIS-PARTITIONS (a row that is two
+> under 1500 words: 1. MISSING DECISIONS (owned by no row, or a requirement dimension marked N/A
+> that the asks touch — which D<n> should take it, or does it need its own; do not manufacture one). 2. MIS-PARTITIONS (a row that is two
 > decisions; one question split across two rows so both will rule on it). 3. WRONG SETTLED ROWS
 > (misquoted, over-stated, contradicted by a later ruling — verify quotes — or recording what today's
 > code does as a ruling: name the fix it forecloses, F86). 4. WRONG CLAIMS about the
@@ -150,7 +150,8 @@ Substitute `<repo>`, `<planning-dir>`, `<P>`, `<scratchpad>`.
 > brief, the index, and all N rulings. Each was written independently; partitioning by decision
 > leaves the SEAMS unsettled by construction. Your job is the seams. <Leads already known — verify,
 > do not assume: list any conflicts you saw in the agents' replies.> Report into
-> `<planning-dir>/decisions/phase<P>/00-seams.md`, numbered, with file:line on every side:
+> `<planning-dir>/decisions/phase<P>/00-seams.md`, each finding opening `**R<n>**`, numbered on
+> through every heading, with file:line on every side:
 > A. BLOCKERS (cannot both be implemented — which side wins and why, ≤2 sentences) · B. WRONG CODE
 > CLAIMS (what is actually there) · C. UNOWNED (assumed landed by someone else, taken by no one —
 > natural owner) · D. SETTLED-ROW OVERTURNS (does the argument hold?) · E. SAFETY (anything that
@@ -185,9 +186,11 @@ Substitute `<repo>`, `<planning-dir>`, `<P>`, `<scratchpad>`.
 > reconcilers behind them. Read-only; throwaway probes allowed under <scratchpad>/review/. Read
 > `<planning-dir>/decisions/phase<P>/00-index.md` (the decision document), <the spec file> and
 > <the plan>. The outputs of `plan_lint.py`, `scope_check.py` and `criteria_check.py` are pasted
-> below: report what they miss, not what they print. Consult the code to verify. Answer as a
-> numbered list with file:line on every side, blunt: 1. THE DECISION DOCUMENT — MISSING DECISIONS
-> (owned by no row; do not manufacture one) and WRONG SETTLED ROWS (misquoted, over-stated,
+> below: report what they miss, not what they print. Consult the code to verify. Answer as one
+> list, each finding opening `**R<n>**`, numbered on through every heading, with file:line on
+> every side, blunt: 1. THE DECISION DOCUMENT — MISSING DECISIONS
+> (owned by no row, or a requirement dimension marked N/A that the asks touch; do not manufacture
+> one) and WRONG SETTLED ROWS (misquoted, over-stated,
 > contradicted by a later ruling — verify quotes — or recording what today's code does as a ruling:
 > name the fix it forecloses; the lead re-opens that row and never adopts the gap as a default,
 > F86). 2. ITS RULINGS AGAINST THE CODE — A. BLOCKERS
@@ -198,6 +201,17 @@ Substitute `<repo>`, `<planning-dir>`, `<P>`, `<scratchpad>`.
 > promised file with no task; a task that names no test; a change no ask names, or an item on the
 > Do not touch list. Reply <3 KB, the answer itself, counts
 > per heading first; the lead saves it as `<planning-dir>/decisions/phase<P>/00-seams.md`.
+
+## §1f — The claim-only verifier (a finding you would decline; a disputed sins finding)
+
+No prompt to write: `scripts/decision_check.py <decisions-dir> --verifier R<n> --sha <commit>`
+writes `verify/R<n>.prompt.md` — the finding's text and the commit, nothing else: no SETTLED list,
+no rationale of yours, no reviewer's name, so the verifier judges the claim and not the framing.
+Send that file unchanged: to the second model (it costs no Claude usage), or as a `dsp-deep`
+agent named `verify-R<n>` — the hook refuses any other prompt for that name. It writes a test in
+a fresh worktree of the commit and `verify/R<n>.md`: UPHELD (apply the finding), REFUTED (the
+only basis to decline it without a ruling), NO-TEST (at M and L ask the user; at S apply the
+reviewer's fix as a default and flag it in the handoff).
 
 ---
 
@@ -265,7 +279,7 @@ It commits merges and runs gates, so it does not end with the closing lines. Its
 > what you checked; then the new `<main-branch>` SHA. Reply <2 KB: per lane green or red with its
 > gate counts, the new SHA, the path.
 
-## §6 — A seven-sins reviewer (Stage 3 spec mode, Stage 5 code mode; M and L)
+## §6 — A seven-sins reviewer (at L: Stage 3 spec mode, Stage 5 code mode per slice; or asked)
 
 Seven at once, each `name`d `<sin>-<review name>`; the prompt is in `sins/lead.md` §2. It does not end with
 the closing lines — `sins/protocol.md` carries the skeleton, the one reply and where probes go.

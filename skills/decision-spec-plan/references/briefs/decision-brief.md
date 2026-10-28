@@ -46,7 +46,10 @@ one."›
 1. `00-index.md` — the **SETTLED** table, the measured numbers, the confirmed defects, your
    decision's row, and "What each decision may NOT decide". Everything in the settled table is
    already ruled; contradicting one is allowed only with an explicit argument and file:line, never
-   by quiet assumption.
+   by quiet assumption. "Today's code" binds nothing. **Rule every requirement dimension the
+   index assigns your decision** — data identity and what survives each state change most of all:
+   in one clean room every arm missed a state rule, and the better build was the one that ruled
+   identity.
 2. **The harvest files beside it** — `harvest-spec.md`, `harvest-code.md`, `harvest-design.md`.
    **They are an index, not the source.** Open the file:line before you rely on it. **Start from
    them**: open what your ruling rests on, and search the tree afresh only for what they lack —

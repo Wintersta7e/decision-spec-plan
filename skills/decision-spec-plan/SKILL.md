@@ -23,7 +23,7 @@ verification** (a ruling on an unverified claim propagates into every plan).
 
 | Rung | When | Shape |
 |---|---|---|
-| **S** | 1–3 open decisions, one plan — **and always** a PR/MR review, a review-fix round or a proposal-only ticket, whatever its count (`failure-modes` F50; an S build: `costs.md`) | **You write the decision document (`templates.md` §1), the one spec file and the one plan**, each to its brief, uncopied; harvest inline; fresh groups execute the plan (`execution.md`), never you. One second-model review after the plan (`prompts.md` §1e; unavailable: Lead mechanics) replaces both reviews. No dispatch file, arbiter, markers, register fold or plan index; the scope tables open the spec file |
+| **S** | 1–3 open decisions, one plan — **and always** a PR/MR review, a review-fix round or a proposal-only ticket, whatever its count (`failure-modes` F50; an S build: `costs.md`) | **You write the decision document (`templates.md` §1), the one spec file and the one plan**, each to its brief, uncopied; harvest inline; fresh groups execute the plan (`execution.md`), never you. One second-model review after the plan (`prompts.md` §1e; unavailable: Lead mechanics) replaces both reviews; its findings' dispositions close the decision document. No dispatch file, arbiter, markers, register fold or plan index; the scope tables open the spec file |
 | **M** | 4–7 decisions, or fewer needing several plans | Harvest inline or by one agent; 2–4 spec authors; reconciliation per Stage 3. Every other step as at L |
 | **L** | 8+ decisions, several subsystems | The full route |
 
@@ -33,7 +33,7 @@ and effort unless the task calls for another pair); each stage's wall-clock and 
 estimate. **Name every other active route on the account** (`--activate` lists them; Quota, below).
 **At M and L, wait for the user's go-ahead before the first dispatch** — once, not per stage; the
 answer may stop the round, cut a role, or change a role's model or effort (`failure-modes` F45,
-F88: what Sonnet lost, replayed and live). Restate the headcount when the index fixes it.
+F88). Restate the headcount when the index fixes it.
 
 **New to the project?** If it has no planning directory, handoff file, charter, spec directory or
 checkers, read `references/bootstrap.md` first and build the minimum before stage 0.
@@ -49,13 +49,14 @@ checkers, read `references/bootstrap.md` first and build the minimum before stag
 | `references/examples.md` | Judging your own draft against rows, fences, rulings, questions and boundaries that worked |
 | `references/failure-modes.md` | An agent pushes back on a rule, or you are tempted to skip one: every rule's evidence |
 | `references/execution.md` | Stage 5 |
-| `references/sins/lead.md` | At M and L: Stage 3, and before every push — the seven-sins review |
+| `references/sins/lead.md` | The seven-sins review: at L (Stage 3's spec; the phase's last push, sliced past 30 commits), and whenever the user asks |
 | `references/bootstrap.md` | A project running the route for the first time |
 | `scripts/plan_lint.py` · `scope_check.py` · `criteria_check.py` | Stage 2 and 4 gates |
 | `scripts/usage_report.py` | Every gate: the round's cost so far, per agent |
 | `scripts/route_state.py` | `--activate` (The route), `--budget` (Quota); its `--hook` is the in-flight block's state |
 | `scripts/push_guard.sh` | A PreToolUse:Bash hook while the route is active: blocks a push of any commit no full gate passed |
 | `scripts/apply_markers.py` | Stage 1 markers: inserts the markers agent's JSON list |
+| `scripts/decision_check.py` | Stage 1 and the §1e review: SETTLED sources, requirement dimensions, finding dispositions; `--verifier` (`prompts.md` §1f) |
 
 **A script's `--help` is its whole interface** — read it, never the script's source (F84).
 
@@ -86,8 +87,7 @@ stays registered), and with `--sections <first>-` once the first section number 
 CI config before the first push**: a suite CI runs that the local full gate does not (another
 database, container tests) is named once with `--ci-harness <label>`, and each push then needs its
 log too (F90). Its hook
-then injects what changed (every expected file and how it ends, lane SHAs, gate exits) in place of a
-probe per turn — you write the next action (F57, F62); after a compaction or a resume, the whole state
+then injects what changed in place of a probe per turn — you write the next action (F57, F62); after a compaction or a resume, the whole state
 and what to re-read; after this skill changed, its changed files. Read them before the next action
 (F61, F78). **Tell the user in a line or two whenever an agent returns**: what came back, what it
 changes, what is still running.
@@ -113,8 +113,9 @@ data-loss or safety defect goes to the user immediately, with a proposed fix —
 
 1. **Write the brief** (`briefs/decision-brief.md`) **and the index** (`templates.md` §1) — its
    **asks** first: every sentence the requester wrote asking for a change, verbatim, and a Do not
-   touch list; every change the round makes cites one or a user ruling (F89) — and check
-   the index against §1's pre-dispatch list — each item there was a real framing error somewhere.
+   touch list; every change the round makes cites one or a user ruling (F89); every requirement
+   dimension owned or N/A — and check the index against §1's pre-dispatch list (each item a real
+   framing error) and `decision_check.py`.
 2. **Framing review before dispatch** by the second model, read-only (`prompts.md` §1a); apply its
    corrections to the index and brief before dispatch.
 3. **Dispatch one agent per decision** in one message, background, same brief, a focus paragraph
@@ -134,8 +135,9 @@ data-loss or safety defect goes to the user immediately, with a proposed fix —
 7. **Apply supersede markers** — one agent lists them, `scripts/apply_markers.py` inserts them
    (`prompts.md` §1d).
 
-**Gate**: every decision file exists; every seam blocker is ruled (at S: after the plan, §1e); the
-user's calls are answered; markers applied. **At M and L, `git fetch` before Stage 2 and Stage 4**:
+**Gate**: every decision file exists; every seam finding has a disposition (at S: after the plan,
+§1e), a declined one a ruling or a REFUTED verifier (`prompts.md` §1f), and `decision_check.py`
+exits 0 — the hook holds `exec-` dispatches until it does; the user's calls are answered; markers applied. **At M and L, `git fetch` before Stage 2 and Stage 4**:
 a base-drift flag (the index's Base and Assumes lines, F91) means re-checking each ruling built on
 the moved ref, and telling the user the re-plan's cost before writing on the old base.
 
@@ -160,8 +162,8 @@ the moved ref, and telling the user the re-plan's cost before writing on the old
 ### Stage 3 — Reconciliation by seam (two or more spec authors)
 
 One agent per kept dimension (`briefs/reconcile-brief.md` §3); one for all at 2–4 spec authors.
-They recommend; **you rule all dimensions together** as numbered rulings in the plan index. At M
-and L the seven sins review the same sections beside them for what goes wrong once built
+They recommend; **you rule all dimensions together** as numbered rulings in the plan index. At L,
+and when the user asks, the seven sins review the same sections beside them for what goes wrong once built
 (`sins/lead.md`, spec mode; `failure-modes` F71); rule both sets together.
 **Gate**: every blocker ruled.
 
@@ -187,8 +189,9 @@ exits 0 — every criterion maps to a task and a test file — and you read ever
 `references/execution.md`: lanes of fresh task-group agents, one integrator per wave, you check
 its SHAs first-hand; no lane merges a file outside its plan (`scope_check.py --diff`; at S, you run
 it before the push). Every outward action (push, PR, release) is asked for when it happens (F81), and a
-push sends only commits a full gate passed (`push_guard.sh`) — at M and L, only ones a seven-sins
-verdict covers (`sins/lead.md`, code mode; F70).
+push sends only commits a full gate passed (`push_guard.sh`). The seven sins review only really
+large work: at L, the phase's last push; at any rung, a push the user asks a review of — `--sins on`
+before it, `off` after; past 30 commits, slice by slice (`sins/lead.md`, code mode; F70, F95).
 
 ## Lead mechanics
 
@@ -220,8 +223,7 @@ verdict covers (`sins/lead.md`, code mode; F70).
   re-announce and wait for the user.
 - **The route runs unattended** — never ask the user to `/clear` or restart mid-route. An
   auto-compact window ≈ 300000 (`autoCompactWindow` per model under `modelSettings`, or
-  `CLAUDE_CODE_AUTO_COMPACT_WINDOW`) keeps the lead small: without it leads grew to ~965k, where every
-  turn costs ~0.1M (`failure-modes` F47). Unset at the announcement: say so.
+  `CLAUDE_CODE_AUTO_COMPACT_WINDOW`) keeps the lead small (`failure-modes` F47). Unset at the announcement: say so.
 - **A stopped agent is resumed, not re-dispatched**: after a session or spend limit, `SendMessage` it
   to continue from its file, whose end you check first (F38) — a fresh dispatch repays its whole
   exploration (F49). New work — an execution lane's next task group above all — goes to a fresh

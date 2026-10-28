@@ -4,11 +4,14 @@
 # send commits the full gate passed: a gate log under <planning-dir>/lanes/ whose first `sha=` line,
 # within its first 20 lines (codegen or a build may print first), is `sha=<that commit> dirty=0` and
 # whose last `exit=` line is `exit=0`.
-# At rung M or L (`--rung` in the marker) the push also needs a pre-push review that covers it: a
+# With the sins on (`--sins on` in the marker: rung L's phase-end push, or a review the user asked
+# for) the push also needs a seven-sins review that covers it: a
 # verdict under <planning-dir>/reviews/ whose first 10 lines hold
 # `reviewed=<sha> base=<sha> blocking=0` (full SHAs), the reviewed commit an ancestor of the pushed
 # one, every commit between them on an `after=` line (fixes made after the review), and the base
 # an ancestor of the remote-tracking ref when there is one (nothing older than the base is unsent).
+# A review of more than 30 commits counts only with a `slices=` line whose ranges, each at most 30
+# commits, cover every commit of it (sins/lead.md: one review per slice).
 # With a CI harness in the marker (`--ci-harness <label>`: a suite CI runs that the local gate does
 # not) the push also needs a passing gate log for that commit whose first 20 lines hold
 # `harness=<label>`.
@@ -58,9 +61,28 @@ gated() {
 	return 1
 }
 
+# A review of more than SLICE_MAX commits counts only as slices (`<from>..<to>`, full SHAs) of at
+# most SLICE_MAX that cover every commit: review recall collapses on a large diff. Merge commits
+# are not counted — a lane split along its own history leaves its merge in no two-dot range.
+SLICE_MAX=30
+# $1 base; $2 reviewed; $3 the verdict's slices, one per line.
+covered() {
+	local s all=''
+	[ -n "$3" ] || {
+		[ "$(git -C "$REPO" rev-list --no-merges --count "$1..$2")" -le "$SLICE_MAX" ]
+		return
+	}
+	while IFS= read -r s; do
+		[[ "$s" =~ ^[0-9a-f]{40}\.\.[0-9a-f]{40}$ ]] || return 1
+		[ "$(git -C "$REPO" rev-list --no-merges --count "$s")" -le "$SLICE_MAX" ] || return 1
+		all+=$(git -C "$REPO" rev-list --no-merges "$s")$'\n'
+	done <<<"$3"
+	[ -z "$(git -C "$REPO" rev-list --no-merges "$1..$2" | grep -vxF -f <(printf '%s' "$all"))" ]
+}
+
 # $1 the pushed commit; $2 the remote-tracking commit, or empty when there is none.
 reviewed() {
-	local v head line r b after
+	local v head line r b after slices
 	for v in "$PLANNING"/reviews/*-verdict.md; do
 		[ -f "$v" ] || continue
 		head=$(head -n10 "$v" | tr -d '\r')
@@ -73,6 +95,8 @@ reviewed() {
 		after=$(grep -m1 '^after=' <<<"$head" | cut -d= -f2- | tr -s ' ,' '\n')
 		[ -z "$(git -C "$REPO" rev-list "$r..$1" | grep -vxF -f <(printf '%s\n' "$after"))" ] || continue
 		[ -z "$2" ] || git -C "$REPO" merge-base --is-ancestor "$b" "$2" 2>/dev/null || continue
+		slices=$(grep -m1 '^slices=' <<<"$head" | cut -d= -f2- | tr -s ' ,' '\n' | grep .)
+		covered "$b" "$r" "$slices" || continue
 		return 0
 	done
 	return 1
@@ -200,7 +224,7 @@ check() {
 	RUNG=$(jq -r '.rung // empty' "$MARKER" 2>/dev/null)
 	HARNESS=$(jq -r '.ci_harness // empty' "$MARKER" 2>/dev/null)
 	REVIEW=
-	case "$RUNG" in M | L) REVIEW=1 ;; esac
+	[ "$(jq -r '.sins // empty' "$MARKER" 2>/dev/null)" = on ] && REVIEW=1
 	[ -z "$REVIEW_SKIP" ] || REVIEW=
 	if [ -n "$FORM" ]; then
 		MISSING+=("$FORM — push with plain \`git [-C <dir>] push <remote> <refs>\`")
@@ -324,15 +348,18 @@ EOF
 		printf '  not reviewed: %s\n' "${UNREVIEWED[@]}"
 		cat <<EOF
 
-At rung M and L every push first gets the seven-sins pre-push review of what it sends
-(references/sins/lead.md, base = the remote's tip after a \`git fetch\`). Its verdict,
+With the sins on (rung L's phase-end push, or a review the user asked for) a push first gets the
+seven-sins review of what it sends (references/sins/lead.md, base = the remote's tip after a
+\`git fetch\`); \`route_state.py --activate --sins off\` ends it once that push is out. Its verdict,
 $PLANNING/reviews/<name>-verdict.md, opens with
 
   reviewed=<full SHA reviewed> base=<full SHA of the base> blocking=<new criticals and highs neither fixed nor waived>
   after=<full SHA of each fix committed after the review, space-separated>
+  slices=<from>..<to> …   (over $SLICE_MAX commits: the slices reviewed, each at most $SLICE_MAX commits)
 
 The push goes through once blocking=0, the reviewed commit is an ancestor of the pushed one, every
-commit between them is on the after= line, and the base is an ancestor of the remote-tracking ref.
+commit between them is on the after= line, the base is an ancestor of the remote-tracking ref, and
+a review of more than $SLICE_MAX commits has slices that cover every one.
 Bypass only on the user's explicit instruction: DSP_SKIP_REVIEW=1 (the gate check still applies).
 EOF
 	fi

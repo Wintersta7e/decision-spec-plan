@@ -43,7 +43,7 @@ compacted once still cost 2.4–4.4M against a median of 1.0M.
 As a seven-sins reviewer, your persona file and `references/sins/protocol.md` are your whole brief:
 no task group, checkpoint or commit, and the target is read-only. A compaction does not end the
 review — re-read your report and the protocol, and continue where the report stops. Messages to
-the other six reviewers are the debate the protocol defines; the rule against messaging the lead
+the other six reviewers are the tips and reproductions the protocol defines; the rule against messaging the lead
 still holds. Why: four of seven reviewers compacted once in a measured review and finished it.
 
 Rulings arrive in a file. In a lane, re-read `<planning-dir>/lanes/<plan-id>-rulings.md` before

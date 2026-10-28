@@ -64,13 +64,32 @@ Every change the round makes cites one of these or a user ruling (`scope_check.p
 `hd:` design, `hs:` spec, `hc:` code.
 
 ## SETTLED — do not re-open, do not re-derive
-Every row is already ruled; contradicting one needs an explicit argument with file:line.
+Every row is already ruled; contradicting one needs an explicit argument with file:line. The
+source is a ruling — U<n>, A<n>, D<n>, Ask<n>, a decision, spec or handoff `.md`, the user's words —
+never only code: `decision_check.py` refuses a row that cites only `file:lines` (F86).
 ### <topic>
-| Ruling | Source |
-|---|---|
-| **<the rule, bolded where load-bearing>** | `<file>:<lines>` |
+| # | Ruling | Source |
+|---|---|---|
+| **S1** | **<the rule, bolded where load-bearing>** | <U2 · `spec/02-x.md` §3 · the user, <date>> |
 ### Measured numbers that bind any ruling
 | Figure | Source (with SHA) |
+
+## Today's code — open to change
+What the code does now that a ruling might keep or change; a row binds nothing.
+| Behaviour | `<file>:<lines>` | Owner D<n> |
+
+## Requirement dimensions — each owned or N/A
+| Dimension | Owner: D<n>, S<n>, U<n>, Ask<n>, or `N/A: <reason>` |
+|---|---|
+| Actors and workflows | |
+| Data identity — what makes two records the same on every import, merge or sync path | |
+| Ownership and round-trip fidelity | |
+| Business rules | |
+| State machines — every status, and what survives each operation | |
+| Integrations and system events | |
+| Validation and exceptions — what is rejected, questioned or repaired | |
+| Background jobs | |
+| Security and privacy | |
 
 ## Confirmed defects the round inherits — verified here, not taken from a harvest
 | Defect | Evidence | Owner D<n> |
@@ -92,7 +111,17 @@ Not a spec · not a plan · not a re-litigation · not a fix round.
 **At rung S** this file is the whole decision round: keep the asks, omit the "may NOT decide" fences; under each decision's row write
 its ruling with the decision brief's output items 1–3, 5 and 6; put the user's rulings (U1…) at the
 top; apply the §1e review's corrections here and carry any changed ruling into the spec and the plan
-before execution — no decision agent reads it. The briefs' reading lists name files S omits (arbiter,
+before execution — no decision agent reads it. Close it with the review's dispositions:
+
+    ## Dispositions
+    | Finding | Disposition | Basis |
+    |---|---|---|
+    | R1 | applied · declined · re-opened | <D<n>/the change made · U<n> · S<n> · verify/R1.md> |
+
+A declined finding's basis is a user ruling, a SETTLED row, or a claim-only verifier's REFUTED
+verdict (`prompts.md` §1f) — never "known limitation" or "default" (F86); re-opening a SETTLED row
+moves it out of SETTLED. At M and L the same table closes the arbiter, for the seam review's
+findings. `decision_check.py` checks all of it, and the hook holds `exec-` dispatches until it passes. The briefs' reading lists name files S omits (arbiter,
 decision files, plan index): read this document in their place.
 
 **Before dispatch, check the index against this list** — each item was a real framing error
@@ -110,6 +139,9 @@ somewhere:
   (`examples.md`);
 - **a SETTLED row is a ruling, never a description of what the code does today** — if the code
   does something harmful, that is a confirmed-defects row with an owner, not a settled row;
+- every requirement dimension has an owner or a one-line `N/A: <reason>` — a dimension the asks
+  never touch is N/A, cheaply; one they touch and no row owns is a missing decision;
+- `scripts/decision_check.py decisions/phase<P>` exits 0;
 - **every figure that drives a decision is labelled *measured*, *documented* or *assumed*** — and
   where a read-only probe is cheap (an unauthenticated API call, a throwaway repo, running the
   regex, timing the command), it is *measured*. A run that only read the documentation scored
@@ -151,6 +183,11 @@ with its owner section>
 
 ### What the round confirmed without change
 <one line per accepted ruling>
+
+## Dispositions
+| Finding | Disposition | Basis |
+|---|---|---|
+| R1 | applied · declined · re-opened | <A<n> · U<n> · S<n> · verify/R1.md — as at S, §1> |
 ```
 
 

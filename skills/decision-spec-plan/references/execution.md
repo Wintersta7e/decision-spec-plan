@@ -160,15 +160,18 @@ log the guard refuses is rerun. **Why:** a lead pushed main twice ungated and bo
 red, unnoticed for hours (`failure-modes` F56) — CI confirms a state proven green here; it never
 discovers one.
 
-**At M and L, review before every push** (`sins/lead.md`, code mode): once the commit to push is
-gated, seven reviewers read what it sends against the remote's tip, reproduce each other's highs
-and debate the fixes. Its verdict, `<planning-dir>/reviews/p<P>-push<n>-verdict.md`, opens with
-`reviewed=<SHA> base=<SHA> blocking=<n>` and `after=<fix SHAs>`; `push_guard.sh` holds the push
-until `blocking=0`, every commit after the reviewed one is on `after=`, and the base is an ancestor
-of the remote-tracking ref (activated with `--rung M|L`; an older marker without a rung skips it).
-A new high is fixed by a fresh task group from the debate-amended recommendation, or waived by the
+**At L, review before the phase's last push; at any rung, before a push the user asks a review of**
+(`sins/lead.md`, code mode; `route_state.py --activate --sins on` first, `--sins off` once it is
+out): once the commit to push is gated, seven reviewers read what it sends against the remote's
+tip — over 30 commits, one review per slice of at most 30, cut at lane merges — and reproduce each
+other's highs; a claim a reproduction fails goes to a verifier that writes a test. Its verdict,
+`<planning-dir>/reviews/p<P>-push<n>-verdict.md`, opens with `reviewed=<SHA> base=<SHA>
+blocking=<n>`, `after=<fix SHAs>` and, when sliced, `slices=<from>..<to> …`; `push_guard.sh` holds
+the push until `blocking=0`, every commit after the reviewed one is on `after=`, the base is an
+ancestor of the remote-tracking ref, and the slices cover every commit.
+A new high is fixed by a fresh task group from the amended recommendation, or waived by the
 user as a U-ruling; pre-existing highs go to the next phase's Lane 0. **Why:** a finished lane
-whose full gate was ALL GREEN 25/25 still carried two new highs, and the debate struck a
+whose full gate was ALL GREEN 25/25 still carried two new highs, and the review's second round struck a
 first-proposed fix that would have crashed at every launch (`failure-modes` F70).
 
 **Outward actions are the user's, each time.** A push, a PR closed or merged, a branch deleted, an

@@ -18,7 +18,7 @@ ref that moved or merged into the base, a ref gone (F91).
 
 Usage:
     route_state.py <planning-dir> --phase P [--repo DIR] [--main BRANCH] [--sections 38-48 | 38-]
-        [--spec-dir DIR] [--all] [--activate [--rung S|M|L] [--ci-harness LABEL]]
+        [--spec-dir DIR] [--all] [--activate [--rung S|M|L] [--ci-harness LABEL] [--sins on|off]]
     route_state.py --budget LABEL --estimate M --groups N
 
 --main defaults to the repository's default branch. --sections `38-` counts every section from
@@ -53,12 +53,16 @@ at S the lead harvests itself (F87). While a route is
 active it asks the user before the lead's `gh pr close|merge`, `gh issue close|delete`, `gh release
 create|delete|edit|upload`, `gh repo delete|archive|rename`, a `gh api` write, `--delete-branch`
 or a remote branch delete by `git push`, and refuses them inside a route agent (F81). A check
-that fails lets the call through.
+that fails lets the call through. Registered for SubagentStop and TeammateIdle, it sends an agent
+that ends its turn while its own background shell or monitor runs back to wait on it, twice at
+most per job: nothing wakes it when the job ends (F92). It holds the lead's `exec-` dispatch while
+`decision_check.py` fails on the phase — one whose index did not exist at its first --activate —
+and a `verify-` agent whose prompt is not the file `decision_check.py --verifier` wrote.
 
 Registration, in ~/.claude/settings.json `hooks`, the command
 `python3 ~/.claude/skills/decision-spec-plan/scripts/route_state.py --hook` under: SessionStart
 matcher `compact|resume`, PostToolUse matcher `*`, UserPromptSubmit, PreToolUse matcher
-`Agent|Bash`.
+`Agent|Bash`, SubagentStop, TeammateIdle.
 """
 
 import argparse
@@ -90,6 +94,7 @@ EXEC = "exec-"
 # The agent types only the route dispatches (agents/dsp-*.md), bare or plugin-qualified.
 ROUTE_AGENTS = ("dsp-deep", "dsp-mechanical")
 SLACK = 1.25
+JOB_WAITS = 2
 CONTEXT_STOP = 200_000
 HANDOFF_MAX = 40_000
 CHECKPOINT_MAX = 35
@@ -204,8 +209,14 @@ def parser():
     ap.add_argument(
         "--rung",
         choices=("S", "M", "L"),
-        help="with --activate: the route's rung; at M and L push_guard.sh also requires the "
-        "pre-push review's verdict",
+        help="with --activate: the route's rung",
+    )
+    ap.add_argument(
+        "--sins",
+        choices=("on", "off"),
+        help="with --activate: on — push_guard.sh holds each push until a seven-sins verdict "
+        "covers it: at rung L for the phase's last push, at any rung when the user asked for "
+        "the review. Kept across re-activations; `off` clears it",
     )
     ap.add_argument(
         "--ci-harness",
@@ -305,6 +316,14 @@ def activate(a, main):
     harness = a.ci_harness or old.get("ci_harness")
     if harness and harness != "none":
         marker["ci_harness"] = harness
+    if (a.sins or old.get("sins")) == "on":
+        marker["sins"] = "on"
+    # The decision ledger (decision_check.py) binds a phase whose index did not exist when the
+    # phase was first activated: an index written before the check keeps its old format.
+    ledger = dict(old.get("ledger") or {})
+    index = pathlib.Path(planning) / "decisions" / f"phase{a.phase}" / "00-index.md"
+    ledger.setdefault(a.phase, not index.exists())
+    marker["ledger"] = ledger
     path.write_text(json.dumps(marker) + "\n")
     print(f"route active: {path}")
     if "ci_harness" in marker:
@@ -312,10 +331,10 @@ def activate(a, main):
             f"CI harness {harness}: push_guard.sh also holds every push until a gate log with "
             f"`harness={harness}` passed on that commit (`--ci-harness none` clears it)"
         )
-    if a.rung in ("M", "L"):
+    if "sins" in marker:
         print(
-            f"rung {a.rung}: push_guard.sh also holds every push until a pre-push review's "
-            "verdict covers it (references/sins/lead.md)"
+            "sins on: push_guard.sh also holds every push until a seven-sins verdict covers it "
+            "(references/sins/lead.md; `--sins off` clears it)"
         )
     session = os.environ.get("CLAUDE_CODE_SESSION_ID")
     if not session:
@@ -573,6 +592,40 @@ def s_harvester(event, entry):
     return rung == "S" and "harvest" in text.lower()
 
 
+def ledger_hold(event, entry):
+    """Why the lead's `exec-` or `verify-` dispatch is held by the decision ledger, if it is."""
+    import decision_check
+
+    marker = json.loads(pathlib.Path(entry["marker"]).read_text())
+    phase = parser().parse_args(marker["args"]).phase
+    d = pathlib.Path(entry["planning_dir"]) / "decisions" / f"phase{phase}"
+    tool_input = event.get("tool_input") or {}
+    script = pathlib.Path(decision_check.__file__).resolve()
+    if str(tool_input.get("name") or "").startswith("verify-"):
+        prompt = str(tool_input.get("prompt") or "").strip()
+        reviews = pathlib.Path(entry["planning_dir"]) / "reviews"
+        files = [*d.glob("verify/*.prompt.md"), *reviews.glob("*/verify/*.prompt.md")]
+        written = {p.read_text().strip() for p in files}
+        if prompt not in written:
+            return (
+                "a verifier's prompt is the file `decision_check.py --verifier R<n> --sha "
+                "<commit>` wrote, unchanged: the finding and the commit, with no SETTLED list, "
+                f"rationale or reviewer name ({script}; failure-modes F86)."
+            )
+        return None
+    if not (marker.get("ledger") or {}).get(phase) or not (d / "00-index.md").exists():
+        return None
+    out = io.StringIO()
+    with contextlib.redirect_stdout(out):
+        code = decision_check.main([str(d), "--rung", marker.get("rung") or "M"])
+    if code == 1:
+        return (
+            f"the decision ledger fails `{script} {d}` — fix each line, then dispatch:\n"
+            + out.getvalue().strip()
+        )
+    return None
+
+
 def gate_dispatch(event, entry):
     """The lead dispatching an `exec-` agent: held until the wave's budget is recorded and
     answered, and once the wave runs more than 25% over it (execution.md, F74); an allowed one
@@ -588,8 +641,8 @@ def gate_dispatch(event, entry):
     if not budgets:
         return deny(
             f"phase {phase} has no Stage 5 budget. Price the wave per costs.md (its exec- "
-            "agents × the task-group median, the lead per group, one seven-sins review per "
-            f"push at M and L), record it with {record}, tell the user the figure and wait "
+            "agents × the task-group median, the lead per group, a seven-sins review at L's "
+            f"phase end), record it with {record}, tell the user the figure and wait "
             "for their answer (execution.md)."
         )
     b = budgets[-1]
@@ -681,6 +734,103 @@ def eta(paths, name):
         f"ETA {name}: about {statistics.median(mine or route):.0f} min, the median of {source}. "
         "Tell the user with this dispatch: this ETA and, for a lane, this × its groups left (F83)."
     )
+
+
+def own_jobs(event, session):
+    """The background shells and monitors an agent ending its turn left running: (id, what, log).
+
+    Only the jobs the agent's own transcript started count: SubagentStop's `background_tasks`
+    lists every job of the session, a neighbour teammate's too — a plan author was sent back twice
+    to wait on another's probe. A job listed there runs while its status says so; otherwise until
+    its output file ends `[exited with code N]` or `[killed]`.
+    """
+    transcript = agent_transcript(event, session, event.get("agent_id") or "")
+    if transcript is None:
+        return []
+    calls, jobs, tasks = {}, [], None
+    with transcript.open(errors="replace") as fh:
+        for line in fh:
+            try:
+                content = json.loads(line).get("message", {}).get("content")
+            except (ValueError, AttributeError):
+                continue
+            for c in content if isinstance(content, list) else []:
+                if not isinstance(c, dict):
+                    continue
+                arg = c.get("input") or {}
+                if c.get("type") == "tool_use" and c.get("name") in ("Bash", "Monitor"):
+                    calls[c.get("id")] = arg.get("command") or arg.get("description")
+                elif c.get("type") == "tool_result" and c.get("tool_use_id") in calls:
+                    text = json.dumps(c.get("content"))
+                    # run_in_background, or a foreground command moved there at its timeout
+                    if m := re.search(
+                        r"(?:in background with ID: |moved to the background \(ID: )(\w+)\)?\. "
+                        r"Output is being written to: (\S+?\.output)",
+                        text,
+                    ):
+                        tasks = pathlib.Path(m.group(2)).parent
+                        jobs.append((m.group(1), calls[c["tool_use_id"]], m.group(2)))
+                    elif m := re.search(r"Monitor started \(task (\w+)", text):
+                        jobs.append((m.group(1), calls[c["tool_use_id"]], None))
+    if "background_tasks" in event:
+        running = {
+            str(t.get("id"))
+            for t in event["background_tasks"] or []
+            if t.get("type") in ("shell", "monitor") and t.get("status") == "running"
+        }
+        return [(j, what or "", log or "") for j, what, log in jobs if j in running]
+    out = []
+    for job, what, path in jobs:
+        log = pathlib.Path(path) if path else None
+        if log is None:
+            # A monitor's output sits beside the shells', in /tmp/claude-<uid>/<project>/<session>/tasks.
+            if tasks is None:
+                tasks = pathlib.Path(
+                    f"/tmp/claude-{os.getuid()}/{transcript.parents[2].name}/{session}/tasks"
+                )
+            log = tasks / f"{job}.output"
+        try:
+            with log.open("rb") as fh:
+                fh.seek(max(0, log.stat().st_size - 200))
+                tail = fh.read().decode("utf-8", "replace").strip().splitlines()
+        except OSError:
+            continue
+        if not (
+            tail and re.fullmatch(r"\[(exited with code -?\d+|killed)\]", tail[-1])
+        ):
+            out.append((job, what or "", str(log)))
+    return out
+
+
+def own_wait(event, session):
+    """Send an agent back to wait on its own running job, at most JOB_WAITS times a job (F92)."""
+    agent = str(event.get("agent_id") or "")
+    sent = REGISTRY / f"{session}.waits.json"
+    counts = load_json(sent) if sent.exists() else {}
+    jobs = [
+        j
+        for j in own_jobs(event, session)
+        if counts.get(f"{agent}:{j[0]}", 0) < JOB_WAITS
+    ]
+    if not jobs:
+        return 0
+    for job in jobs:
+        counts[f"{agent}:{job[0]}"] = counts.get(f"{agent}:{job[0]}", 0) + 1
+    sent.write_text(json.dumps(counts))
+    what = "; ".join(
+        f"`{' '.join(w.split())[:160]}` ({j}{', output ' + log if log else ''})"
+        for j, w, log in jobs
+    )
+    print(
+        f"route_state.py (hook): your own background job is still running — {what} — and "
+        "nothing wakes you when it ends: of 81 turns agents ended this way, none woke, and each "
+        "sat until the lead noticed, the longest 6 h 44 min (F92). Wait for it in the foreground "
+        "now: Bash `until grep -q '^exit=' <its log>; do sleep 20; done` with timeout 600000, "
+        "repeated until it ends (a job with no such log: its output file ends `[exited with "
+        "code N]`); then finish your task and return. If it already ended, carry on.",
+        file=sys.stderr,
+    )
+    return 2
 
 
 def agent_transcript(event, session, agent):
@@ -817,7 +967,7 @@ def skill_changes(entry_path, entry):
 def stage_docs(a, rung):
     """(stage, the lead documents it reads) going by which of the phase's files exist."""
     base, p = pathlib.Path(a.planning_dir), a.phase
-    sins = ", references/sins/lead.md" if rung in ("M", "L") else ""
+    sins = ", references/sins/lead.md" if rung == "L" else ""
     dec = base / "decisions" / f"phase{p}"
     if any((base / "lanes").glob(f"p{p}-*")) or lane_checkpoints(base / "lanes", p):
         return 5, "references/execution.md" + sins
@@ -883,6 +1033,11 @@ def hook():
     if not session or not entry_path.exists():
         return 0
     entry = load_json(entry_path)
+    if name in ("SubagentStop", "TeammateIdle"):
+        try:
+            return own_wait(event, session)
+        except Exception:  # noqa: BLE001 — a broken check never holds an agent
+            return 0
     if name == "PreToolUse":
         try:
             if act := outward(event, entry):
@@ -906,9 +1061,14 @@ def hook():
                     "can answer means the round is not S: re-announce it at M."
                 )
             dispatch = event.get("tool_input") or {}
-            if event.get("tool_name") == "Agent" and str(
-                dispatch.get("name") or ""
-            ).startswith(EXEC):
+            agent_name = str(dispatch.get("name") or "")
+            if (
+                event.get("tool_name") == "Agent"
+                and agent_name.startswith((EXEC, "verify-"))
+                and (held := ledger_hold(event, entry))
+            ):
+                return deny(held)
+            if event.get("tool_name") == "Agent" and agent_name.startswith(EXEC):
                 return gate_dispatch(event, entry)
         except (Exception, SystemExit):  # noqa: BLE001 — a broken check never blocks a call
             return 0
@@ -1017,13 +1177,18 @@ def gate_logs(lanes):
     """(log, the commit and dirty count of its first `sha=` line within 20 lines, its last `exit=`
     or None) for each gate log — the line push_guard.sh reads."""
     out = []
+    # Line by line: a whole log read at once raised ENOMEM on a large one.
     for log in sorted(lanes.glob("*-gate*.log")):
-        text = log.read_text(errors="replace")
-        first = next((ln for ln in text.splitlines()[:20] if ln.startswith("sha=")), "")
+        first, last = "", None
+        with log.open(errors="replace") as f:
+            for n, ln in enumerate(f):
+                if n < 20 and not first and ln.startswith("sha="):
+                    first = ln
+                if m := re.fullmatch(r"exit=(\d+)\s*", ln):
+                    last = m.group(1)
         head = re.fullmatch(r"sha=([0-9a-f]{40}) dirty=(\d+)\s*", first)
-        exits = re.findall(r"^exit=(\d+)\s*$", text, re.MULTILINE)
         sha, dirty = head.groups() if head else ("", "")
-        out.append((log, sha, dirty, exits[-1] if exits else None))
+        out.append((log, sha, dirty, last))
     return out
 
 
