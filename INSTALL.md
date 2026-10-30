@@ -9,7 +9,7 @@ after it is in place:
 
 `claude plugin list` then shows it under "Skills-directory plugins". Hooks load when a session
 starts: a session already running keeps the hooks it started with. Without the hooks the route's
-state hook (`route_state.py --hook`) and push guard (`push_guard.sh`) stay off, and SKILL.md's claims
+state hook (`route_state.py --hook`) and push guard (`push_guard.py`) stay off, and SKILL.md's claims
 about them are false. Both act only for a session that ran `route_state.py --activate`; any other
 session pays ~0.02 s per call. Turn it off with `claude plugin disable decision-spec-plan@skills-dir`.
 

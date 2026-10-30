@@ -54,7 +54,7 @@ checkers, read `references/bootstrap.md` first and build the minimum before stag
 | `scripts/plan_lint.py` · `scope_check.py` · `criteria_check.py` | Stage 2 and 4 gates |
 | `scripts/usage_report.py` | Every gate: the round's cost so far, per agent |
 | `scripts/route_state.py` | `--activate` (The route), `--budget` (Quota); its `--hook` is the in-flight block's state |
-| `scripts/push_guard.sh` | A PreToolUse:Bash hook while the route is active: blocks a push of any commit no full gate passed |
+| `scripts/push_guard.py` | A PreToolUse:Bash hook while the route is active: blocks a push of any commit no full gate passed |
 | `scripts/apply_markers.py` | Stage 1 markers: inserts the markers agent's JSON list |
 | `scripts/decision_check.py` | Stage 1 and the §1e review: SETTLED sources, requirement dimensions, finding dispositions; `--verifier` (`prompts.md` §1f) |
 
@@ -189,7 +189,7 @@ exits 0 — every criterion maps to a task and a test file — and you read ever
 `references/execution.md`: lanes of fresh task-group agents, one integrator per wave, you check
 its SHAs first-hand; no lane merges a file outside its plan (`scope_check.py --diff`; at S, you run
 it before the push). Every outward action (push, PR, release) is asked for when it happens (F81), and a
-push sends only commits a full gate passed (`push_guard.sh`). The seven sins review only really
+push sends only commits a full gate passed (`push_guard.py`). The seven sins review only really
 large work: at L, the phase's last push; at any rung, a push the user asks a review of — `--sins on`
 before it, `off` after; past 30 commits, slice by slice (`sins/lead.md`, code mode; F70, F95).
 

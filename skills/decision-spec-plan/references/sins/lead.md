@@ -16,7 +16,7 @@ yourself: dispatch, assign reproductions, send disputed claims to verifiers, mer
 | Mode | When | Target | Verdict |
 |---|---|---|---|
 | **spec** | At L, Stage 3, dispatched with the reconcilers (two messages — the 8-per-message limit); at any rung when the user asks | the phase's spec sections, plus the code they change at the main branch's HEAD | `<planning-dir>/reviews/p<P>-spec-verdict.md` |
-| **code** | At L before the phase's last push; at any rung before a push the user asks a review of. With `--sins on`, `push_guard.sh` holds the push until a verdict covers it | a detached worktree at the gated commit to push; base = the remote's tip; over 30 commits, one review per slice | `<planning-dir>/reviews/p<P>-push<n>-verdict.md` |
+| **code** | At L before the phase's last push; at any rung before a push the user asks a review of. With `--sins on`, `push_guard.py` holds the push until a verdict covers it | a detached worktree at the gated commit to push; base = the remote's tip; over 30 commits, one review per slice | `<planning-dir>/reviews/p<P>-push<n>-verdict.md` |
 
 **Why both.** A finished lane whose full gate was ALL GREEN 25/25 still carried two new highs — a
 crash on a crafted repository, a migration that left a view blank until a manual rescan — and the
@@ -42,7 +42,7 @@ passes at equal budget, and one executed test settles what argument cannot (F95)
   where the next step would pass 30 commits; a single merge of more than 30 splits along its lane's
   own history (`<merge>^1..<merge>^2~<k>`, `<merge>^2~<k>..<merge>^2`). Each slice is
   `<from>..<to>`, at most 30 commits, and together they hold every commit — merges aside, both
-  counts — and `push_guard.sh` checks both.
+  counts — and `push_guard.py` checks both.
 - **spec**: the section list, the spec dir, the scope section, the arbiter, and the main branch's
   HEAD SHA, which the code side is read at.
 
@@ -109,7 +109,7 @@ The verdict is the union of every slice's standing findings.
                                      reproductions run, findings upheld and refuted
 
 `blocking` counts the new criticals and highs neither fixed nor waived. The stamp lines take full
-40-character SHAs; `push_guard.sh` reads them within the first 10 lines.
+40-character SHAs; `push_guard.py` reads them within the first 10 lines.
 
 ## 5. Outcomes
 **code mode:**

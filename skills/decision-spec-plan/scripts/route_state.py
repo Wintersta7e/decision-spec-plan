@@ -26,7 +26,7 @@ Usage:
 and last line. Exit 0 on a report, 2 when the planning dir does not exist.
 
 --activate also writes the arguments to <git-common-dir>/dsp-route-<id>.json, one per planning dir,
-which marks the repository as running that route (push_guard.sh then holds pushes to gated commits;
+which marks the repository as running that route (push_guard.py then holds pushes to gated commits;
 two routes in one repository keep separate phases, budgets and spend, F93), and registers this session
 in ~/.claude/dsp-routes/<session-id>.json, which `route_state.py --hook` reads: after the lead's
 tool calls (PostToolUse, at most every 20 s) and on an agent's return as a prompt
@@ -34,7 +34,7 @@ tool calls (PostToolUse, at most every 20 s) and on an agent's return as a promp
 files changed since the session read them (F78), and after a compaction or a resume
 (SessionStart) the whole report and what to re-read. Re-run with --activate at each phase and in
 each new lead session; delete the marker to end the route. `--ci-harness <label>` names a suite CI
-runs that the local full gate does not; push_guard.sh then also wants, per pushed commit, a gate
+runs that the local full gate does not; push_guard.py then also wants, per pushed commit, a gate
 log whose first 20 lines hold `harness=<label>` (F90).
 
 --budget records a Stage 5 wave's estimate in M units (costs.md) and the `exec-` agents it covers
@@ -78,6 +78,8 @@ import subprocess
 import sys
 import time
 
+import shell_cmd
+
 MARKER = "dsp-route.json"
 REGISTRY = pathlib.Path.home() / ".claude" / "dsp-routes"
 PROJECTS = pathlib.Path.home() / ".claude" / "projects"
@@ -100,23 +102,93 @@ CHECKPOINT_MAX = 35
 RULINGS_MAX = 12_000
 # The tools whose input naming a rulings file counts as the agent reading it.
 READS = ("Read", "Bash", "Grep")
-GIT_COMMIT = re.compile(r"\bgit(?:\s+-[cC]\s+\S+)*\s+commit\b")
-# Outward actions on the hosted repository, one command at a time (up to `;`, `&`, `|`, newline):
-# the lead asks the user each time and a route agent never runs one (F81). Each noun and verb may
-# have any options between them, as gh accepts. A false match only asks.
-WORDS = r"[^;&|\n]*?\s"
-OUTWARD = re.compile(
-    rf"\bgh\s{WORDS}?(?:pr\s{WORDS}?(?:close|merge)|issue\s{WORDS}?(?:close|delete)|"
-    rf"release\s{WORDS}?(?:create|delete|edit|upload)|repo\s{WORDS}?(?:delete|archive|rename))\b"
-    # `gh api` that writes: a method other than GET, or a field (which makes it a POST)
-    rf"|\bgh\s{WORDS}?api\b[^;&|\n]*?(?:\s(?:-X|--method)[=\s]*['\"]?(?i:POST|PATCH|PUT|DELETE)\b"
-    r"|\s(?:-[fF]|--field\b|--raw-field\b|--input\b))"
+# Git commands that make a commit: one made before the agent re-reads a ruling skips it (F59).
+COMMITTING = {"commit", "merge", "cherry-pick", "revert", "am", "pull", "rebase"}
+# Outward actions on the hosted repository: the lead asks the user each time and a route agent
+# never runs one (F81). Each noun and verb may have any options between them, as gh accepts. A
+# false match only asks.
+GH_ACTIONS = {
+    "pr": {"close", "merge"},
+    "issue": {"close", "delete"},
+    "release": {"create", "delete", "edit", "upload"},
+    "repo": {"delete", "archive", "rename"},
+}
+
+
+def bash_commands(command):
+    """Each `git` and `gh` command the Bash command runs, from that word on (`sudo git commit`),
+    read as bash reads it (shell_cmd.py): regexes over the text missed wrapped and quoted forms and
+    backtracked for 36 s on a long line. None when a part cannot be read — a script or stdin fed
+    to a shell, a computed `bash -c` or `eval`, a computed command name or git subcommand — or
+    the reader fails on it (nesting too deep): the caller then reads the bare text."""
+    try:
+        found = shell_cmd.events(command)
+    except Exception:  # noqa: BLE001 — unreadable text falls back to the text check
+        return None
+    out = []
+    for kind, c in found:
+        if kind == "opaque" or (kind == "cmd" and c.words and not c.words[0].static):
+            return None
+        for i, w in enumerate(c.argv if kind == "cmd" else []):
+            if os.path.basename(w) in ("gh", "git"):
+                cmd = shell_cmd.Cmd([], c.words[i:])
+                if (g := shell_cmd.git_args(cmd)) and g[1] is None:
+                    return None
+                out.append(cmd)
+    return out
+
+
+def makes_commit(command):
+    cmds = bash_commands(command)
+    if cmds is None:
+        return bool(re.search(rf"\b({'|'.join(COMMITTING)})\b", command))
+    return any((g := shell_cmd.git_args(c)) and g[1] in COMMITTING for c in cmds)
+
+
+def outward_cmd(cmd):
+    """Whether cmd, a command from a `gh` or `git` word on, is an outward action."""
+    argv = cmd.argv
+    if "--delete-branch" in argv:
+        return True
+    if cmd.name == "gh":
+        rest = argv[1:]
+        if any(
+            w in GH_ACTIONS and GH_ACTIONS[w] & set(rest[i + 1 :])
+            for i, w in enumerate(rest)
+        ):
+            return True
+        if "api" not in rest:
+            return False
+        # `gh api` that writes: a method other than GET, or a field (which makes it a POST)
+        after = rest[rest.index("api") + 1 :] + [""]
+        for i, w in enumerate(after[:-1]):
+            if m := re.fullmatch(r"(?:-X|--method)=?(.*)", w):
+                if (m[1] or after[i + 1]).upper() in ("POST", "PATCH", "PUT", "DELETE"):
+                    return True
+            elif re.match(r"-[fF]|--(?:field|raw-field|input)\b", w):
+                return True
+        return False
     # remote refs deleted by `git push`: --delete, -d (alone or grouped), --prune, --mirror, or a
-    # refspec with no source (`:<ref>`, `+:<ref>`, quoted or not)
-    rf"|\bgit\s{WORDS}?push\b[^;&|\n]*?(?:\s(?:--delete|--prune|--mirror)\b|\s-[a-zA-Z]*d[a-zA-Z]*\b"
-    r"|\s['\"]?\+?:[^\s;&|'\"]+)"
-    r"|--delete-branch\b"
-)
+    # refspec with no source (`:<ref>`, `+:<ref>`)
+    g = shell_cmd.git_args(cmd)
+    return (
+        bool(g)
+        and g[1] == "push"
+        and any(
+            w in ("--delete", "--prune", "--mirror")
+            or re.fullmatch(r"-[a-zA-Z]*d[a-zA-Z]*|\+?:.+", w)
+            for w in (a.text for a in g[2])
+        )
+    )
+
+
+def outward_in(command):
+    cmds = bash_commands(command)
+    if cmds is None:
+        return bool(re.search(r"\b(gh|push)\b", command))
+    return any(outward_cmd(c) for c in cmds)
+
+
 PLAN_ID = re.compile(r"p\d+-\d+[a-z]?(?=-|$)")
 SHA = re.compile(r"\b[0-9a-f]{7,40}\b")
 FINAL_SHA = re.compile(
@@ -213,7 +285,7 @@ def parser():
     ap.add_argument(
         "--sins",
         choices=("on", "off"),
-        help="with --activate: on — push_guard.sh holds each push until a seven-sins verdict "
+        help="with --activate: on — push_guard.py holds each push until a seven-sins verdict "
         "covers it: at rung L for the phase's last push, at any rung when the user asked for "
         "the review. Kept across re-activations; `off` clears it",
     )
@@ -221,7 +293,7 @@ def parser():
         "--ci-harness",
         metavar="LABEL",
         help="with --activate: a suite CI runs that the local full gate does not (another "
-        "database, container tests); push_guard.sh then also requires a gate log with "
+        "database, container tests); push_guard.py then also requires a gate log with "
         "`harness=<LABEL>` for each pushed commit. Kept across re-activations; `none` clears it",
     )
     ap.add_argument(
@@ -290,7 +362,7 @@ def load_json(path):
 
 
 def activate(a, main):
-    """Record this round's arguments where the hooks and push_guard.sh find them."""
+    """Record this round's arguments where the hooks and push_guard.py find them."""
     # Absolute paths, so the hook resolves them from any working directory.
     planning = str(pathlib.Path(a.planning_dir).resolve())
     repo = pathlib.Path(a.repo or a.planning_dir).resolve()
@@ -344,19 +416,19 @@ def activate(a, main):
     print(f"route active: {path}")
     if "ci_harness" in marker:
         print(
-            f"CI harness {harness}: push_guard.sh also holds every push until a gate log with "
+            f"CI harness {harness}: push_guard.py also holds every push until a gate log with "
             f"`harness={harness}` passed on that commit (`--ci-harness none` clears it)"
         )
     if "sins" in marker:
         print(
-            "sins on: push_guard.sh also holds every push until a seven-sins verdict covers it "
+            "sins on: push_guard.py also holds every push until a seven-sins verdict covers it "
             "(references/sins/lead.md; `--sins off` clears it)"
         )
     session = os.environ.get("CLAUDE_CODE_SESSION_ID")
     if not session:
         print(
             "--activate: CLAUDE_CODE_SESSION_ID is unset, so no session is registered and the "
-            "state hook stays silent; push_guard.sh is active"
+            "state hook stays silent; push_guard.py is active"
         )
         return 1
     REGISTRY.mkdir(parents=True, exist_ok=True)
@@ -589,7 +661,7 @@ def outward(event, entry):
     ):
         return None
     command = str((event.get("tool_input") or {}).get("command") or "")
-    return " ".join(command.split())[:120] if OUTWARD.search(command) else None
+    return " ".join(command.split())[:120] if outward_in(command) else None
 
 
 def unrouted(event, entry_path):
@@ -953,7 +1025,7 @@ def agent_pre(event, session, entry):
     if not name.startswith(EXEC):
         return 0
     command = str((event.get("tool_input") or {}).get("command") or "")
-    if event.get("tool_name") == "Bash" and GIT_COMMIT.search(command):
+    if event.get("tool_name") == "Bash" and makes_commit(command):
         stale = unread_rulings(transcript, pathlib.Path(entry["planning_dir"]), name)
         if stale:
             return deny(
@@ -1197,20 +1269,24 @@ def lane_checkpoints(lanes, phase):
 
 def gate_logs(lanes, phase):
     """(log, the commit and dirty count of its first `sha=` line within 20 lines, its last `exit=`
-    or None) for each gate log but another phase's — the lines push_guard.sh reads."""
+    or None) for each full gate log but another phase's — the lines push_guard.py reads. A log
+    whose first 20 lines name a CI harness ran only that suite: no full gate."""
     out = []
     # Line by line: a whole log read at once raised ENOMEM on a large one. Lines end at `\n`
-    # only, as grep's in push_guard.sh do: a progress bar's `\r` before `exit=` is no line break.
+    # only, as push_guard.py reads them: a progress bar's `\r` before `exit=` is no line break.
     for log in sorted(lanes.glob("*-gate*.log")):
         if (m := re.match(r"p(\d+)-", log.name)) and m.group(1) != phase:
             continue
-        first, last = "", None
+        first, last, harness = "", None, False
         with log.open(errors="replace", newline="\n") as f:
             for n, ln in enumerate(f):
                 if n < 20 and not first and ln.startswith("sha="):
                     first = ln
+                harness |= n < 20 and ln.startswith("harness=")
                 if m := re.fullmatch(r"exit=(\d+)\s*", ln):
                     last = m.group(1)
+        if harness:
+            continue
         head = re.fullmatch(r"sha=([0-9a-f]{40}) dirty=(\d+)\s*", first)
         sha, dirty = head.groups() if head else ("", "")
         out.append((log, sha, dirty, last))

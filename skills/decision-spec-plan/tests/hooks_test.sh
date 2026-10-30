@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Tests for the route's hooks on throwaway repositories: push_guard.sh (PreToolUse:Bash) and
+# Tests for the route's hooks on throwaway repositories: push_guard.py (PreToolUse:Bash) and
 # `route_state.py --hook` (PostToolUse, UserPromptSubmit, SessionStart). Never touches a live
 # project; HOME points at a temp dir so the session registry is a throwaway too.
 # Usage: hooks_test.sh   — tests the plugin it sits in; prints one line per case and exits
@@ -33,7 +33,7 @@ bad() {
 
 guard() { # expected-exit cwd command
 	local out code
-	out=$(jq -n --arg c "$3" --arg d "$2" '{tool_input: {command: $c}, cwd: $d}' | bash "$SCRIPTS/push_guard.sh" 2>&1)
+	out=$(jq -n --arg c "$3" --arg d "$2" '{tool_input: {command: $c}, cwd: $d}' | python3 "$SCRIPTS/push_guard.py" 2>&1)
 	code=$?
 	if [ "$code" = "$1" ]; then ok "guard $1  $3"; else
 		bad "guard want $1 got $code  $3"
@@ -137,6 +137,17 @@ guard 2 "$R" "git push origin main feature"
 guard 2 "$T/wt" "git push origin feature"
 guard 2 "$R" "git push origin main && git -C $T/wt push origin feature"
 guard 0 "$R" "git push origin main; git push origin HEAD:main"
+# a directory named like a gate log is no log; a guard that crashes holds the push (an exit 1 lets
+# it through)
+mkdir "$P/lanes/odd-gate.log"
+guard 0 "$R" "git push origin main"
+rmdir "$P/lanes/odd-gate.log"
+out=$(jq -n --arg d "$R" '{tool_input: {command: "git push origin main"}, cwd: $d}' |
+	python3 -c 'import sys; sys.path.insert(0, sys.argv[1]); import push_guard as g
+def boom(*a): raise OSError("injected")
+g.walk = boom; sys.exit(g.main())' "$SCRIPTS" 2>&1)
+[ $? = 2 ] && grep -q "the guard failed on this command (OSError: injected)" <<<"$out" &&
+	ok "a crash in the guard holds the push while a route is active" || bad "guard crash: $out"
 # a tag the same command creates before pushing it: its target is what goes out
 guard 0 "$R" "git tag v9 $MAIN && git push origin v9 2>&1 | tail -2"
 guard 0 "$R" "git tag -a v9 -m \"Release 9\" main && git push origin v9"
@@ -177,6 +188,104 @@ guard 2 "/tmp" "git --git-dir=$R/.git push origin main"
 guard 2 "/tmp" 'git -c core.x=1 push origin main'
 guard 2 "/tmp" "export GIT_DIR=$R/.git; git push origin main"
 guard 2 "/tmp" "pushd $R && git push origin main"
+# the command is read as bash reads it (shell_cmd.py); a regex read missed or misread each of these
+guard 2 "$T/wt" "timeout 60 git push origin feature"
+guard 2 "$T/wt" "env FOO=1 nice -n 5 git push origin feature"
+guard 2 "$T/wt" "command git push origin feature"
+guard 2 "$T/wt" "bash -c 'git push origin feature'"
+guard 2 "$T/wt" "eval git push origin feature"
+guard 2 "$T/wt" "for b in feature; do git push origin \$b; done"
+guard 2 "$T/wt" "! git push origin feature"
+guard 2 "$T/wt" "{ git push origin feature; }"
+guard 2 "$T/wt" "\\git push origin feature"
+guard 2 "$T/wt" "$(command -v git) push origin feature"
+guard 2 "$T/wt" "'git' push origin feature"
+guard 2 "$T/wt" "git \\
+push origin feature"
+guard 2 "$T/wt" "echo \$(git push origin feature)"
+guard 2 "$T/wt" "echo \`git push origin feature\`"
+guard 2 "$T/wt" "sudo git push origin feature"
+guard 2 "$T/wt" "echo feature | xargs git push origin"
+guard 2 "$T/wt" "if true; then git push origin feature; fi"
+guard 0 "$R" "if true; then git push origin main; fi"
+guard 0 "$R" "git push origin \"main\""
+guard 0 "$R" 'echo "now run git push"'
+guard 0 "$T/wt" "echo 'git push origin feature'; git log -1 --oneline"
+guard 0 "$T/wt" "cat <<EOF
+git push origin feature
+EOF"
+guard 0 "$R" "git --no-pager log --grep push"
+guard 0 "/tmp" "git --no-pager log --grep push"
+# a `cd` inside a subshell leaves the push where it was; a quoted `-C` path with a space is read whole
+guard 2 "$T/wt" "(cd /tmp && ls) && git push origin feature"
+git -C "$R" worktree add -q --detach "$T/w t" feature
+guard 2 "/tmp" "git -C \"$T/w t\" push origin HEAD:feature"
+git -C "$R" worktree remove "$T/w t"
+# a directory the command computes is held while a route is active; one it sets, or a fresh
+# mktemp one, is followed
+guard 2 "/tmp" "D=$T/wt; cd \$D && git push origin feature"
+guard 2 "$T/wt" "cd \"\$(git rev-parse --show-toplevel)\" && git push origin feature"
+guard 0 "$T/wt" "W=\$(mktemp -d) && cd \"\$W\" && git push origin feature"
+# refs moved earlier in the command, read-only uses of the same git commands
+guard 2 "$R" "git fetch . feature:main && git push origin main"
+guard 2 "$R" "git symbolic-ref HEAD refs/heads/feature && git push origin HEAD:main"
+guard 0 "$R" "git fetch origin && git push origin main"
+guard 0 "$R" "git branch --show-current && git push origin main"
+guard 0 "$R" "git branch -a; git push origin main"
+guard 2 "$R" "git branch tmp && git push origin main"
+guard 0 "$R" "git checkout -- x.txt && git push origin main"
+# the matching refspec sends every branch both sides have
+guard 2 "$R" "git push origin :"
+guard 2 "$R" "git push origin +:"
+# a pipeline's commands and a backgrounded one run in subshells: their `cd` stays there
+guard 2 "$T/wt" "cd /tmp | true; git push origin feature"
+guard 2 "$T/wt" "cd /tmp & git push origin feature"
+guard 2 "$T/wt" "{ cd /tmp; } | cat; git push origin feature"
+guard 0 "$T/wt" "git log -1 | cat; cd /tmp && git push origin feature"
+# a `cd` that fails leaves the shell where it was; only an `&&` chain after it is skipped
+guard 2 "$T/wt" "cd /no-such-dir-dsp; git push origin feature"
+guard 2 "$T/wt" "cd /no-such-dir-dsp || true; git push origin feature"
+guard 2 "$T/wt" "cd /no-such-dir-dsp && cd /no-such-dir-dsp2; git push origin feature"
+guard 0 "$T/wt" "cd /no-such-dir-dsp && git push origin feature"
+guard 0 "$T/wt" "cd /no-such-dir-dsp || exit 1; git push origin feature"
+# an alias runs what it names: from the config, from `-c`, or a shell one
+git -C "$R" config alias.pu push
+git -C "$R" config alias.sp '!git push'
+guard 2 "$T/wt" "git pu origin feature"
+guard 0 "$R" "git pu origin main"
+guard 2 "$T/wt" "git -c alias.x=push x origin feature"
+guard 2 "$R" "git sp origin main"
+guard 0 "$R" "git log -1 --oneline && git status --short"
+git -C "$R" config --unset alias.pu
+git -C "$R" config --unset alias.sp
+# ref moves the `--` rule missed
+guard 2 "$R" "git checkout -B main feature -- && git push origin main"
+guard 2 "$R" "git worktree add -B main $T/wb feature && git push origin main"
+guard 2 "$R" "git bisect start feature main && git push origin HEAD:main"
+# a command name or git subcommand from a variable is read as its value; an unreadable one is held
+guard 2 "$T/wt" "G=git; \$G push origin feature"
+guard 2 "$T/wt" "P=push; git \$P origin feature"
+guard 0 "$R" "P=push; git \$P origin main"
+guard 2 "$T/wt" "git \$UNSET_DSP_X origin feature"
+guard 2 "$T/wt" "git \$'push' origin feature"
+guard 2 "$T/wt" "git \$'\\x70ush' origin feature"
+guard 2 "$T/wt" "git \$\"push\" origin feature"
+# text a shell runs that the guard cannot read is held when it may push
+guard 2 "$T/wt" "X='git push origin feature'; bash -c \"\$X\""
+guard 2 "$T/wt" "X='git push origin feature'; eval \"\$X\""
+guard 2 "$T/wt" "echo 'git push origin feature' | bash"
+guard 2 "$T/wt" "bash <<EOF
+git push origin feature
+EOF"
+guard 2 "$T/wt" "source ./push.sh"
+guard 0 "$T/wt" "bash -c 'git log -1' && echo pushed"
+# a CI harness's log is no full gate; a marker that names no planning dir holds the push
+printf 'sha=%s dirty=0\nharness=it\nok\nexit=0\n' "$(git -C "$R" rev-parse feature)" >"$P/lanes/f-it-gate.log"
+guard 2 "$T/wt" "git push origin feature"
+rm "$P/lanes/f-it-gate.log"
+cp "$(MK "$R")" "$T/marker.keep" && echo '{}' >"$(MK "$R")"
+guard 2 "$R" "git push origin main"
+mv "$T/marker.keep" "$(MK "$R")"
 # a gate whose codegen/build steps print before the sha= line (one measured at line 6)
 FEAT=$(git -C "$R" rev-parse feature)
 {
@@ -212,9 +321,10 @@ grep -q '"rung": "L"' "$(MK "$R")" && ! grep -q "sins" <<<"$out" &&
 	ok "activate --rung L: rung in the marker, no review announced" || bad "activate --rung L: $out"
 guard 0 "$R" "git push origin main"
 out=$(CLAUDE_CODE_SESSION_ID=s1 python3 "$SCRIPTS/route_state.py" "$P" --phase 1 --repo "$R" --sections 1- --activate --rung L --sins on)
-grep -q '"sins": "on"' "$(MK "$R")" && grep -q "sins on: push_guard.sh" <<<"$out" &&
+grep -q '"sins": "on"' "$(MK "$R")" && grep -q "sins on: push_guard.py" <<<"$out" &&
 	ok "activate --sins on: in the marker, announced" || bad "activate --sins on: $out"
 mkdir -p "$P/reviews"
+git -C "$R" update-ref refs/remotes/origin/main "$MAIN" # the remote holds main
 verdict() { printf '# pre-push review\n%s\n' "$@" >"$P/reviews/w2-verdict.md"; }
 ONE=$(git -C "$R" rev-parse main~1)
 TREE=$(git -C "$R" rev-parse "main^{tree}")
@@ -239,6 +349,9 @@ verdict "reviewed=$REV base=$MAIN blocking=0" "after=$FIX"
 guard 0 "$R" "git push origin rel"
 verdict "reviewed=$MAIN base=$ONE blocking=0" "after=$REV,$FIX"
 guard 0 "$R" "git push origin rel"
+git -C "$R" worktree add -q --detach "$T/dw" rel
+guard 0 "$T/dw" "git push origin HEAD" # a detached HEAD names no branch to compare
+git -C "$R" worktree remove "$T/dw"
 # the remote's tip behind the base: commits older than the base would go out unreviewed
 git -C "$R" update-ref refs/remotes/origin/rel "$ONE"
 verdict "reviewed=$REV base=$ONE blocking=0" "after=$FIX"
@@ -248,6 +361,13 @@ guard 2 "$R" "git push origin rel"
 guard 2 "$R" "git push origin rel:rel"
 guard 0 "$R" "git push origin rel:other"
 git -C "$R" update-ref -d refs/remotes/origin/rel
+# a branch the remote lacks: its base must be on the remote, under any of its refs; a remote with
+# no tracking refs (a URL) is never known to hold it. Both went through unchecked.
+verdict "reviewed=$FIX base=$REV blocking=0"
+guard 2 "$R" "git push origin rel"
+verdict "reviewed=$REV base=$MAIN blocking=0" "after=$FIX"
+guard 2 "$R" "git push $T/elsewhere.git rel"
+guard 0 "$R" "git push 'origin' \"rel:other2\""
 # a phase-end review over more than 30 commits counts only as slices of at most 30 that cover
 # every commit: review recall collapses on a large diff
 C=$MAIN
@@ -291,14 +411,15 @@ grep -q rung "$(MK "$R")" && bad "a new phase without --rung keeps the old phase
 CLAUDE_CODE_SESSION_ID=s1 python3 "$SCRIPTS/route_state.py" "$P" --phase 1 --repo "$R" --sections 1- --activate >/dev/null
 git -C "$R" update-ref -d refs/heads/rel
 git -C "$R" update-ref -d refs/heads/ung
+git -C "$R" update-ref -d refs/remotes/origin/main
 rm -r "$P/reviews" "$P/lanes/rel-gate.log"
 
 # --- a suite CI runs that the local gate does not: a gated push also needs that harness's log (F90)
 activate_ci() { CLAUDE_CODE_SESSION_ID=s1 python3 "$SCRIPTS/route_state.py" "$P" --phase 1 --repo "$R" --sections 1- --activate "$@"; }
 out=$(activate_ci --ci-harness it-3db)
-grep -q '"ci_harness": "it-3db"' "$(MK "$R")" && grep -q 'CI harness it-3db: push_guard.sh' <<<"$out" &&
+grep -q '"ci_harness": "it-3db"' "$(MK "$R")" && grep -q 'CI harness it-3db: push_guard.py' <<<"$out" &&
 	ok "activate --ci-harness: in the marker, announced" || bad "activate --ci-harness: $out"
-out=$(jq -n --arg c "git push origin main" --arg d "$R" '{tool_input: {command: $c}, cwd: $d}' | bash "$SCRIPTS/push_guard.sh" 2>&1)
+out=$(jq -n --arg c "git push origin main" --arg d "$R" '{tool_input: {command: $c}, cwd: $d}' | python3 "$SCRIPTS/push_guard.py" 2>&1)
 [ $? = 2 ] && grep -q '^  not passed by the CI harness: main = ' <<<"$out" && grep -q 'echo "harness=it-3db"' <<<"$out" &&
 	ok "guard: a commit gated locally only is held, with the harness log's command" || bad "guard, CI harness: $out"
 printf 'sha=%s dirty=0\nharness=it-3db\nok\nexit=1\n' "$MAIN" >"$P/lanes/ci-it-3db-gate.log"
@@ -404,6 +525,12 @@ grep -q "fix-ui .* not merged · 1 commits · no gate log at this SHA · trailer
 # an open lane's rulings file every group reads whole, past 12 KB; never its archive (F67)
 grep -q "rulings over 12 KB *lanes/fix-ui-rulings.md (13 KB" <<<"$out" && ! grep -q "rulings-archive.md (" <<<"$out" &&
 	ok "an open lane's rulings file over 12 KB is flagged, its archive is not" || bad "rulings size: $(grep rulings <<<"$out")"
+# a CI harness's log runs only that suite: no full gate, as push_guard.py reads it
+printf 'sha=%s dirty=0\nharness=it\nok\nexit=0\n' "$FX" >"$P/lanes/fix-ui-it-gate.log"
+out=$(python3 "$SCRIPTS/route_state.py" "$P" --phase 1 --repo "$R")
+grep -q "fix-ui .* · no gate log at this SHA · " <<<"$out" && ok "the lane line: a harness log is no full gate" ||
+	bad "harness log as gate: $(grep fix-ui <<<"$out")"
+rm "$P/lanes/fix-ui-it-gate.log"
 printf 'sha=%s dirty=0\nok\nexit=0\n' "$FX" >"$P/lanes/fix-ui-gate.log"
 echo b >>"$T/wt2/a.txt"
 out=$(python3 "$SCRIPTS/route_state.py" "$P" --phase 1 --repo "$R")
@@ -586,7 +713,7 @@ human 1 >"$L5"
 used 2 u9 5000000 >>"$HOME/.claude/projects/p/s9.jsonl" # 5M by the first route's other lead
 hook '/^ETA exec-p4-01-a/' "$(ev PreToolUse s5 "\"tool_name\":\"Agent\",\"tool_input\":{\"name\":\"exec-p4-01-a\"},\"tool_use_id\":\"v1\",\"transcript_path\":\"$L5\"")"
 # the pushing session's own route decides; with no session, the newest route
-gs() { jq -n --arg c "$2" --arg d "$R" --arg s "$1" '{tool_input: {command: $c}, cwd: $d, session_id: $s}' | bash "$SCRIPTS/push_guard.sh" >/dev/null 2>&1; }
+gs() { jq -n --arg c "$2" --arg d "$R" --arg s "$1" '{tool_input: {command: $c}, cwd: $d, session_id: $s}' | python3 "$SCRIPTS/push_guard.py" >/dev/null 2>&1; }
 printf 'sha=%s dirty=0\nok\nexit=0\n' "$(git -C "$R" rev-parse main)" >"$P/lanes/two-gate.log"
 gs s1 "git push origin main" && ok "guard: s1's route has main's gate log" || bad "guard: s1's own route"
 gs s5 "git push origin main" && bad "guard: s5's route has no gate log, yet passed" || ok "guard: s5's route holds main"
@@ -793,6 +920,15 @@ jq -nc --arg f "$P/lanes/p1-01-rulings.md" '{type:"api-request-blob",agentId:"x1
 hook silent "$(inagent x1 'git commit -m x')"
 touch -d '+2 minutes' "$P/lanes/p1-01-rulings.md"
 hook 'deny:re-read .*p1-01-rulings.md' "$(inagent x1 'git commit -m x')"
+# every form that makes a commit, read as bash reads it: a regex missed each of these
+hook 'deny:re-read .*p1-01-rulings.md' "$(inagent x1 "git -C '/a b/wt' commit -m x")"
+hook 'deny:re-read .*p1-01-rulings.md' "$(inagent x1 'git --no-pager commit -m x')"
+hook 'deny:re-read .*p1-01-rulings.md' "$(inagent x1 'git merge --no-ff lane')"
+hook 'deny:re-read .*p1-01-rulings.md' "$(inagent x1 'git cherry-pick abc123')"
+hook silent "$(inagent x1 "git log --grep 'commit'")"
+hook 'deny:re-read .*p1-01-rulings.md' "$(inagent x1 'sudo git commit -m x')"
+hook 'deny:re-read .*p1-01-rulings.md' "$(inagent x1 "git \$'commit' -m x")"
+hook 'deny:re-read .*p1-01-rulings.md' "$(inagent x1 "X='git commit -m x'; bash -c \$X")"
 # only the agent's own lane file holds its commit: a `lanes/` listing once named every lane's (F59)
 jq -nc --arg t "$(ts 200)" --arg f "$P/lanes/p1-01-rulings.md" '{type:"assistant",timestamp:$t,message:{id:"r2",content:[{type:"tool_use",id:"r2",name:"Bash",input:{command:("cat " + $f)}}]}}' >>"$SUB/agent-x1.jsonl"
 echo "R1 another lane's ruling" >"$P/lanes/p1-02-rulings.md"
@@ -834,6 +970,22 @@ hook "ask:git push origin ':old'" "$(leadbash s1 "git push origin ':old'")"
 hook silent "$(leadbash s1 'gh api repos/o/r/pulls/5')"
 hook silent "$(leadbash s1 'git push origin main && git push origin HEAD:refs/heads/x')"
 hook silent "$(leadbash s1 'git push --dry-run -u origin main --follow-tags')"
+# read as bash reads the command: wrapped forms count, quoted text does not, and a long line is
+# read in linear time (a regex took 36 s on 1,000 repeats of `gh pr x`)
+hook 'ask:timeout 30 gh pr close 5' "$(leadbash s1 'timeout 30 gh pr close 5')"
+hook 'ask:bash -c' "$(leadbash s1 "bash -c 'git push origin --delete old'")"
+hook silent "$(leadbash s1 "echo 'gh pr close 5'")"
+# text a shell runs that the reader cannot follow, or one it fails on, asks when it names gh or push
+hook 'ask:eval' "$(leadbash s1 "X='gh pr close 5'; eval \$X")"
+hook 'ask:bash' "$(leadbash s1 "echo 'gh pr close 5' | bash")"
+deep="$(printf '$(%.0s' {1..1500})gh pr close 5$(printf ')%.0s' {1..1500})"
+hook 'ask:acts on the hosted repository' "$(leadbash s1 "$deep")"
+for long in "$(printf 'gh pr x %.0s' {1..1000})" "$(printf 'git x push y %.0s' {1..1000})"; do
+	start=$SECONDS
+	out=$(leadbash s1 "$long" | timeout 20 python3 "$RS" --hook 2>&1)
+	[ $? = 0 ] && [ -z "$out" ] && [ $((SECONDS - start)) -lt 5 ] &&
+		ok "a ${#long}-byte command line is read in $((SECONDS - start)) s" || bad "long line: $((SECONDS - start)) s, $out"
+done
 hook 'deny:a route agent never runs one' "$(inagent x1 'gh pr close 5')"
 hook silent "$(leadbash s2 'gh pr close 5')" # a session with no route
 
@@ -875,12 +1027,12 @@ PLUGIN=$SCRIPTS/..
 reg=$(jq -r '.hooks | to_entries[] | .key as $e | .value[] | "\($e) \(.matcher // "") \(.hooks[].command)"' "$PLUGIN/hooks/hooks.json" | sort)
 want='PostToolUse * python3 "${CLAUDE_PLUGIN_ROOT}/scripts/route_state.py" --hook
 PreToolUse Agent|Bash python3 "${CLAUDE_PLUGIN_ROOT}/scripts/route_state.py" --hook
-PreToolUse Bash bash "${CLAUDE_PLUGIN_ROOT}/scripts/push_guard.sh"
+PreToolUse Bash python3 "${CLAUDE_PLUGIN_ROOT}/scripts/push_guard.py"
 SessionStart compact|resume python3 "${CLAUDE_PLUGIN_ROOT}/scripts/route_state.py" --hook
 SubagentStop  python3 "${CLAUDE_PLUGIN_ROOT}/scripts/route_state.py" --hook
 TeammateIdle  python3 "${CLAUDE_PLUGIN_ROOT}/scripts/route_state.py" --hook
 UserPromptSubmit  python3 "${CLAUDE_PLUGIN_ROOT}/scripts/route_state.py" --hook'
-[ "$reg" = "$want" ] && ok "hooks.json registers route_state.py and push_guard.sh on the route's 7 hooks" ||
+[ "$reg" = "$want" ] && ok "hooks.json registers route_state.py and push_guard.py on the route's 7 hooks" ||
 	bad "hooks.json registrations differ: $(diff <(echo "$want") <(echo "$reg") | head -4)"
 bare=$(grep -rn 'subagent_type: "dsp-\|agentType: .dsp-' "$PLUGIN/SKILL.md" "$PLUGIN/references")
 [ -z "$bare" ] && ok "every dispatch names decision-spec-plan:dsp-*" || bad "a dispatch names a bare agent: $bare"

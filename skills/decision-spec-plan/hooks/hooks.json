@@ -38,7 +38,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "bash \"${CLAUDE_PLUGIN_ROOT}/scripts/push_guard.sh\""
+            "command": "python3 \"${CLAUDE_PLUGIN_ROOT}/scripts/push_guard.py\""
           }
         ]
       },

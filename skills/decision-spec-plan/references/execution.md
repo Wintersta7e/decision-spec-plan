@@ -142,7 +142,7 @@ red, grep the failing tests' names from the log, never read it whole. Then **del
 behind — and branch the next wave from the new SHA. **Why:** in two runs the lead ran tests and gates
 (14–15% of its cost) and polled CI (3–11%) itself, at a ~530k mean context (`failure-modes` F56).
 
-**Push only gated commits.** While the route is active, `scripts/push_guard.sh` (a PreToolUse hook)
+**Push only gated commits.** While the route is active, `scripts/push_guard.py` (a PreToolUse hook)
 blocks a `git push` of any commit without a gate log in `<planning-dir>/lanes/` whose first `sha=`
 line (within its first 20 lines) is `sha=<that commit> dirty=0` and whose last `exit=` line is
 `exit=0` — the integrator's last log covers the main it returns; a commit you add after it needs
@@ -152,7 +152,9 @@ On a route activated with `--ci-harness <label>` the commit also needs a log of 
 `echo "harness=<label>"` after the `sha=` line — never a local stand-in for it (a stub in place of
 the CI's database harness passed four times locally and failed four CI runs; F90).
 Push as `git [-C <dir>] push <remote> <ref>…`: a push with no refspec, other git options before
-`push`, a `GIT_*` variable or a `pushd` is held, since what it would send cannot be read from it.
+`push`, a `GIT_*` variable, a `pushd`, `sudo`/`xargs`, a script, stdin or computed string fed to a
+shell, a computed command name, or a `cd` to a directory the command computes (`cd "$(…)"`, a
+variable it does not set) is held, since what it would send cannot be read from it.
 **Every gate run — yours included — goes to such a log**, read by its last `exit=` line and a grep
 for failing tests, never piped through `tail` or `head` (`failure-modes` F31): one lead piped 22
 gates through `tail`, and one hid the lint error of a red commit. A gate log is never edited — a
@@ -166,7 +168,7 @@ out): once the commit to push is gated, seven reviewers read what it sends again
 tip — over 30 commits, one review per slice of at most 30, cut at lane merges — and reproduce each
 other's highs; a claim a reproduction fails goes to a verifier that writes a test. Its verdict,
 `<planning-dir>/reviews/p<P>-push<n>-verdict.md`, opens with `reviewed=<SHA> base=<SHA>
-blocking=<n>`, `after=<fix SHAs>` and, when sliced, `slices=<from>..<to> …`; `push_guard.sh` holds
+blocking=<n>`, `after=<fix SHAs>` and, when sliced, `slices=<from>..<to> …`; `push_guard.py` holds
 the push until `blocking=0`, every commit after the reviewed one is on `after=`, the base is an
 ancestor of the remote-tracking ref, and the slices cover every commit.
 A new high is fixed by a fresh task group from the amended recommendation, or waived by the
