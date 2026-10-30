@@ -14,8 +14,8 @@ Usage:
     usage_report.py [session-id] [--project-dir DIR] [--since ISO-TIMESTAMP]
         [--until ISO-TIMESTAMP] [--top N] [--groups]
 
-Without a session id it reports the newest session of the project whose directory is the current
-working directory, which is the running lead's own. `--since` and `--until` count only records in
+Without a session id it reports the running session ($CLAUDE_CODE_SESSION_ID) of the project whose
+directory is the current working directory, else that project's newest session. `--since` and `--until` count only records in
 that span (e.g. from the skill's start). Sessions a hook or plugin started through the Agent SDK in
 the project or one of its worktrees (entrypoint `sdk-*`, e.g. a security review of every commit) are
 counted too, over the same span — up to the last record of the lead or its agents without
@@ -30,9 +30,11 @@ Exit 0 on a report, 2 when no transcript is found.
 import argparse
 import datetime
 import json
+import os
 import pathlib
 import re
 import statistics
+import subprocess
 import sys
 
 WEIGHTS = {"input": 1.0, "write_5m": 1.25, "write_1h": 2.0, "output": 5.0}
@@ -43,6 +45,9 @@ HAIKU_LONG = 100_000
 LONG_TURNS = 150
 LONG_CONTEXT = 300_000
 ENTRYPOINT = re.compile(r'"entrypoint":"([^"]*)"')
+CWD = re.compile(r'"cwd":"([^"]*)"')
+# route_state.py's session registry: one entry per route lead
+REGISTRY = pathlib.Path.home() / ".claude" / "dsp-routes"
 EDITS = {"Edit", "Write", "MultiEdit", "NotebookEdit"}
 COMMIT = re.compile(r"\bgit\b(?:\s+-[Cc]\s+\S+)*\s+commit\b")
 # route_state.py's CONTEXT_STOP: a task group past it finishes its task and returns (F75).
@@ -186,13 +191,44 @@ def entrypoint(path):
     return ""
 
 
+def common_dir(path):
+    """The git common dir of the first `cwd` a transcript records, or None (gone, or no repo)."""
+    with open(path, encoding="utf-8", errors="replace") as fh:
+        for _, line in zip(range(20), fh):
+            if m := CWD.search(line):
+                r = subprocess.run(
+                    [
+                        "git",
+                        "-C",
+                        m.group(1),
+                        "rev-parse",
+                        "--path-format=absolute",
+                        "--git-common-dir",
+                    ],
+                    capture_output=True,
+                    text=True,
+                    check=False,
+                )
+                return r.stdout.strip() if r.returncode == 0 else None
+    return None
+
+
 def sdk_sessions(project, lead_path, since, until):
-    """Sessions with an `sdk-*` entrypoint in the project dir or a worktree's (`<project>-*`)."""
+    """Sessions with an `sdk-*` entrypoint in the project dir or a worktree's (`<project>-*`).
+
+    A route's lead (registered by `route_state.py --activate`) is a lead even when headless
+    (`sdk-cli`), and a `<project>-*` dir whose sessions ran in another repository is another
+    project named alike."""
     floor = epoch(since)
     rows = []
+    repo = common_dir(lead_path)
     for directory in [project, *sorted(project.parent.glob(project.name + "-*"))]:
         for path in sorted(directory.glob("*.jsonl")):
             if path == lead_path or (floor and path.stat().st_mtime < floor):
+                continue
+            if (REGISTRY / f"{path.stem}.json").exists():
+                continue
+            if directory != project and repo and common_dir(path) not in (repo, None):
                 continue
             if entrypoint(path).startswith("sdk"):
                 row = scan(path, since, until)
@@ -294,8 +330,13 @@ def main():
         / "projects"
         / re.sub(r"[^A-Za-z0-9]", "-", str(pathlib.Path.cwd()))
     )
+    # Without a session id, the running session's own if it is in this project: the newest
+    # transcript may be a hook's or another lead's.
+    own = project / f"{os.environ.get('CLAUDE_CODE_SESSION_ID')}.jsonl"
     if args.session:
         lead_path = project / f"{args.session}.jsonl"
+    elif os.environ.get("CLAUDE_CODE_SESSION_ID") and own.exists():
+        lead_path = own
     else:
         candidates = sorted(project.glob("*.jsonl"), key=lambda p: p.stat().st_mtime)
         lead_path = candidates[-1] if candidates else project / "missing.jsonl"

@@ -3,7 +3,7 @@
 Every dispatch is `run_in_background: true`, all independent ones in **one message** — at most 8 per
 message; a spawn that returns "Lock file is already being held" never started, so dispatch it again
 (`failure-modes` F65). **You pick each dispatch's model and effort** by what it must get right:
-`subagent_type: "dsp-deep"` (`~/.claude/agents/dsp-deep.md`, a restricted tool list) with the Agent
+`subagent_type: "decision-spec-plan:dsp-deep"` (`<skill-dir>/agents/dsp-deep.md`, a restricted tool list; the plugin qualifies the name) with the Agent
 call's `model` (omitted: the session's) and `effort`. Announce each role's pair with a one-line reason beside the rung and
 headcount (SKILL.md, "Pick a rung"); the user may overrule any before the first dispatch. The second
 model keeps its own configuration.
@@ -22,7 +22,7 @@ Depart from the default wherever the task calls for it, with a one-line reason i
 decision, conflicting hypotheses, a cross-component seam), less for the cheaper rows above. Every
 measured run used `xhigh` for every role, so a session at `high` is itself unmeasured (run set I):
 record each agent's model and effort with its cost in the handoff (`usage_report.py` prints both). A Workflow script picks
-the pair with `agentType: 'dsp-deep'` (the session's model and effort) or `'dsp-mechanical'`
+the pair with `agentType: 'decision-spec-plan:dsp-deep'` (the session's model and effort) or `'decision-spec-plan:dsp-mechanical'`
 (Sonnet, medium) in the `agent()` options. **Why `dsp-deep` is a named agent:** `general-purpose` carries every tool schema and the skill listing, so its first turn started
 at 29.5k tokens against 15.1k for `dsp-deep` (same headless session, same prompt, 2026-10-06;
 40.8k for `general-purpose` from an interactive session; another machine: 55.9k against 40.9k), and every later turn re-sends the difference. A role that needs a
@@ -72,7 +72,7 @@ lookups, ranged reads. **Never have one agent emit N large items** — fan out o
 The turn-economy rule (batch known lookups, `grep -n` first, ranged reads) and an execution agent's
 one-group limit live in the `dsp-deep` and `dsp-mechanical` definitions, so they hold however a
 prompt or brief is worded — a lead-written lane brief left the rule out of 21 of 24 dispatches
-(2026-10-04). A `general-purpose` dispatch gets both paragraphs pasted from `~/.claude/agents/dsp-deep.md`.
+(2026-10-04). A `general-purpose` dispatch gets both paragraphs pasted from `<skill-dir>/agents/dsp-deep.md`.
 
 Substitute `<repo>`, `<planning-dir>`, `<P>`, `<scratchpad>`.
 

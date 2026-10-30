@@ -2,12 +2,12 @@
 # Tests for the route's hooks on throwaway repositories: push_guard.sh (PreToolUse:Bash) and
 # `route_state.py --hook` (PostToolUse, UserPromptSubmit, SessionStart). Never touches a live
 # project; HOME points at a temp dir so the session registry is a throwaway too.
-# Usage: hooks_test.sh   — prints one line per case and exits non-zero on any failure.
-#        SCRIPTS=<dir> hooks_test.sh — test a staged copy.
+# Usage: hooks_test.sh   — tests the plugin it sits in; prints one line per case and exits
+#        non-zero on any failure.  SCRIPTS=<dir> hooks_test.sh — test a staged copy.
 
 set -uo pipefail
-SCRIPTS=${SCRIPTS:-~/.claude/skills/decision-spec-plan/scripts}
-SCRIPTS=$(eval echo "$SCRIPTS")
+SCRIPTS=${SCRIPTS:-$(dirname "$0")/../scripts}
+SCRIPTS=$(cd "$(eval echo "$SCRIPTS")" && pwd)
 T=$(mktemp -d)
 trap 'rm -rf "$T"' EXIT
 FAIL=0
@@ -284,7 +284,11 @@ CLAUDE_CODE_SESSION_ID=s1 python3 "$SCRIPTS/route_state.py" "$P" --phase 1 --rep
 guard 0 "$R" "git push origin main"
 CLAUDE_CODE_SESSION_ID=s1 python3 "$SCRIPTS/route_state.py" "$P" --phase 1 --repo "$R" --sections 1- --activate >/dev/null
 guard 0 "$R" "git push origin main"
-grep -q rung "$(MK "$R")" && bad "a marker without --rung keeps a rung" || ok "a marker without --rung has none"
+jq -e '.rung == "S"' "$(MK "$R")" >/dev/null && ok "a re-activation of the phase without --rung keeps its rung" ||
+	bad "re-activation without --rung: $(cat "$(MK "$R")")"
+CLAUDE_CODE_SESSION_ID=s1 python3 "$SCRIPTS/route_state.py" "$P" --phase 2 --repo "$R" --sections 1- --activate >/dev/null
+grep -q rung "$(MK "$R")" && bad "a new phase without --rung keeps the old phase's rung" || ok "a new phase without --rung has none"
+CLAUDE_CODE_SESSION_ID=s1 python3 "$SCRIPTS/route_state.py" "$P" --phase 1 --repo "$R" --sections 1- --activate >/dev/null
 git -C "$R" update-ref -d refs/heads/rel
 git -C "$R" update-ref -d refs/heads/ung
 rm -r "$P/reviews" "$P/lanes/rel-gate.log"
@@ -426,7 +430,11 @@ cp "$HOME/.claude/dsp-routes/s1.json" "$HOME/.claude/dsp-routes/s9.json"
 mkdir -p "$HOME/.claude/projects/p"
 touch -d '5 minutes ago' "$HOME/.claude/projects/p/s9.jsonl"
 touch -d '3 days ago' "$(MK "$R")"
-out=$(CLAUDE_CODE_SESSION_ID=s3 python3 "$SCRIPTS/route_state.py" "$M/.plan" --phase 1 --repo "$M" --activate)
+# The stop hook's sent-waits sidecar lives in the registry too, and is no route.
+echo '{"a1:b1": 1}' >"$HOME/.claude/dsp-routes/s9.waits.json"
+out=$(CLAUDE_CODE_SESSION_ID=s3 python3 "$SCRIPTS/route_state.py" "$M/.plan" --phase 1 --repo "$M" --activate 2>&1) &&
+	ok "activate skips a waits sidecar in the registry" || bad "activate beside a waits sidecar: $out"
+rm "$HOME/.claude/dsp-routes/s9.waits.json"
 grep -q '"--main", "master"' "$(MK "$M")" && ok "--main defaults to master" || bad "--main default: $(cat "$(MK "$M")")"
 [ "$(grep -c "other route on this account: $P (lead last active 5m ago)" <<<"$out")" = 1 ] &&
 	ok "activate lists the other route once, active as of its lead's transcript" || bad "other routes: $out"
@@ -524,12 +532,17 @@ hook '/^ETA exec-p1-07-a/' "$(dispatch exec-p1-07-a t7)"
 # asked first, recorded after the answer in the same turn: that one answer is enough (F93); a
 # prompt that opened the turn, or an answer in an earlier turn, is not
 endturn() { jq -nc --arg t "$(ts "$1")" '{type:"assistant",timestamp:$t,message:{id:"e",stop_reason:"end_turn",content:[{type:"text",text:"ok"}]}}'; }
-auq() { jq -nc --arg t "$(ts "$1")" '{type:"user",timestamp:$t,toolUseResult:{answers:{"Raise the budget?":"Raise"}},message:{role:"user",content:[{type:"tool_result",tool_use_id:"q",content:"answered"}]}}'; }
+auq() { jq -nc --arg t "$(ts "$1")" --arg q "${2:-Raise the budget to 50M?}" '{type:"user",timestamp:$t,toolUseResult:{questions:[{question:$q}],answers:{($q):"Yes"}},message:{role:"user",content:[{type:"tool_result",tool_use_id:"q",content:"answered"}]}}'; }
 sleep 4 # past the answers stamped up to 3 s ahead above
 endturn -2 >>"$LEAD"
 human -1 >>"$LEAD"
 CLAUDE_CODE_SESSION_ID=s1 python3 "$SCRIPTS/route_state.py" --budget w4 --estimate 50 --groups 9 >/dev/null
 hook 'deny:has not answered' "$(dispatch exec-p1-07-a t7)"
+# an answer to another question in the turn is no answer to the figure
+auq -1 'Which lane runs first, p1-01 or p1-02?' >>"$LEAD"
+out=$(CLAUDE_CODE_SESSION_ID=s1 python3 "$SCRIPTS/route_state.py" --budget w4b --estimate 50 --groups 9)
+grep -q "Tell the user this figure" <<<"$out" && ok "--budget: an answer to another question does not approve the figure" ||
+	bad "--budget took an unrelated answer: $out"
 auq -1 >>"$LEAD"
 out=$(CLAUDE_CODE_SESSION_ID=s1 python3 "$SCRIPTS/route_state.py" --budget w5 --estimate 50 --groups 9)
 grep -q "answered your question at .*earlier in this turn" <<<"$out" && ok "--budget after an answer in the turn says so" ||
@@ -565,7 +578,7 @@ hook '/^ETA exec-wave2: about 120 min, the median of the route.s 1 finished inte
 P2=$R/.plan2
 mkdir -p "$P2/lanes"
 CLAUDE_CODE_SESSION_ID=s5 python3 "$RS" "$P2" --phase 4 --repo "$R" --activate --rung M >/dev/null
-jq -e '.args[2] == "1" and (.budgets | length) == 7' "$(MK "$R")" >/dev/null && jq -e '.args[2] == "4"' "$(MK "$R" "$P2")" >/dev/null &&
+jq -e '.args[2] == "1" and (.budgets | length) == 8' "$(MK "$R")" >/dev/null && jq -e '.args[2] == "4"' "$(MK "$R" "$P2")" >/dev/null &&
 	ok "a second route in the repository leaves the first's phase and budgets" || bad "second route: $(cat "$(MK "$R")")"
 L5=$HOME/.claude/projects/p/s5.jsonl
 CLAUDE_CODE_SESSION_ID=s5 python3 "$RS" --budget w9 --estimate 1 --groups 9 >/dev/null
@@ -848,15 +861,29 @@ mv "$T/marker.bak" "$MKR"
 
 # --- the mechanical tier carries the deep tier's role rules: a lane moved to it once ran with no
 # one-group limit, context stop, rulings, no-progress or heavy-run rule
-AGENTS=$SCRIPTS/../../../agents
+AGENTS=$SCRIPTS/../agents
 body() { sed -n '/^Your final message/,$p' "$1"; }
-if [ -f "$AGENTS/dsp-mechanical.md" ]; then
-	[ -n "$(body "$AGENTS/dsp-deep.md")" ] && [ "$(body "$AGENTS/dsp-deep.md")" = "$(body "$AGENTS/dsp-mechanical.md")" ] &&
-		ok "dsp-mechanical carries dsp-deep's role rules" ||
-		bad "dsp-mechanical's role rules differ from dsp-deep's: $(diff <(body "$AGENTS/dsp-deep.md") <(body "$AGENTS/dsp-mechanical.md") | head -3)"
-else
-	echo "SKIP  no agents dir at $AGENTS — the tiers' rules were not compared"
-fi
+[ -n "$(body "$AGENTS/dsp-deep.md")" ] && [ "$(body "$AGENTS/dsp-deep.md")" = "$(body "$AGENTS/dsp-mechanical.md")" ] &&
+	ok "dsp-mechanical carries dsp-deep's role rules" ||
+	bad "dsp-mechanical's role rules differ from dsp-deep's: $(diff <(body "$AGENTS/dsp-deep.md") <(body "$AGENTS/dsp-mechanical.md") 2>&1 | head -3)"
+
+# --- the plugin's wiring: its hooks run this plugin's scripts on every event the route needs, and
+# a dispatch names the agent as the plugin qualifies it (a bare `dsp-deep` resolves to no agent)
+PLUGIN=$SCRIPTS/..
+[ "$(jq -r .name "$PLUGIN/.claude-plugin/plugin.json")" = decision-spec-plan ] &&
+	ok "plugin.json names the plugin decision-spec-plan" || bad "plugin.json does not name the plugin decision-spec-plan"
+reg=$(jq -r '.hooks | to_entries[] | .key as $e | .value[] | "\($e) \(.matcher // "") \(.hooks[].command)"' "$PLUGIN/hooks/hooks.json" | sort)
+want='PostToolUse * python3 "${CLAUDE_PLUGIN_ROOT}/scripts/route_state.py" --hook
+PreToolUse Agent|Bash python3 "${CLAUDE_PLUGIN_ROOT}/scripts/route_state.py" --hook
+PreToolUse Bash bash "${CLAUDE_PLUGIN_ROOT}/scripts/push_guard.sh"
+SessionStart compact|resume python3 "${CLAUDE_PLUGIN_ROOT}/scripts/route_state.py" --hook
+SubagentStop  python3 "${CLAUDE_PLUGIN_ROOT}/scripts/route_state.py" --hook
+TeammateIdle  python3 "${CLAUDE_PLUGIN_ROOT}/scripts/route_state.py" --hook
+UserPromptSubmit  python3 "${CLAUDE_PLUGIN_ROOT}/scripts/route_state.py" --hook'
+[ "$reg" = "$want" ] && ok "hooks.json registers route_state.py and push_guard.sh on the route's 7 hooks" ||
+	bad "hooks.json registrations differ: $(diff <(echo "$want") <(echo "$reg") | head -4)"
+bare=$(grep -rn 'subagent_type: "dsp-\|agentType: .dsp-' "$PLUGIN/SKILL.md" "$PLUGIN/references")
+[ -z "$bare" ] && ok "every dispatch names decision-spec-plan:dsp-*" || bad "a dispatch names a bare agent: $bare"
 
 # --- an agent that ends its turn while its own background job runs is sent back to wait on it:
 # nothing wakes a teammate when the job ends (F92). The hook reads the agent's transcript for the
@@ -1025,6 +1052,146 @@ hook silent "$(dispatch verify-WRA-1 "$(cat "$p")")"
 hook "deny:verifier's prompt is the file" "$(dispatch verify-WRA-1 "$(cat "$p") Wrath is usually right.")"
 rm -r "$RD"
 rm -r "$P/decisions/phase1/00-index.md" "$P/decisions/phase1/00-seams.md" "$P/decisions/phase1/verify"
+# a finding opens with its id — in a numbered list or a heading too — and a wrapped line that
+# begins with another finding's id stays in its finding
+cat >"$DC/00-seams.md" <<'EOF'
+# Seams
+1. **R1** — the export drops the id column.
+2. **R2** — two people sharing a name merge on import,
+R1's keying makes this reachable from every import path.
+### **R3** — the cache is never cleared.
+EOF
+rm -f "$DC/verify/R1.md"
+index '| S1 | **x** | U2 |' '' "$(disp '| R1 | applied | D1 |')" >"$DC/00-index.md"
+dcheck 1 'R2 has no disposition' --rung S
+dcheck 1 'R3 has no disposition' --rung S
+python3 "$SCRIPTS/decision_check.py" "$DC" --verifier R2 --sha abc123 >/dev/null &&
+	grep -qF 'reachable from every import path' "$DC/verify/R2.prompt.md" &&
+	python3 "$SCRIPTS/decision_check.py" "$DC" --verifier R3 --sha abc123 >/dev/null &&
+	grep -qF 'the cache is never cleared' "$DC/verify/R3.prompt.md" &&
+	ok "decision_check --verifier: a wrapped finding whole, a heading finding" || bad "decision_check wrapped or heading finding"
+# an escaped pipe stays inside its table cell
+printf '| ID | Severity | Age | Where | Finding | Recommendation | Evidence |\n|---|---|---|---|---|---|---|\n| WRA-3 | high | new | `a:1` | reads unbounded | cap | `cat big.tag \\| ./reader` ran out of memory |\n' >"$T/wrath.md"
+python3 "$SCRIPTS/decision_check.py" "$DC" --verifier WRA-3 --sha abc123 --from "$T/wrath.md" >/dev/null &&
+	grep -qF 'cat big.tag | ./reader` ran out of memory' "$DC/verify/WRA-3.prompt.md" &&
+	ok "decision_check --from: an escaped pipe stays in the evidence" || bad "escaped pipe: $(cat "$DC/verify/WRA-3.prompt.md")"
+
+# --- a re-activation keeps the rung; at S the index holds the decisions; an ended route's phase
+# stays bound by the ledger
+Q=$T/qrepo
+git init -q -b main "$Q"
+git -C "$Q" "${G[@]}" commit -q --allow-empty -m one
+mkdir -p "$Q/.plan/decisions/phase1"
+CLAUDE_CODE_SESSION_ID=s7 python3 "$RS" "$Q/.plan" --phase 1 --repo "$Q" --activate --rung S >/dev/null
+CLAUDE_CODE_SESSION_ID=s7 python3 "$RS" "$Q/.plan" --phase 1 --repo "$Q" --activate --sins on >/dev/null
+jq -e '.rung == "S" and .sins == "on"' "$(MK "$Q")" >/dev/null && ok "a re-activation without --rung keeps the rung" ||
+	bad "re-activation dropped the rung: $(cat "$(MK "$Q")")"
+printf '| **D1** | x |\n| **D2** | y |\n' >"$Q/.plan/decisions/phase1/00-index.md"
+out=$(python3 "$RS" "$Q/.plan" --phase 1 --repo "$Q")
+grep -q 'decisions  0 D files (2 in the index)' <<<"$out" && ! grep -q pending <<<"$out" &&
+	ok "rung S: the index's decisions are not pending D files" || bad "rung S pending: $out"
+rm "$(MK "$Q")"
+CLAUDE_CODE_SESSION_ID=s7 python3 "$RS" "$Q/.plan" --phase 1 --repo "$Q" --activate --rung S >/dev/null
+jq -e '.ledger["1"] == true' "$(MK "$Q")" >/dev/null && ok "an ended route's phase stays bound by the ledger" ||
+	bad "ledger lost on a restarted route: $(cat "$(MK "$Q")")"
+rm "$HOME/.claude/dsp-routes/s7.json"
+
+# --- the report on odd inputs: a squashed lane named in backticks, another phase's gate log, a
+# carriage return before exit=, a non-UTF-8 byte, an en dash, a detached master repo
+S=$T/srepo
+git init -q -b main "$S"
+git -C "$S" "${G[@]}" commit -q --allow-empty -m one
+git -C "$S" checkout -q -b p1-01
+for f in a b; do
+	echo "$f" >"$S/$f"
+	git -C "$S" add "$f"
+	git -C "$S" "${G[@]}" commit -q -m "$f"
+done
+LANE=$(git -C "$S" rev-parse HEAD)
+git -C "$S" checkout -q main
+git -C "$S" merge -q --squash p1-01 >/dev/null
+git -C "$S" "${G[@]}" commit -q -m squash
+git -C "$S" branch -q -D p1-01
+SP=$S/.plan
+mkdir -p "$SP/lanes" "$SP/decisions/phase1"
+printf 'Final SHA: %s\n' "$LANE" >"$SP/lanes/p1-01-checkpoint.md"
+printf -- '- Merged `p1-01` `%s` → `%s`\n' "${LANE:0:9}" "$(git -C "$S" rev-parse --short=9 main)" >"$SP/lanes/wave1-integration.md"
+printf 'sha=%s dirty=0\nexit=1\n' "$(printf 'a%.0s' {1..40})" >"$SP/lanes/p2-03-gate.log"
+{
+	printf 'sha=%s dirty=0\n' "$(git -C "$S" rev-parse main)"
+	printf 'progress 100%%\rexit=0\n'
+} >"$SP/lanes/wave1-gate.log"
+printf '| **D1** | Caf\xe9 |\n' >"$SP/decisions/phase1/00-index.md"
+out=$(python3 "$RS" "$SP" --phase 1 --repo "$S" --sections 1–2 2>&1)
+grep -q '1 merged into main' <<<"$out" && ok "report: a squashed lane recorded in backticks is merged" || bad "backticked record: $out"
+! grep -q 'p2-03-gate.log' <<<"$out" && grep -q 'gates      0 green · 0 red · 1 without exit=' <<<"$out" &&
+	ok "report: another phase's gate log is not counted; a CR is no line break" || bad "gate logs: $out"
+grep -q 'decisions  0 D files (1 in the index' <<<"$out" && grep -q 'spec       0/2 sections' <<<"$out" &&
+	ok "report: a cp1252 byte in the index and an en dash in --sections" || bad "odd bytes: $out"
+DM=$T/drepo
+git init -q -b master "$DM"
+git -C "$DM" "${G[@]}" commit -q --allow-empty -m one
+git -C "$DM" "${G[@]}" commit -q --allow-empty -m lane
+mkdir -p "$DM/.plan/lanes"
+printf 'Final SHA: %s\n' "$(git -C "$DM" rev-parse HEAD)" >"$DM/.plan/lanes/p1-01-checkpoint.md"
+git -C "$DM" checkout -q --detach
+out=$(python3 "$RS" "$DM/.plan" --phase 1 --repo "$DM")
+grep -q '1 merged into master' <<<"$out" && ! grep -q 'does not exist' <<<"$out" &&
+	ok "report: a detached master repo with no origin uses master" || bad "detached master: $out"
+
+# --- base drift: an assumed branch merged without moving; the base's upstream moved on a fetch (F91)
+B2=$T/base2
+git init -q -b main "$B2"
+git -C "$B2" "${G[@]}" commit -q --allow-empty -m base
+git -C "$B2" checkout -q -b feat
+git -C "$B2" "${G[@]}" commit -q --allow-empty -m f
+F0=$(git -C "$B2" rev-parse feat)
+git -C "$B2" checkout -q main
+mkdir -p "$B2/.plan/decisions/phase1"
+printf '> **Base**: `main` at `%s`\n> **Assumes**: `feat` at `%s`\n' "$(git -C "$B2" rev-parse main)" "$F0" >"$B2/.plan/decisions/phase1/00-index.md"
+git -C "$B2" "${G[@]}" merge -q --no-ff -m merge feat
+out=$(python3 "$RS" "$B2/.plan" --phase 1 --repo "$B2")
+grep -q "assumed ref merged *feat ${F0:0:9} into main" <<<"$out" && ok "base drift: an assumed branch merged without moving" ||
+	bad "base drift, merged unmoved: $out"
+git clone -q "$B2" "$T/clone"
+C0=$(git -C "$T/clone" rev-parse main)
+mkdir -p "$T/clone/.plan/decisions/phase1"
+printf '> **Base**: `main` at `%s`\n' "$C0" >"$T/clone/.plan/decisions/phase1/00-index.md"
+git -C "$B2" "${G[@]}" commit -q --allow-empty -m later
+git -C "$T/clone" fetch -q
+out=$(python3 "$RS" "$T/clone/.plan" --phase 1 --repo "$T/clone")
+grep -qF "main@{upstream} 1 commits past ${C0:0:9}" <<<"$out" && ok "base drift: the base's upstream moved, fetched not pulled" ||
+	bad "base drift, upstream: $out"
+
+# --- usage_report.py: a route's other headless lead is a lead, a project named alike is not a
+# worktree, and with no session id the running session's own transcript
+W=$T/tab
+git init -q -b main "$W"
+git -C "$W" "${G[@]}" commit -q --allow-empty -m one
+git -C "$W" worktree add -q "$T/tab-p1-01" -b p1-01
+git init -q -b main "$T/tab-v2"
+UP=$HOME/.claude/projects
+mkdir -p "$UP/-t-tab" "$UP/-t-tab-p1-01" "$UP/-t-tab-v2"
+crec() { # offset id tokens cwd [entrypoint]
+	jq -nc --arg t "$(ts "$1")" --arg id "$2" --argjson n "$3" --arg c "$4" --arg e "${5:-cli}" \
+		'{type:"assistant",timestamp:$t,requestId:$id,cwd:$c,entrypoint:$e,message:{id:$id,model:"claude-opus-5-5",content:[],usage:{input_tokens:$n}}}'
+}
+{
+	crec -100 a1 1000000 "$W"
+	crec -50 a2 1000000 "$W"
+} >"$UP/-t-tab/lead.jsonl"
+crec -80 b1 5000000 "$W" sdk-cli >"$UP/-t-tab/lead2.jsonl"
+echo '{}' >"$HOME/.claude/dsp-routes/lead2.json"
+crec -80 c1 2000000 "$T/tab-p1-01" sdk-ts >"$UP/-t-tab-p1-01/hook.jsonl"
+crec -80 d1 7000000 "$T/tab-v2" sdk-py >"$UP/-t-tab-v2/other.jsonl"
+touch -d '1 minute ago' "$UP/-t-tab/lead.jsonl"
+out=$(python3 "$SCRIPTS/usage_report.py" lead --project-dir "$UP/-t-tab" 2>&1)
+grep -q '^total 4.0M = lead 2.0M + 0 agents 0.0M + 1 hook sessions 2.0M' <<<"$out" &&
+	ok "usage_report: hook sessions are neither a route's lead nor another project" || bad "usage_report hook sessions: $(head -2 <<<"$out")"
+out=$(CLAUDE_CODE_SESSION_ID=lead python3 "$SCRIPTS/usage_report.py" --project-dir "$UP/-t-tab" 2>&1)
+grep -q '^session lead ' <<<"$out" && ok "usage_report without a session id reports the running session" ||
+	bad "usage_report picked: $(head -1 <<<"$out")"
+rm "$HOME/.claude/dsp-routes/lead2.json"
 
 # --- a script's --help is its whole interface: shown only its docstring's first line, a lead read
 # ~20k characters of the scripts' source to learn their options (F84)

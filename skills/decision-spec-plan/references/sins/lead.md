@@ -50,7 +50,7 @@ Record the review in the handoff's *in flight* block. Its cost is in the rung an
 (`costs.md`): no separate go. The push itself stays an outward action — yours and the user's.
 
 ## 2. Round 1 — seven dispatches in one message, per slice
-`subagent_type: "dsp-deep"`, `name` = `<sin>-<name>` (`wrath-p4-push2`; sliced, `<name>` ends
+`subagent_type: "decision-spec-plan:dsp-deep"`, `name` = `<sin>-<name>` (`wrath-p4-push2`; sliced, `<name>` ends
 `-s<k>` and the run dir is `<run dir>/s<k>`), `run_in_background: true`. Sliced, each slice is its
 own review with its own seven, dispatched once the previous slice's seven have returned; Base and
 Focus are the slice's range. A bare sin name collides with an earlier review's idle reviewers: the tool renames the new

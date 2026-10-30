@@ -57,7 +57,14 @@ DIMENSIONS = (
 RULING_ID = re.compile(r"\b(?:[UADS]\d+|Ask\d+)\b")
 OWNER = re.compile(r"\b(?:[UADS]\d+|Ask\d+)\b|N/A:\s*\S+\s+\S+")
 PATH = re.compile(r"`([^`\s]+?\.[A-Za-z0-9]+)(?::[\d,–-]+)?`")
-FINDING = re.compile(r"^[^\w\n]*R(\d+)\b", re.MULTILINE)
+# A finding opens a line with its id — `**R<n>`, or a bare `R<n>` and a dash, colon or bracket —
+# after a list marker, a numbered list's `1.` or a heading's `#`s. A wrapped line that begins
+# "R1's keying …" is no new finding.
+FINDING = re.compile(
+    r"^[ \t]*(?:[-*+>|][ \t]*|\d+[.)][ \t]*|#{1,6}[ \t]*)?"
+    r"(?:\*\*R(\d+)\b|R(\d+)\b(?=\**[ \t]*[—–:(-]))",
+    re.MULTILINE,
+)
 
 
 def section(text, title):
@@ -77,7 +84,9 @@ def rows(body):
             continue
         if i + 1 < len(lines) and re.fullmatch(r"[|\s:-]+", lines[i + 1]):
             continue
-        out.append([c.strip() for c in line.strip().strip("|").split("|")])
+        # GFM's `\|` is a pipe inside a cell, not a cell border
+        cells = re.split(r"(?<!\\)\|", line.strip().strip("|"))
+        out.append([c.strip().replace("\\|", "|") for c in cells])
     return out
 
 
@@ -132,9 +141,9 @@ def findings(seams):
     out = {}
     for i, m in enumerate(marks):
         end = marks[i + 1].start() if i + 1 < len(marks) else len(seams)
+        # a heading after the finding's first line ends it; its own `### **R3**` does not
         out.setdefault(
-            f"R{m.group(1)}",
-            re.split(r"^#", seams[m.start() : end], flags=re.MULTILINE)[0],
+            f"R{m.group(1) or m.group(2)}", seams[m.start() : end].split("\n#")[0]
         )
     return out
 

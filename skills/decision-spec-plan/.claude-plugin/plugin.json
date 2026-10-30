@@ -1,0 +1,7 @@
+{
+  "$schema": "https://anthropic.com/claude-code/plugin.schema.json",
+  "name": "decision-spec-plan",
+  "version": "1.0.0",
+  "description": "Decision → spec → plan route for large phases: one agent per decision, seam review, spec and plan authors, wave execution under hooks that hold pushes and budgets.",
+  "skills": ["./"]
+}

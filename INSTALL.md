@@ -1,19 +1,33 @@
 # decision-spec-plan — install
 
-Paths in this repository are relative to `~/.claude`:
+`skills/decision-spec-plan/` is a Claude Code plugin that lives in the skills directory: the skill,
+its two agents (`decision-spec-plan:dsp-deep`, `decision-spec-plan:dsp-mechanical`) and its hooks
+(`hooks/hooks.json`) load together, as `decision-spec-plan@skills-dir`, in every session started
+after it is in place:
 
-    cp -r agents skills ~/.claude/
+    git archive HEAD skills/decision-spec-plan | tar -x --strip-components=1 -C ~/.claude/skills
 
-**Upgrading** an existing install: the copy overwrites `agents/dsp-*.md`, so save each file's
-`tools:` line first if you edited it, and put it back after. A file this package no longer ships
-stays behind: compare `ls -R ~/.claude/skills/decision-spec-plan` with the package. Re-merge
-`settings-hooks.json` only if it changed. Then run the hook suite (last paragraph).
+`claude plugin list` then shows it under "Skills-directory plugins". Hooks load when a session
+starts: a session already running keeps the hooks it started with. Without the hooks the route's
+state hook (`route_state.py --hook`) and push guard (`push_guard.sh`) stay off, and SKILL.md's claims
+about them are false. Both act only for a session that ran `route_state.py --activate`; any other
+session pays ~0.02 s per call. Turn it off with `claude plugin disable decision-spec-plan@skills-dir`.
 
-Then merge `settings-hooks.json` into `~/.claude/settings.json`: append each entry to that event's
-existing array, never replace the array. Without these hooks the route's state hook
-(`route_state.py --hook`) and push guard (`push_guard.sh`) stay off, and SKILL.md's claims about
-them are false. Both act only for a session that ran `route_state.py --activate`; any other
-session pays ~0.02 s per call.
+**Upgrading**: the copy overwrites `agents/dsp-*.md`, so save each file's `tools:` line first if you
+edited it, and put it back after. A file this package no longer ships stays behind: compare
+`ls -R ~/.claude/skills/decision-spec-plan` with the package. Then run the hook suite (last
+paragraph).
+
+**From an install before the plugin** (hooks merged into `~/.claude/settings.json`, agents in
+`~/.claude/agents/`), once, after copying: the old hook entries would run every hook twice, and the
+old agents would stay dispatchable under their bare names. Remove the settings entries — back the
+file up first:
+
+    cp ~/.claude/settings.json ~/.claude/settings.json.bak
+    jq '.hooks |= (with_entries(.value |= (map(.hooks |= map(select(.command | test("skills/decision-spec-plan/scripts") | not))) | map(select(.hooks | length > 0)))) | with_entries(select(.value | length > 0)))' ~/.claude/settings.json.bak > ~/.claude/settings.json
+
+and delete `~/.claude/agents/dsp-deep.md`, `~/.claude/agents/dsp-mechanical.md` and
+`~/.claude/skills/decision-spec-plan-workspace/`.
 
 Agent teams are required: set `CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS=1` under `env` in
 `~/.claude/settings.json`.
@@ -32,6 +46,6 @@ the agent falls back to `timeout` + `setsid`.
 `agents/dsp-*.md` list Context7 MCP tools — edit their `tools:` line to the MCP servers
 you have.
 
-Before editing the skill, and after: `bash ~/.claude/skills/decision-spec-plan-workspace/tools/hooks_test.sh`
-(throwaway repos only; fails if SKILL.md grows past 19,000 characters — a compaction cuts it at
-20,000).
+Before editing the skill, and after: `bash ~/.claude/skills/decision-spec-plan/tests/hooks_test.sh`
+(it tests the copy it sits in; throwaway repos only; fails if SKILL.md grows past 19,000 characters
+— a compaction cuts it at 20,000).

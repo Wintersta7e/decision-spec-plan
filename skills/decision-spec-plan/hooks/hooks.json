@@ -6,7 +6,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "python3 ~/.claude/skills/decision-spec-plan/scripts/route_state.py --hook"
+            "command": "python3 \"${CLAUDE_PLUGIN_ROOT}/scripts/route_state.py\" --hook"
           }
         ]
       }
@@ -17,7 +17,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "python3 ~/.claude/skills/decision-spec-plan/scripts/route_state.py --hook"
+            "command": "python3 \"${CLAUDE_PLUGIN_ROOT}/scripts/route_state.py\" --hook"
           }
         ]
       }
@@ -27,7 +27,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "python3 ~/.claude/skills/decision-spec-plan/scripts/route_state.py --hook"
+            "command": "python3 \"${CLAUDE_PLUGIN_ROOT}/scripts/route_state.py\" --hook"
           }
         ]
       }
@@ -38,7 +38,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "bash ~/.claude/skills/decision-spec-plan/scripts/push_guard.sh"
+            "command": "bash \"${CLAUDE_PLUGIN_ROOT}/scripts/push_guard.sh\""
           }
         ]
       },
@@ -47,7 +47,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "python3 ~/.claude/skills/decision-spec-plan/scripts/route_state.py --hook"
+            "command": "python3 \"${CLAUDE_PLUGIN_ROOT}/scripts/route_state.py\" --hook"
           }
         ]
       }
@@ -57,7 +57,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "python3 ~/.claude/skills/decision-spec-plan/scripts/route_state.py --hook"
+            "command": "python3 \"${CLAUDE_PLUGIN_ROOT}/scripts/route_state.py\" --hook"
           }
         ]
       }
@@ -67,7 +67,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "python3 ~/.claude/skills/decision-spec-plan/scripts/route_state.py --hook"
+            "command": "python3 \"${CLAUDE_PLUGIN_ROOT}/scripts/route_state.py\" --hook"
           }
         ]
       }

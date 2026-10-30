@@ -59,8 +59,7 @@ most per job: nothing wakes it when the job ends (F92). It holds the lead's `exe
 `decision_check.py` fails on the phase — one whose index did not exist at its first --activate —
 and a `verify-` agent whose prompt is not the file `decision_check.py --verifier` wrote.
 
-Registration, in ~/.claude/settings.json `hooks`, the command
-`python3 ~/.claude/skills/decision-spec-plan/scripts/route_state.py --hook` under: SessionStart
+Registration: the plugin's `hooks/hooks.json` runs `route_state.py --hook` under SessionStart
 matcher `compact|resume`, PostToolUse matcher `*`, UserPromptSubmit, PreToolUse matcher
 `Agent|Bash`, SubagentStop, TeammateIdle.
 """
@@ -124,7 +123,7 @@ FINAL_SHA = re.compile(
     r"^\W*Final SHA:\W*([0-9a-f]{7,40})\b", re.MULTILINE | re.IGNORECASE
 )
 MERGED = re.compile(
-    r"^\W*Merged\s+(\S+?)\W+([0-9a-f]{7,40})\W+(?:→|->)\W*([0-9a-f]{7,40})\b",
+    r"^\W*Merged\s+\W*([\w.-]+?)\W+([0-9a-f]{7,40})\W+(?:→|->)\W*([0-9a-f]{7,40})\b",
     re.MULTILINE,
 )
 # The decision index's header: `> **Base**: `main` at `<sha>`` and one `> **Assumes**: `<ref>` at
@@ -251,7 +250,7 @@ def marker_path(directory, planning=None):
 
 
 def default_branch(repo):
-    """origin's HEAD, else the main worktree's branch, else main."""
+    """origin's HEAD, else the main worktree's branch, else main or master, whichever exists."""
     rc, ref = git(
         repo, "symbolic-ref", "--quiet", "--short", "refs/remotes/origin/HEAD"
     )
@@ -261,6 +260,10 @@ def default_branch(repo):
     for line in wt.split("\n\n")[0].splitlines():
         if line.startswith("branch refs/heads/"):
             return line.removeprefix("branch refs/heads/")
+    # a detached main worktree
+    for name in ("main", "master"):
+        if git(repo, "rev-parse", "--verify", "--quiet", f"refs/heads/{name}")[0] == 0:
+            return name
     return "main"
 
 
@@ -272,7 +275,9 @@ def routes(skip_session=None):
             entry = json.loads(f.read_text())
         except ValueError:
             continue
-        if f.stem != skip_session and pathlib.Path(entry.get("marker", "")).exists():
+        # A `<session>.waits.json` sidecar has no marker, and Path("") is "." (always exists).
+        marker = entry.get("marker")
+        if f.stem != skip_session and marker and pathlib.Path(marker).exists():
             out.append((f.stem, entry))
     return out
 
@@ -307,10 +312,12 @@ def activate(a, main):
     if a.spec_dir:
         args += ["--spec-dir", str(pathlib.Path(a.spec_dir).resolve())]
     marker = {"args": args, "planning_dir": planning, "activated": time.time()}
-    if a.rung:
-        marker["rung"] = a.rung
-    # A re-activation keeps the waves' recorded budgets (--budget) and the CI harness, a fact
-    # about the repository's CI rather than the round.
+    # A re-activation keeps the phase's rung (execution.md's `--activate --sins on` names none),
+    # the waves' recorded budgets (--budget) and the CI harness, a fact about the repository's CI
+    # rather than the round.
+    same_phase = old.get("args") and parser().parse_args(old["args"]).phase == a.phase
+    if rung := a.rung or (old.get("rung") if same_phase else None):
+        marker["rung"] = rung
     if budgets := old.get("budgets"):
         marker["budgets"] = budgets
     harness = a.ci_harness or old.get("ci_harness")
@@ -321,6 +328,15 @@ def activate(a, main):
     # The decision ledger (decision_check.py) binds a phase whose index did not exist when the
     # phase was first activated: an index written before the check keeps its old format.
     ledger = dict(old.get("ledger") or {})
+    # A route ended (its marker deleted) and begun again: its sessions' registry entries keep it.
+    kept = {}
+    for f in REGISTRY.glob("*.json"):
+        entry = load_json(f)
+        if entry.get("planning_dir") == planning:
+            for phase, bound in (entry.get("ledger") or {}).items():
+                kept[phase] = kept.get(phase, False) or bound
+    for phase, bound in kept.items():
+        ledger.setdefault(phase, bound)
     index = pathlib.Path(planning) / "decisions" / f"phase{a.phase}" / "00-index.md"
     ledger.setdefault(a.phase, not index.exists())
     marker["ledger"] = ledger
@@ -346,7 +362,12 @@ def activate(a, main):
     REGISTRY.mkdir(parents=True, exist_ok=True)
     entry_path = REGISTRY / f"{session}.json"
     old = load_json(entry_path)
-    entry = {"marker": str(path), "planning_dir": planning, "activated": time.time()}
+    entry = {
+        "marker": str(path),
+        "planning_dir": planning,
+        "activated": time.time(),
+        "ledger": ledger,
+    }
     # When this session last read the skill's files: a re-activation is no re-read.
     entry["skill_seen"] = old.get("skill_seen", old.get("activated", time.time()))
     entry_path.write_text(json.dumps(entry) + "\n")
@@ -404,7 +425,7 @@ def budget(argv):
         "at": now(),
         "session": session,
     }
-    if answered := answered_this_turn(session):
+    if answered := answered_this_turn(session, a.estimate):
         record["answered"] = answered
     marker.setdefault("budgets", []).append(record)
     path.write_text(json.dumps(marker) + "\n")
@@ -430,8 +451,9 @@ def budget(argv):
     return 0
 
 
-def answered_this_turn(session):
-    """When the user answered an AskUserQuestion in the lead's current turn, else None.
+def answered_this_turn(session, estimate):
+    """When the user answered an AskUserQuestion in the lead's current turn that names the
+    figure (`<estimate>M`), else None.
 
     Why: a lead that asked "raise the budget to 45M?" and recorded it after the answer was held
     for a second answer, and that question sat 1 h 52 min while finished groups waited (F93)."""
@@ -439,14 +461,14 @@ def answered_this_turn(session):
     for path in PROJECTS.glob(f"*/{session}.jsonl"):
         for r in read_records(path):
             message = r.get("message")
+            result = r.get("toolUseResult")
             if r.get("type") == "assistant" and isinstance(message, dict):
                 if message.get("stop_reason") == "end_turn":
                     answered = None
-            elif (
-                isinstance(r.get("toolUseResult"), dict)
-                and "answers" in r["toolUseResult"]
-            ):
-                answered = r.get("timestamp")
+            elif isinstance(result, dict) and "answers" in result:
+                figures = re.findall(r"(\d+(?:\.\d+)?)\s*M\b", json.dumps(result))
+                if any(abs(float(f) - estimate) < 1e-9 for f in figures):
+                    answered = r.get("timestamp")
     return answered
 
 
@@ -1173,14 +1195,17 @@ def lane_checkpoints(lanes, phase):
     ]
 
 
-def gate_logs(lanes):
+def gate_logs(lanes, phase):
     """(log, the commit and dirty count of its first `sha=` line within 20 lines, its last `exit=`
-    or None) for each gate log — the line push_guard.sh reads."""
+    or None) for each gate log but another phase's — the lines push_guard.sh reads."""
     out = []
-    # Line by line: a whole log read at once raised ENOMEM on a large one.
+    # Line by line: a whole log read at once raised ENOMEM on a large one. Lines end at `\n`
+    # only, as grep's in push_guard.sh do: a progress bar's `\r` before `exit=` is no line break.
     for log in sorted(lanes.glob("*-gate*.log")):
+        if (m := re.match(r"p(\d+)-", log.name)) and m.group(1) != phase:
+            continue
         first, last = "", None
-        with log.open(errors="replace") as f:
+        with log.open(errors="replace", newline="\n") as f:
             for n, ln in enumerate(f):
                 if n < 20 and not first and ln.startswith("sha="):
                     first = ln
@@ -1233,17 +1258,35 @@ def base_drift(repo, text):
                 f"{kind.lower() + ' ref gone':<34} {ref} (recorded at {sha[:9]})"
             )
             continue
-        if head.startswith(sha):
-            continue
         if kind == "Base":
-            rc, n = git(repo, "rev-list", "--count", f"{sha}..{head}")
-            out.append(
-                f"{'base moved':<34} {ref} {n if rc == 0 else '?'} commits past {sha[:9]}"
+            # templates.md records the local main branch, which a fetch never moves: its
+            # upstream does
+            rc, up = git(
+                repo,
+                "rev-parse",
+                "--verify",
+                "--quiet",
+                f"{ref}@{{upstream}}^{{commit}}",
             )
+            tips = [("base moved", ref, head)]
+            if rc == 0 and up != head:
+                tips.append(("base moved upstream", f"{ref}@{{upstream}}", up))
+            for label, name, tip in tips:
+                if not tip.startswith(sha):
+                    rc, n = git(repo, "rev-list", "--count", f"{sha}..{tip}")
+                    out.append(
+                        f"{label:<34} {name} {n if rc == 0 else '?'} commits past {sha[:9]}"
+                    )
             continue
         landed = base_ref and (
             git(repo, "merge-base", "--is-ancestor", head, base_ref)[0] == 0
         )
+        if head.startswith(sha):
+            if landed:
+                out.append(
+                    f"{'assumed ref merged':<34} {ref} {sha[:9]} into {base_ref}"
+                )
+            continue
         out.append(
             f"{'assumed ref moved':<34} {ref} {sha[:9]} → {head[:9]}"
             + (f", merged into {base_ref}" if landed else "")
@@ -1275,18 +1318,19 @@ def report(a, fresh=True, extra=()):
 
     dec = base / "decisions" / f"phase{p}"
     index = dec / "00-index.md"
+    index_text = index.read_text(errors="replace") if index.exists() else ""
     wanted = sorted(
-        set(re.findall(r"^\|\s*\*{0,2}D(\d+)\b", index.read_text(), re.MULTILINE))
-        if index.exists()
-        else set(),
-        key=int,
+        set(re.findall(r"^\|\s*\*{0,2}D(\d+)\b", index_text, re.MULTILINE)), key=int
     )
     have = {
         re.match(r"D(\d+)", f.name).group(1): f
         for f in sorted(dec.glob("D*.md"))
         if re.match(r"D\d+", f.name)
     }
-    waiting = [f"D{n}" for n in wanted if n not in have]
+    # At rung S the index holds the decisions themselves: no D file follows (templates.md §1).
+    route = marker_path(a.repo, str(base.resolve())) if a.repo else None
+    rung = a.rung or (load_json(route).get("rung") if route else None)
+    waiting = [f"D{n}" for n in wanted if n not in have and rung != "S"]
     markers = headers = 0
     for f in have.values():
         rep.file(f, base)
@@ -1313,7 +1357,7 @@ def report(a, fresh=True, extra=()):
             rep.flag(line)
 
     if a.sections:
-        lo, sep, hi = a.sections.partition("-")
+        lo, sep, hi = a.sections.replace("–", "-").partition("-")
         first, last = int(lo), (int(hi) if hi else (None if sep else int(lo)))
         spec = [
             f
@@ -1341,7 +1385,8 @@ def report(a, fresh=True, extra=()):
     plans_dir = base / "plans"
     pindex = plans_dir / f"p{p}-00-index.md"
     ids = sorted(
-        set(re.findall(rf"\bp{p}-(\d+[a-z]?)\b", pindex.read_text())) - {"00"}
+        set(re.findall(rf"\bp{p}-(\d+[a-z]?)\b", pindex.read_text(errors="replace")))
+        - {"00"}
         if pindex.exists()
         else set()
     )
@@ -1373,7 +1418,7 @@ def report(a, fresh=True, extra=()):
 
     lanes = base / "lanes"
     checkpoints = lane_checkpoints(lanes, p)
-    gates = gate_logs(lanes)
+    gates = gate_logs(lanes, p)
     merged = 0
     worktrees = {}
     if a.repo:
