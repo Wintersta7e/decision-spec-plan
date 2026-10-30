@@ -569,12 +569,12 @@ def read_records(path):
                 yield record
 
 
-def tool_uses(record):
+def tool_uses(record, kind="tool_use"):
     message = record.get("message")
     content = message.get("content") if isinstance(message, dict) else None
     if not isinstance(content, list):
         return []
-    return [b for b in content if isinstance(b, dict) and b.get("type") == "tool_use"]
+    return [b for b in content if isinstance(b, dict) and b.get("type") == kind]
 
 
 def human(record):
@@ -607,7 +607,7 @@ def since_budget(paths, since, current, own):
     """(the user answered in this session's transcript `own`, other `exec-` dispatches in all of
     these transcripts) from `since` on. An answer in another lead session never counts (F74)."""
     answered = ever = False
-    sent = set()
+    sent, refused = set(), set()
     for path in paths:
         for r in read_records(path):
             is_human = path == own and r.get("type") != "assistant" and human(r)
@@ -619,6 +619,12 @@ def since_budget(paths, since, current, own):
                 name = str((block.get("input") or {}).get("name") or "")
                 if block.get("name") == "Agent" and name.startswith(EXEC):
                     sent.add(block.get("id"))
+            # A dispatch the hook or the user refused gets an error result and starts no agent: a
+            # wave of one was held at its only dispatch after one early refusal.
+            for block in tool_uses(r, "tool_result"):
+                if block.get("is_error"):
+                    refused.add(block.get("tool_use_id"))
+    sent -= refused
     sent.discard(current)
     # No prompt of the user's anywhere means the transcript format changed: never hold on it.
     return answered or not ever, len(sent)
@@ -636,6 +642,15 @@ def spend(paths, since):
             projects.add(path.parent)
             total += sum(s["units"] for s in sdk)
     return total
+
+
+def checked(check, *args):
+    """`check(*args)`, or None when it fails: a broken check never blocks the call, nor skips the
+    checks after it — a ledger check that raised once let a dispatch past the budget hold."""
+    try:
+        return check(*args)
+    except (Exception, SystemExit):  # noqa: BLE001
+        return None
 
 
 def deny(reason, decision="deny"):
@@ -699,7 +714,7 @@ def ledger_hold(event, entry):
         prompt = str(tool_input.get("prompt") or "").strip()
         reviews = pathlib.Path(entry["planning_dir"]) / "reviews"
         files = [*d.glob("verify/*.prompt.md"), *reviews.glob("*/verify/*.prompt.md")]
-        written = {p.read_text().strip() for p in files}
+        written = {p.read_text(errors="replace").strip() for p in files}
         if prompt not in written:
             return (
                 "a verifier's prompt is the file `decision_check.py --verifier R<n> --sha "
@@ -830,42 +845,78 @@ def eta(paths, name):
     )
 
 
+def notified(record):
+    """The ids of the background jobs a task notification in this record reports ended: one with a
+    `<status>` (a monitor's event in between has none)."""
+    attachment = record.get("attachment")
+    attachment = attachment if isinstance(attachment, dict) else {}
+    origin = record.get("origin") or attachment.get("origin")
+    if not (isinstance(origin, dict) and origin.get("kind") == "task-notification"):
+        return set()
+    message = record.get("message")
+    content = message.get("content") if isinstance(message, dict) else None
+    text = str(attachment.get("prompt") or "") + json.dumps(content)
+    return {
+        m.group(1)
+        for block in re.findall(
+            r"<task-notification>(.*?)</task-notification>", text, re.DOTALL
+        )
+        if "<status>" in block and (m := re.search(r"<task-id>(\w+)</task-id>", block))
+    }
+
+
 def own_jobs(event, session):
     """The background shells and monitors an agent ending its turn left running: (id, what, log).
 
     Only the jobs the agent's own transcript started count: SubagentStop's `background_tasks`
     lists every job of the session, a neighbour teammate's too — a plan author was sent back twice
-    to wait on another's probe. A job listed there runs while its status says so; otherwise until
-    its output file ends `[exited with code N]` or `[killed]`.
+    to wait on another's probe. A job listed there runs while its status says so. TeammateIdle
+    lists none: a job runs until its task notification (one with a `<status>`) or the agent's
+    TaskStop of it reaches the transcript, or its output file ends `[exited with code N]` or
+    `[killed]` — a monitor writes no file until its first line of output.
     """
     transcript = agent_transcript(event, session, event.get("agent_id") or "")
     if transcript is None:
         return []
-    calls, jobs, tasks = {}, [], None
-    with transcript.open(errors="replace") as fh:
-        for line in fh:
-            try:
-                content = json.loads(line).get("message", {}).get("content")
-            except (ValueError, AttributeError):
+    calls, stops, ended, jobs, tasks = {}, {}, set(), [], None
+    for r in read_records(transcript):
+        ended |= notified(r)
+        message = r.get("message")
+        content = message.get("content") if isinstance(message, dict) else None
+        for c in content if isinstance(content, list) else []:
+            if not isinstance(c, dict):
                 continue
-            for c in content if isinstance(content, list) else []:
-                if not isinstance(c, dict):
-                    continue
-                arg = c.get("input") or {}
-                if c.get("type") == "tool_use" and c.get("name") in ("Bash", "Monitor"):
-                    calls[c.get("id")] = arg.get("command") or arg.get("description")
-                elif c.get("type") == "tool_result" and c.get("tool_use_id") in calls:
-                    text = json.dumps(c.get("content"))
-                    # run_in_background, or a foreground command moved there at its timeout
-                    if m := re.search(
-                        r"(?:in background with ID: |moved to the background \(ID: )(\w+)\)?\. "
-                        r"Output is being written to: (\S+?\.output)",
-                        text,
-                    ):
-                        tasks = pathlib.Path(m.group(2)).parent
-                        jobs.append((m.group(1), calls[c["tool_use_id"]], m.group(2)))
-                    elif m := re.search(r"Monitor started \(task (\w+)", text):
-                        jobs.append((m.group(1), calls[c["tool_use_id"]], None))
+            arg = c.get("input") or {}
+            if c.get("type") == "tool_use" and c.get("name") in ("Bash", "Monitor"):
+                calls[c.get("id")] = arg.get("command") or arg.get("description")
+            elif c.get("type") == "tool_use" and c.get("name") == "TaskStop":
+                stops[c.get("id")] = arg.get("task_id") or arg.get("shell_id")
+            elif c.get("type") == "tool_result" and c.get("tool_use_id") in stops:
+                if not c.get("is_error"):
+                    ended.add(str(stops[c["tool_use_id"]]))
+            elif c.get("type") == "tool_result" and c.get("tool_use_id") in calls:
+                text = json.dumps(c.get("content"))
+                # The id Claude Code records with a result that started a job: an output that
+                # quotes another job's start message (a file or transcript read back) starts none.
+                job = r"\w+"
+                if "toolUseResult" in r:
+                    result = r["toolUseResult"]
+                    if not isinstance(result, dict):
+                        continue
+                    own = result.get("backgroundTaskId") or result.get("taskId")
+                    if not own:
+                        continue
+                    job = re.escape(str(own))
+                # run_in_background, or a foreground command moved there at its timeout
+                if m := re.search(
+                    rf"(?:in background with ID: |moved to the background \(ID: )({job})\)?\. "
+                    r"Output is being written to: (\S+?\.output)",
+                    text,
+                ):
+                    tasks = pathlib.Path(m.group(2)).parent
+                    jobs.append((m.group(1), calls[c["tool_use_id"]], m.group(2)))
+                elif m := re.search(rf"Monitor started \(task ({job})", text):
+                    jobs.append((m.group(1), calls[c["tool_use_id"]], None))
     if "background_tasks" in event:
         running = {
             str(t.get("id"))
@@ -875,9 +926,12 @@ def own_jobs(event, session):
         return [(j, what or "", log or "") for j, what, log in jobs if j in running]
     out = []
     for job, what, path in jobs:
+        if job in ended:
+            continue
         log = pathlib.Path(path) if path else None
         if log is None:
-            # A monitor's output sits beside the shells', in /tmp/claude-<uid>/<project>/<session>/tasks.
+            # A monitor's output sits beside the shells', mostly in
+            # /tmp/claude-<uid>/<project>/<session>/tasks — one team's sat under another id.
             if tasks is None:
                 tasks = pathlib.Path(
                     f"/tmp/claude-{os.getuid()}/{transcript.parents[2].name}/{session}/tasks"
@@ -888,7 +942,7 @@ def own_jobs(event, session):
                 fh.seek(max(0, log.stat().st_size - 200))
                 tail = fh.read().decode("utf-8", "replace").strip().splitlines()
         except OSError:
-            continue
+            tail = []
         if not (
             tail and re.fullmatch(r"\[(exited with code -?\d+|killed)\]", tail[-1])
         ):
@@ -1133,39 +1187,38 @@ def hook():
         except Exception:  # noqa: BLE001 — a broken check never holds an agent
             return 0
     if name == "PreToolUse":
-        try:
-            if act := outward(event, entry):
-                if event.get("agent_id"):
-                    return deny(
-                        f"`{act}` acts on the hosted repository, and a route agent never runs "
-                        "one: name it in your return and the lead asks the user (F81)."
-                    )
-                return deny(
-                    f"`{act}` acts on the hosted repository: the user approves it here, each "
-                    "time — an earlier answer authorizes only what it named (F81).",
-                    "ask",
-                )
+        if act := checked(outward, event, entry):
             if event.get("agent_id"):
-                return agent_pre(event, session, entry)
-            if s_harvester(event, entry):
                 return deny(
-                    "rung S has no harvester: read the diff, the ticket and the code yourself "
-                    "(SKILL.md, Stage 0). At S a harvest cost 2–8× the review it fed, and the "
-                    "reviews without one needed no correction (F87). A question only an agent "
-                    "can answer means the round is not S: re-announce it at M."
+                    f"`{act}` acts on the hosted repository, and a route agent never runs "
+                    "one: name it in your return and the lead asks the user (F81)."
                 )
-            dispatch = event.get("tool_input") or {}
-            agent_name = str(dispatch.get("name") or "")
-            if (
-                event.get("tool_name") == "Agent"
-                and agent_name.startswith((EXEC, "verify-"))
-                and (held := ledger_hold(event, entry))
-            ):
-                return deny(held)
-            if event.get("tool_name") == "Agent" and agent_name.startswith(EXEC):
-                return gate_dispatch(event, entry)
-        except (Exception, SystemExit):  # noqa: BLE001 — a broken check never blocks a call
+            return deny(
+                f"`{act}` acts on the hosted repository: the user approves it here, each "
+                "time — an earlier answer authorizes only what it named (F81).",
+                "ask",
+            )
+        if event.get("agent_id"):
+            return checked(agent_pre, event, session, entry) or 0
+        if checked(s_harvester, event, entry):
+            return deny(
+                "rung S has no harvester: read the diff, the ticket and the code yourself "
+                "(SKILL.md, Stage 0). At S a harvest cost 2–8× the review it fed, and the "
+                "reviews without one needed no correction (F87). A question only an agent "
+                "can answer means the round is not S: re-announce it at M."
+            )
+        dispatch = event.get("tool_input")
+        agent_name = (
+            str(dispatch.get("name") or "") if isinstance(dispatch, dict) else ""
+        )
+        if event.get("tool_name") != "Agent":
             return 0
+        if agent_name.startswith((EXEC, "verify-")) and (
+            held := checked(ledger_hold, event, entry)
+        ):
+            return deny(held)
+        if agent_name.startswith(EXEC):
+            return checked(gate_dispatch, event, entry) or 0
         return 0
     if event.get("agent_id"):
         return 0

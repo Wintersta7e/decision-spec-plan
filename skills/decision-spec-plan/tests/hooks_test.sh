@@ -1102,7 +1102,15 @@ call t3 Monitor '{"command":"until grep -q ^exit= g.log; do sleep 20; done","des
 printf 'x\n' >"$TASKS/bmo1.output"
 stophook 2 'until grep -q \^exit= g.log.*F92' "$(idle)"
 rm "$TASKS/bmo1.output"
-stophook 0 '^$' "$(idle)" # no output file: nothing to tell
+notice() { # task-id [status] — a task notification the agent received; a monitor's event has no status
+	jq -nc --arg p "<task-notification>
+<task-id>$1</task-id>
+${2:+<status>$2</status>
+}<event>x</event>
+</task-notification>" '{type:"attachment",attachment:{type:"queued_command",prompt:$p,origin:{kind:"task-notification"}}}'
+}
+notice bmo1 completed >>"$tm"
+stophook 0 '^$' "$(idle)" # its notification ended it
 stophook 0 '^$' "$(ev TeammateIdle s1 "\"teammate_name\":\"nobody\",\"agent_id\":\"anobody-00000000\",\"transcript_path\":\"$LEAD\"")"
 # a foreground command past its timeout moves to the background without run_in_background
 call t4 Bash '{"command":"npx eslint . > lint.log"}' "partial output
@@ -1475,6 +1483,76 @@ for j in noclause object; do
 		[ "$(md5sum <"$M/d/D2-x.md")" = "$before" ] && ok "apply_markers: a malformed list ($j) is refused" ||
 		bad "apply_markers malformed $j (exit $code): $out"
 done
+
+# --- the hook on a route of its own (session h1): a dispatch refused before it ran is no dispatch
+H=$T/hk
+git init -q -b main "$H"
+git -C "$H" "${G[@]}" commit -q --allow-empty -m one
+mkdir -p "$H/.plan/lanes" "$H/.plan/decisions/phase1"
+HL=$HOME/.claude/projects/hk/h1.jsonl
+mkdir -p "$(dirname "$HL")"
+human -3600 >"$HL"
+CLAUDE_CODE_SESSION_ID=h1 python3 "$SCRIPTS/route_state.py" "$H/.plan" --phase 1 --repo "$H" --activate >/dev/null
+hdispatch() { ev PreToolUse h1 "\"tool_name\":\"Agent\",\"tool_input\":{\"name\":\"$1\"},\"tool_use_id\":\"$2\",\"transcript_path\":\"$HL\""; }
+refused() { jq -nc --arg t "$(ts "$1")" --arg id "$2" '{type:"user",timestamp:$t,message:{role:"user",content:[{type:"tool_result",tool_use_id:$id,is_error:true,content:"held"}]}}'; }
+CLAUDE_CODE_SESSION_ID=h1 python3 "$SCRIPTS/route_state.py" --budget hw --estimate 50 --groups 1 >/dev/null
+sent 1 r1 exec-p1-01-a >>"$HL" # held: the user had not answered yet
+refused 1 r1 >>"$HL"
+human 2 >>"$HL"
+hook '/^ETA exec-p1-01-a/' "$(hdispatch exec-p1-01-a r2)"
+sent 3 r2 exec-p1-01-a >>"$HL"
+hook 'deny:this would be exec- dispatch 2 since' "$(hdispatch exec-p1-02-a r3)"
+# each gate fails on its own: a ledger check that raises still leaves the budget hold to run
+sleep 4 # past the records stamped up to 3 s ahead above
+CLAUDE_CODE_SESSION_ID=h1 python3 "$SCRIPTS/route_state.py" --budget hw2 --estimate 50 --groups 4 >/dev/null
+HD=$H/.plan/decisions/phase1
+mkdir "$HD/00-index.md"
+hook 'deny:has not answered' "$(hdispatch exec-p1-02-a r3)"
+rmdir "$HD/00-index.md"
+# an arbiter saved in a Windows code page is read, not raised on
+index '| S1 | **x** | U2 |' >"$HD/00-index.md"
+printf '# Seams\n**R1** — the cache is never cleared.\n' >"$HD/00-seams.md"
+printf '## Dispositions\n| R | How | Basis |\n|---|---|---|\n| R2 | applied | fixed \x96 see U1 |\n' >"$HD/00-arbiter.md"
+hook 'deny:decision ledger fails(.|\n)*R1 has no disposition in 00-arbiter.md' "$(hdispatch exec-p1-02-a r3)"
+rm "$HD/00-index.md" "$HD/00-seams.md" "$HD/00-arbiter.md"
+
+# a teammate's monitor runs, with no output file yet, until its notification or its TaskStop (F92)
+HS=$HOME/.claude/projects/hk/h1/subagents
+mkdir -p "$HS"
+hm=$HS/agent-aexec-p1-03-a-0123456789abcdef.jsonl
+hidle() { ev TeammateIdle h1 "\"teammate_name\":\"exec-p1-03-a\",\"agent_id\":\"aexec-p1-03-a-0123456789abcdef\",\"transcript_path\":\"$HL\""; }
+call m1 Monitor '{"command":"until grep -q ^exit= g.log; do sleep 20; done","description":"gate"}' "Monitor started (task hmo1, expires in 30m unless the source ends first)." >"$hm"
+stophook 2 'until grep -q \^exit= g.log.*F92' "$(hidle)"
+notice hmo1 >>"$hm" # an event: still running
+stophook 2 'until grep -q \^exit= g.log.*F92' "$(hidle)"
+call m2 Monitor '{"command":"tail -f a.log","description":"a"}' "Monitor started (task hmo2, expires in 30m unless the source ends first)." >>"$hm"
+notice hmo2 completed >>"$hm"
+stophook 0 '^$' "$(hidle)"
+call m3 Monitor '{"command":"tail -f b.log","description":"b"}' "Monitor started (task hmo3, expires in 30m unless the source ends first)." >>"$hm"
+call s3 TaskStop '{"task_id":"hmo3"}' '{"message":"Successfully stopped task: hmo3"}' >>"$hm"
+stophook 0 '^$' "$(hidle)"
+# a job is the one Claude Code records with the result (toolUseResult), not one its output quotes
+rcall() { # tool-use-id command result-text toolUseResult-json
+	call "$1" Bash "$(jq -nc --arg c "$2" '{command:$c}')" "$3" | jq -c --argjson u "$4" 'if .type == "user" then .toolUseResult = $u else . end'
+}
+rcall q1 'cat notes.md' "Command running in background with ID: hph1. Output is being written to: $TASKS/hph1.output." '{"stdout":"quoted"}' >>"$hm"
+stophook 0 '^$' "$(hidle)"
+printf 'running\n' >"$TASKS/hbg1.output"
+rcall q2 'npm run gate' "Command running in background with ID: hbg1. Output is being written to: $TASKS/hbg1.output. You will be notified when it completes." '{"stdout":"","backgroundTaskId":"hbg1"}' >>"$hm"
+stophook 2 'npm run gate.*hbg1.output.*F92' "$(hidle)"
+
+# a project named alike whose sessions ran no one knows where is not the route's spend
+CLAUDE_CODE_SESSION_ID=h1 python3 "$SCRIPTS/route_state.py" --budget hw3 --estimate 1 --groups 9 >/dev/null
+human 1 >>"$HL"
+mkdir -p "$UP/hk-other"
+crec 2 z1 3000000 '' sdk-cli | jq -c 'del(.cwd)' >"$UP/hk-other/o.jsonl"
+hook '/^ETA exec-p1-04-a/' "$(hdispatch exec-p1-04-a r9)"
+
+# a verifier prompt saved in a Windows code page is read, not raised on: raised, the check let
+# every edited verifier prompt through
+mkdir -p "$H/.plan/reviews/s1/verify"
+printf 'You decide one claim \x96 R1.\n' >"$H/.plan/reviews/s1/verify/R1.prompt.md"
+hook 'deny:a verifier.s prompt is the file' "$(ev PreToolUse h1 "\"tool_name\":\"Agent\",\"tool_input\":{\"name\":\"verify-R1\",\"prompt\":\"edited\"},\"transcript_path\":\"$HL\"")"
 
 [ "$FAIL" = 0 ] && echo "ALL PASS" || echo "FAILURES"
 exit "$FAIL"

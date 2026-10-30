@@ -163,7 +163,11 @@ def dispositions(d, index, rung, ids):
         return []
     found = findings(seams.read_text(errors="replace"))
     holder = d / ("00-index.md" if rung == "S" else "00-arbiter.md")
-    text = index if rung == "S" else (holder.read_text() if holder.exists() else "")
+    text = (
+        index
+        if rung == "S"
+        else (holder.read_text(errors="replace") if holder.exists() else "")
+    )
     body = section(text, "Dispositions")
     if body is None:
         return [

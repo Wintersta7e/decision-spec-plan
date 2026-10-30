@@ -217,8 +217,9 @@ def sdk_sessions(project, lead_path, since, until):
     """Sessions with an `sdk-*` entrypoint in the project dir or a worktree's (`<project>-*`).
 
     A route's lead (registered by `route_state.py --activate`) is a lead even when headless
-    (`sdk-cli`), and a `<project>-*` dir whose sessions ran in another repository is another
-    project named alike."""
+    (`sdk-cli`). A `<project>-*` dir counts only for the sessions that ran in the lead's
+    repository: one named alike, or whose repository is unknown, is another project — counted,
+    its headless sessions held a route's wave over a budget it had not spent."""
     floor = epoch(since)
     rows = []
     repo = common_dir(lead_path)
@@ -228,7 +229,7 @@ def sdk_sessions(project, lead_path, since, until):
                 continue
             if (REGISTRY / f"{path.stem}.json").exists():
                 continue
-            if directory != project and repo and common_dir(path) not in (repo, None):
+            if directory != project and (repo is None or common_dir(path) != repo):
                 continue
             if entrypoint(path).startswith("sdk"):
                 row = scan(path, since, until)
