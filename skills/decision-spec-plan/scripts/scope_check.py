@@ -7,7 +7,9 @@ the file, so the gap is invisible unless the two are compared. That is how ten o
 project came to be missing their entire UI.
 
 A promised file is UNIMPLEMENTED when its path appears at most once in its plan (only in the table)
-and no other plan mentions it more than once.
+and no other plan mentions it more than once. A mention is the whole path, or in a plan whose table
+lists the file the bare name standing alone: `data.rs` does not mention `a.rs`, nor `ui/mod.rs`
+`src/mod.rs`.
 
 Bare filenames are resolved against the nearest preceding sub-heading that names a directory in
 backticks, because plans group them that way:
@@ -16,7 +18,7 @@ backticks, because plans group them that way:
     | `segment.rs` | The segment state machine |
 
 The File structure section ends at the first `## Task`, `## Tasks`, `## Global` or `## Interfaces`
-heading (either `##` or `###` depth).
+heading (either `##` or `###` depth), or at the end of a plan cut off after its table.
 
 With `--waves <plan-index>` it checks the wave order instead: every file two plans of one wave
 both list in their File structure sections. Their lanes run in parallel worktrees, so each edits the
@@ -56,7 +58,7 @@ import sys
 
 DEFAULT_EXT = "rs,ts,tsx,js,jsx,mjs,cjs,css,scss,json,sql,yml,yaml,toml,py,go,java,kt,swift,c,h,cpp,hpp,cs,rb,sh,md,html,xml,properties,gradle,kts"
 SECTION_RE = re.compile(
-    r"^#{2,3} File structure\s*$(.*?)^#{2,3} (Task|Tasks|Global|Interfaces)",
+    r"^#{2,3} File structure\s*$(.*?)(?:^#{2,3} (?:Task|Tasks|Global|Interfaces)|\Z)",
     re.MULTILINE | re.DOTALL | re.IGNORECASE,
 )
 DIR_RE = re.compile(r"`([A-Za-z0-9_./-]*/)`")
@@ -83,6 +85,16 @@ def rows(section, file_re):
 
 def promised(section, file_re):
     return sorted({f for f, _ in rows(section, file_re)})
+
+
+def mentions(text, path, bare):
+    """How often text names path whole, plus, with bare, its file name standing alone. A name
+    inside a longer path is another file: `data.rs` is not `a.rs`, `ui/mod.rs` is not `src/mod.rs`."""
+    names = {path, path.split("/")[-1]} if bare else {path}
+    return sum(
+        len(re.findall(rf"(?<![\w./-]){re.escape(n)}(?![\w/-]|\.\w)", text))
+        for n in names
+    )
 
 
 def unasked(plans, sources, file_re):
@@ -125,8 +137,10 @@ def unasked(plans, sources, file_re):
 
 def unplanned(plans, rev_range, repo, file_re):
     """Files a commit range changed that no plan's File structure section lists."""
+    # --no-renames: a rename onto a planned path still deletes the old one. -z: a path keeps its
+    # spaces and is never quoted.
     out = subprocess.run(
-        ["git", "-C", repo, "diff", "--name-only", rev_range],
+        ["git", "-C", repo, "diff", "--name-only", "--no-renames", "-z", rev_range],
         capture_output=True,
         text=True,
         check=False,
@@ -134,7 +148,7 @@ def unplanned(plans, rev_range, repo, file_re):
     if out.returncode:
         print(out.stderr.strip())
         return 2
-    changed = out.stdout.split()
+    changed = [c for c in out.stdout.split("\0") if c]
     planned = set()
     for text in plans.values():
         m = SECTION_RE.search(text)
@@ -268,10 +282,17 @@ def main():
     if args.diff:
         return unplanned(plans, args.diff, args.repo, file_re)
 
+    # A bare name counts only in a plan whose own table resolves it to this path.
+    lists = {
+        name: set(promised(m.group(1), file_re))
+        if (m := SECTION_RE.search(text))
+        else set()
+        for name, text in plans.items()
+    }
+
     def elsewhere(path, owner):
-        tail = path.split("/")[-1]
         return any(
-            text.count(path) > 1 or text.count(tail) > 1
+            mentions(text, path, path in lists[name]) > 1
             for name, text in plans.items()
             if name != owner
         )
@@ -289,11 +310,7 @@ def main():
             continue
         files = promised(m.group(1), file_re)
         bad = [
-            x
-            for x in files
-            if text.count(x) <= 1
-            and text.count(x.split("/")[-1]) <= 1
-            and not elsewhere(x, name)
+            x for x in files if mentions(text, x, True) <= 1 and not elsewhere(x, name)
         ]
         detail[name] = bad
         total += len(bad)

@@ -31,7 +31,8 @@ def lint(text, required):
     produces = len(re.findall(r"^- Produces\b", text, re.MULTILINE))
     consumes = len(re.findall(r"^- Consumes", text, re.MULTILINE))
     steps = len(re.findall(r"^- \[[ xX]\]", text, re.MULTILINE))
-    fences = text.count("\n```")
+    # Indented too: a fence under a `- [ ]` step is one, and a plan cut off inside it is broken.
+    fences = len(re.findall(r"^[ \t]*```", text, re.MULTILINE))
     problems = []
     if tasks == 0:
         problems.append("no tasks")

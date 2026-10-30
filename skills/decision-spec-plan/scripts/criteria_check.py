@@ -2,7 +2,8 @@
 """Derive a phase's acceptance-criterion ids from the spec, and check that the plans map each one.
 
 Spec (the Stage 2 gate). In each section file, take the LAST heading of level 1-3 whose text
-contains "cceptance", up to the next heading of level 1-3. A criterion is defined by a line that
+contains "cceptance", up to the next heading of level 1-3 (a `#` line inside a code fence is not a
+heading). A criterion is defined by a line that
 opens -- after an optional `N.`, `-` or `*` marker -- with bold `**AC-P<P>-<NN>-<n>` (backticks
 allowed), or by a table row whose first cell is that id. An ordered-list item that opens with `**`
 and carries no id is counted by its list number and reported. A regex over full ids anywhere in
@@ -11,8 +12,9 @@ the file is NOT the method: one found 236 of 253 because a section listed its cr
 Plans (the Stage 4 gate, with --plans). A mapping row is a table row whose first cell names
 criteria, in a table whose header's second cell starts with "Task". Compact forms expand:
 `AC-P4-47-13, -14, -16` and `AC-P4-38-1 … -24`. A row maps its ids when its task cell names a
-task number and a later cell holds a backticked test path (`tests/x.rs`, `x.test.ts`,
-`file::test`; --test-re), or says "manual" beside the ruling that allows it (`manual (R199)`;
+task number and its test cell -- the first column after Task whose header names a test, else the
+third -- holds a backticked test path (`tests/x.rs`, `x.test.ts`, `file::test`; --test-re; a
+path in a notes column is no test), or a later cell says "manual" beside the ruling that allows it (`manual (R199)`;
 --ruling-re, looked for after the cell's AC- ids are stripped). Every number the task cell names
 outside backticks must be a `## Task N` or `### Task N` heading in that plan, else "task not
 found"; backticked text is a reference (`p4-43`), struck text (`~~14~~`) is withdrawn and a
@@ -42,6 +44,7 @@ import re
 import sys
 
 HEADING = re.compile(r"^(#{1,3})\s+(.*)$")
+FENCE = re.compile(r"^\s*(```|~~~)")
 TASK_HEADING = re.compile(r"^#{2,3} Task (\d+)", re.MULTILINE)
 SPAN = re.compile(r"`([^`]*)`")
 AC_ID = re.compile(r"AC-[A-Za-z0-9-]+")
@@ -68,18 +71,25 @@ def task_numbers(cell, ruling_re):
     return nums | {int(n) for n in re.findall(r"\d+", TASK_RANGE.sub("", text))}
 
 
-def acceptance_block(text):
-    lines, start = text.split("\n"), None
+def headings(lines):
+    """(index, HEADING match) of every heading outside a code fence: a `# comment` in a fenced
+    shell block is not a heading."""
+    fenced = False
     for i, line in enumerate(lines):
-        m = HEADING.match(line)
-        if m and "cceptance" in m.group(2):
-            start = i
-    if start is None:
+        if FENCE.match(line):
+            fenced = not fenced
+        elif not fenced and (m := HEADING.match(line)):
+            yield i, m
+
+
+def acceptance_block(text):
+    lines = text.split("\n")
+    found = list(headings(lines))
+    starts = [i for i, m in found if "cceptance" in m.group(2)]
+    if not starts:
         return None
-    end = next(
-        (j for j in range(start + 1, len(lines)) if HEADING.match(lines[j])), len(lines)
-    )
-    return lines[start + 1 : end]
+    end = next((i for i, _ in found if i > starts[-1]), len(lines))
+    return lines[starts[-1] + 1 : end]
 
 
 def definitions(block, p, nn):
@@ -134,12 +144,14 @@ def mappings(text, p, test_re, ruling_re):
         c = [x.strip() for x in line.strip().strip("|").split("|")]
         if header is None:
             header = c
+            # The test cell of `| Id | Task | Test file |`; more columns may follow it.
+            col = next((k for k, h in enumerate(c) if k > 1 and "test" in h.lower()), 2)
             continue
         if len(header) < 3 or not header[1].lower().startswith("task"):
             continue
         named = task_numbers(c[1], ruling_re) if len(c) > 1 else set()
         task = named <= tasks if named else None
-        test = any(test_re.search(s) for x in c[2:] for s in SPAN.findall(x))
+        test = col < len(c) and any(test_re.search(s) for s in SPAN.findall(c[col]))
         rulings = ()
         if not test:
             rulings = tuple(

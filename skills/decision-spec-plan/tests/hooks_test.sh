@@ -892,6 +892,37 @@ code=$?
 out=$(python3 "$SCRIPTS/scope_check.py" "$A/plans" --diff HEAD..HEAD --repo "$A/repo")
 [ $? = 2 ] && grep -q '^0 of 0 changed files' <<<"$out" && ok "scope_check --diff: an empty range fails" ||
 	bad "scope_check --diff, empty range: $out"
+# a rename onto a planned path still deletes an unplanned file, and a path with a space is one path
+D=$T/diffr
+mkdir -p "$D/plans" "$D/repo/src"
+printf '# p1-01-a\n## File structure\n| `src/new.py` | new |\n## Task 1\n' >"$D/plans/p1-01-a.md"
+git init -q -b main "$D/repo"
+echo keep >"$D/repo/src/old.py"
+git -C "$D/repo" add src && git -C "$D/repo" "${G[@]}" commit -q -m base
+git -C "$D/repo" mv src/old.py src/new.py && git -C "$D/repo" "${G[@]}" commit -q -m move
+echo x >"$D/repo/src/my notes.py"
+git -C "$D/repo" add src && git -C "$D/repo" "${G[@]}" commit -q -m notes
+out=$(python3 "$SCRIPTS/scope_check.py" "$D/plans" --diff HEAD~2..HEAD --repo "$D/repo")
+code=$?
+[ $code = 1 ] && grep -qx '   src/old.py' <<<"$out" && grep -qx '   src/my notes.py' <<<"$out" &&
+	grep -q '^2 of 3 changed files' <<<"$out" && ok "scope_check --diff: a renamed-away file and a path with a space" ||
+	bad "scope_check --diff, rename and space (exit $code): $out"
+
+# --- scope_check.py: a plan cut off after its File structure table, and a file named only inside a
+# longer path (`data.rs` holds `a.rs`; another plan's `ui/mod.rs` is not `src/mod.rs`), are
+# unimplemented; a bare name under a directory heading still counts (F25)
+U=$T/unimpl
+mkdir -p "$U"
+printf '# p1-01-a\n## File structure\n| `src/a.rs` | a |\n| `src/mod.rs` | module |\n| `src/data.rs` | data |\n## Task 1\nCreate `src/data.rs`.\n' >"$U/p1-01-a.md"
+printf '# p1-02-b\n## File structure\n### `core/`\n| `seg.rs` | segment |\n| `ui/mod.rs` | module |\n## Task 1\nEdit `ui/mod.rs`, write `seg.rs`.\n' >"$U/p1-02-b.md"
+printf '# p1-03-c\n## File structure\n| `web/app.ts` | app |\n' >"$U/p1-03-c.md"
+out=$(python3 "$SCRIPTS/scope_check.py" "$U" --list)
+code=$?
+[ $code = 1 ] && grep -q '^3 promised files' <<<"$out" && grep -qx '   src/a.rs' <<<"$out" &&
+	grep -qx '   src/mod.rs' <<<"$out" && grep -qx '   web/app.ts' <<<"$out" &&
+	! grep -qE '^   (src/data.rs|ui/mod.rs|core/seg.rs)$' <<<"$out" &&
+	ok "scope_check: a truncated plan and a name inside a longer path are unimplemented" ||
+	bad "scope_check unimplemented (exit $code): $out"
 
 # --- inside an exec- agent: the context stop (F75) and a commit held for an unread ruling (F59)
 SUB=$HOME/.claude/projects/p/s1/subagents
@@ -1365,6 +1396,85 @@ python3 "$SCRIPTS/criteria_check.py" --help | grep -qF '__tests__' &&
 # --- SKILL.md fits what a compaction re-attaches (cut at 20,000 characters; failure-modes F61)
 n=$(python3 -c 'import sys; print(len(open(sys.argv[1], encoding="utf-8").read()))' "$SCRIPTS/../SKILL.md")
 [ "$n" -le 19000 ] && ok "SKILL.md is $n characters (limit 19000)" || bad "SKILL.md is $n characters — over 19000; move detail to a reference"
+
+# --- criteria_check.py: a `# comment` in a fenced block does not end the acceptance section, and
+# only the test cell names a test: a spec path or a type's `::` path in a notes column is no test
+C=$T/crit
+mkdir -p "$C/spec" "$C/plans"
+cat >"$C/spec/38-auth.md" <<'EOF'
+# 38 Auth
+## Acceptance criteria
+1. **AC-P4-38-1** login works
+2. **AC-P4-38-2** logout works, checked with:
+```bash
+# start the server first
+./run.sh
+```
+3. **AC-P4-38-3** a session expires after 30 minutes
+4. **AC-P4-38-4** five failures lock the account
+## Notes
+EOF
+out=$(python3 "$SCRIPTS/criteria_check.py" "$C/spec" --phase 4 --sections 38)
+code=$?
+[ $code = 0 ] && grep -qE '^§38 +4 +4  ok$' <<<"$out" && ok "criteria_check: a fenced # comment does not end the section" ||
+	bad "criteria_check fenced comment (exit $code): $out"
+printf '# 39 Sessions\n## Acceptance criteria\n1. **AC-P4-39-1** a\n2. **AC-P4-39-2** b\n3. **AC-P4-39-3** c\n' >"$C/spec/39-sessions.md"
+cat >"$C/plans/p4-01-auth.md" <<'EOF'
+# p4-01-auth
+## Task 1: sessions
+| Id | Task | Test file | Notes |
+|---|---|---|---|
+| AC-P4-39-1 | 1 | `tests/session_test.py` | |
+| AC-P4-39-2 | 1 | — | per `spec/39-sessions.md` |
+| AC-P4-39-3 | 1 | — | calls `Session::end` |
+EOF
+out=$(python3 "$SCRIPTS/criteria_check.py" "$C/spec" --phase 4 --sections 39 --plans "$C/plans")
+code=$?
+[ $code = 1 ] && grep -q '1 of 3 criteria mapped to a task and a test' <<<"$out" &&
+	grep -q 'NO TEST FILE: AC-P4-39-2, AC-P4-39-3$' <<<"$out" &&
+	ok "criteria_check: only the test cell names a test" || bad "criteria_check test cell (exit $code): $out"
+
+# --- plan_lint.py: a plan cut off inside a code fence indented under a step is unbalanced
+L=$T/lint
+mkdir -p "$L"
+cat >"$L/p4-01-cut.md" <<'EOF'
+**Goal:** a
+**Spec:** b
+**Depends on:** none
+## Task 1 — a
+- Produces: a
+- Consumes: none
+- [ ] Step 1: write the test
+  ```python
+  def test_a():
+      assert a() ==
+EOF
+out=$(python3 "$SCRIPTS/plan_lint.py" "$L")
+code=$?
+[ $code = 1 ] && grep -q 'unbalanced fences (1)' <<<"$out" && ok "plan_lint: an indented unclosed fence is unbalanced" ||
+	bad "plan_lint indented fence (exit $code): $out"
+
+# --- apply_markers.py: a CRLF file keeps its line endings; a malformed list is refused by name,
+# with exit 2 and nothing written, never a traceback
+M=$T/markers
+mkdir -p "$M/d"
+printf '# D2\r\n\r\nThe cache is per user.\r\nOther line.\r\n' >"$M/d/D2-x.md"
+echo '[{"file":"D2-x.md","anchor":"per user","ruling":"A1","clause":"one global cache"}]' >"$M/ok.json"
+out=$(python3 "$SCRIPTS/apply_markers.py" "$M/d" "$M/ok.json" 2>&1)
+code=$?
+crlf() { python3 -c 'import sys; b = open(sys.argv[1], "rb").read(); print(b.count(b"\n"), b.count(b"\r\n"))' "$1"; }
+[ $code = 0 ] && [ "$(crlf "$M/d/D2-x.md")" = "6 6" ] && grep -q 'SUPERSEDED BY A1' "$M/d/D2-x.md" &&
+	ok "apply_markers: a CRLF file keeps CRLF" || bad "apply_markers CRLF (exit $code, lf crlf: $(crlf "$M/d/D2-x.md")): $out"
+before=$(md5sum <"$M/d/D2-x.md")
+echo '[{"file":"D2-x.md","anchor":"Other line","ruling":"A2"}]' >"$M/noclause.json"
+echo '{"file":"D2-x.md"}' >"$M/object.json"
+for j in noclause object; do
+	out=$(python3 "$SCRIPTS/apply_markers.py" "$M/d" "$M/$j.json" 2>&1)
+	code=$?
+	[ $code = 2 ] && ! grep -q Traceback <<<"$out" && grep -q "cannot read $M/$j.json" <<<"$out" &&
+		[ "$(md5sum <"$M/d/D2-x.md")" = "$before" ] && ok "apply_markers: a malformed list ($j) is refused" ||
+		bad "apply_markers malformed $j (exit $code): $out"
+done
 
 [ "$FAIL" = 0 ] && echo "ALL PASS" || echo "FAILURES"
 exit "$FAIL"

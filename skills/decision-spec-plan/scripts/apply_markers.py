@@ -9,14 +9,16 @@ the block holding the anchor -- the paragraph, bullet or table row:
     > **SUPERSEDED BY A7** — <clause>.
 
 and every marked file gets `> **Read 00-arbiter.md first.**` under its title, once. Text is never
-deleted or rewritten. An anchor that is missing, or found more than once, is refused and named; a
-marker already above its block is skipped, so a fixed list can be re-run. Each file is written once.
+deleted or rewritten, and a file keeps its line endings (CRLF stays CRLF). An anchor that is
+missing, or found more than once, is refused and named; a marker already above its block is
+skipped, so a fixed list can be re-run. Each file is written once.
 
 Usage:
     apply_markers.py <decisions-dir> <markers.json> [--check]
 
 --check reports without writing. Exit 0 when every entry applied or was already present, 1 when any
-was refused, 2 when the list or a named file cannot be read.
+was refused, 2 when the list, an entry of it (each needs string file, anchor, ruling and clause) or
+a named file cannot be read; a malformed list writes nothing.
 """
 
 import argparse
@@ -26,6 +28,7 @@ import re
 import sys
 
 HEADER = "> **Read 00-arbiter.md first.**"
+KEYS = ("file", "anchor", "ruling", "clause")
 BLOCK_START = re.compile(r"^\s*(\||#|>|[-*+]\s|\d+[.)]\s)")
 
 
@@ -90,6 +93,15 @@ def main():
     except (OSError, ValueError) as err:
         print(f"cannot read {a.markers_json}: {err}")
         return 2
+    if not isinstance(entries, list):
+        print(f"cannot read {a.markers_json}: not a list of entries")
+        return 2
+    for n, e in enumerate(entries, 1):
+        if not (isinstance(e, dict) and all(isinstance(e.get(k), str) for k in KEYS)):
+            print(
+                f"cannot read {a.markers_json}: entry {n} needs string {', '.join(KEYS)}: {e!r}"
+            )
+            return 2
     by_file = {}
     for e in entries:
         by_file.setdefault(e["file"], []).append(e)
@@ -98,13 +110,18 @@ def main():
     for name, group in by_file.items():
         path = base / name
         try:
-            text = path.read_text()
+            # newline="": read and write the file's own line endings, never rewrite them.
+            with open(path, newline="") as f:
+                raw = f.read()
         except OSError as err:
             print(f"cannot read {path}: {err}")
             return 2
-        new, results = apply(text, group)
-        if new != text and not a.check:
-            path.write_text(new)
+        nl = "\r\n" if "\r\n" in raw else "\n"
+        new, results = apply(raw.replace("\r\n", "\n"), group)
+        new = new.replace("\n", nl)
+        if new != raw and not a.check:
+            with open(path, "w", newline="") as f:
+                f.write(new)
         count = {
             k: sum(1 for _, r in results if r == k) for k in ("applied", "present")
         }
