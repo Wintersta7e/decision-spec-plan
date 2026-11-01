@@ -1640,6 +1640,8 @@ index '| S1 | **x** | U2 |' 'TBD' >"$DC/00-index.md"
 dcheck 1 "dimension 'security' has no owner"
 index '| S1 | **x** | U2 |' 'N/A:' >"$DC/00-index.md"
 dcheck 1 "dimension 'security' has no owner"
+index '| S1 | **x** | U2 |' 'N/A: offline-only' >"$DC/00-index.md"
+dcheck 0 '0 failure'
 index '| S1 | **x** | U2 |' | grep -v 'Background jobs' >"$DC/00-index.md"
 dcheck 1 "dimension 'background jobs' has no row"
 # a decision serves an ask or a user ruling, or waits in the backlog; past six, the user triages
@@ -1670,6 +1672,12 @@ index '| S1 | **x** | U2 |' '' "$(disp '| R1 | re-opened | user asked |
 | R2 | applied | D1 |
 | R3 | declined | U4 |')" >"$DC/00-index.md"
 dcheck 1 'R1 is re-opened against S1, which is still in SETTLED' --rung S
+# a decline rests on a SETTLED row only if the row is there
+index '| S2 | **y** | U2 |' '' "$(disp '| R1 | declined | S9 |
+| R2 | declined | the S3 bucket is out of scope |
+| R3 | declined | S2 |')" >"$DC/00-index.md"
+dcheck 1 'R1 is declined on S9, which is not in SETTLED' --rung S
+dcheck 1 "R2 is declined on 'the S3 bucket" --rung S
 index '| S2 | **y** | U2 |' '' "$(disp '| R1 | declined | default |
 | R2 | applied | D1 |
 | R3 | declined | S2 |')" >"$DC/00-index.md"
@@ -1681,6 +1689,14 @@ p=$DC/verify/R1.prompt.md
 	bad "decision_check --verifier: $out"
 grep -qF 'Mutant run:' "$p" && grep -qF 'Claim:' "$p" && ok "the verifier prompt asks for the claim quoted and a mutant run" ||
 	bad "verifier prompt lacks Claim/Mutant run: $(cat "$p")"
+# a finding's repro block keeps its shell comments, and a wrapped `#42` is no heading
+DF=$T/dc-fence/decisions/phase1
+mkdir -p "$DF"
+printf '# Seams\n**R1** — importing twice duplicates rows. Repro:\n```sh\n# import the same file twice\napp import a.csv && app import a.csv\n```\nAfter the second run every row is there twice, see\n#42 for the report.\n## B. OTHER\n**R2** — the cache is never cleared.\n' >"$DF/00-seams.md"
+python3 "$SCRIPTS/decision_check.py" "$DF" --verifier R1 --sha abc123 >/dev/null
+grep -qF 'After the second run every row is there twice' "$DF/verify/R1.prompt.md" && grep -qF '#42 for the report' "$DF/verify/R1.prompt.md" &&
+	! grep -qF 'OTHER' "$DF/verify/R1.prompt.md" && ok "decision_check: a finding runs past a fenced # comment to the next heading" ||
+	bad "finding cut short: $(cat "$DF/verify/R1.prompt.md")"
 # a REFUTED from a test that cannot see the defect refutes nothing: it must fail on a mutant that
 # makes the claim true, and quote the claim it checks (published: generated tests are jointly
 # valid on 9.21% of tasks)
@@ -1693,6 +1709,9 @@ dcheck 1 "R1's REFUTED in verify/R1.md quotes no line of the claim" --rung S
 printf 'Verdict: REFUTED\nClaim: "merges two people with one   name"\nRun: npm test -- a → exit=0\nMutant: key by name alone\nMutant run: npm test -- a → exit=1\n' >"$DC/verify/R1.md"
 dcheck 0 '0 failure' --rung S
 echo 'Verdict: UPHELD' >"$DC/verify/R1.md"
+dcheck 1 'R1 is declined, but verify/R1.md upheld it' --rung S
+# the verifier prompt glosses each verdict; one copied onto the line is still that verdict
+echo 'Verdict: UPHELD (the test demonstrates the claim)' >"$DC/verify/R1.md"
 dcheck 1 'R1 is declined, but verify/R1.md upheld it' --rung S
 # a round with no arbiter (a review round run S-shaped under an M route) keeps them in its index
 dcheck 1 'R1 is declined, but verify/R1.md upheld it' --rung M

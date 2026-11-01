@@ -65,7 +65,7 @@ DIMENSIONS = (
     "security",
 )
 RULING_ID = re.compile(r"\b(?:[UADS]\d+|Ask\d+)\b")
-OWNER = re.compile(r"\b(?:[UADS]\d+|Ask\d+)\b|N/A:\s*\S+\s+\S+")
+OWNER = re.compile(r"\b(?:[UADS]\d+|Ask\d+)\b|N/A:\s*\S+")
 PATH = re.compile(r"`([^`\s]+?\.[A-Za-z0-9]+)(?::[\d,–-]+)?`")
 TRIAGE = 6  # live decisions a round rules before the user triages them
 # A finding opens a line with its id — `**R<n>`, or a bare `R<n>` and a dash, colon or bracket —
@@ -194,15 +194,22 @@ def decisions(index):
 
 
 def findings(seams):
-    """{R-number: its text} — each finding runs to the next finding or heading."""
+    """{R-number: its text} — each finding runs to the next finding or heading. A `#` line in a
+    code fence (a shell comment in a repro) or one with no space after the `#`s (`#42`) is no
+    heading."""
     marks = list(FINDING.finditer(seams))
     out = {}
     for i, m in enumerate(marks):
         end = marks[i + 1].start() if i + 1 < len(marks) else len(seams)
+        lines, fenced = seams[m.start() : end].split("\n"), False
         # a heading after the finding's first line ends it; its own `### **R3**` does not
-        out.setdefault(
-            f"R{m.group(1) or m.group(2)}", seams[m.start() : end].split("\n#")[0]
-        )
+        for k, line in enumerate(lines[1:], 1):
+            if re.match(r"\s*(```|~~~)", line):
+                fenced = not fenced
+            elif not fenced and re.match(r"#{1,6}(?:\s|$)", line):
+                lines = lines[:k]
+                break
+        out.setdefault(f"R{m.group(1) or m.group(2)}", "\n".join(lines))
     return out
 
 
@@ -211,7 +218,8 @@ def verdict(d, rid):
     if not path.exists():
         return None
     first = path.read_text(errors="replace").strip().partition("\n")[0]
-    m = re.fullmatch(r"\W*Verdict:\W*(UPHELD|REFUTED|NO-TEST)\W*", first)
+    # the verifier's prompt glosses each verdict, and a verifier may copy the gloss onto the line
+    m = re.match(r"\W*Verdict:\W*(UPHELD|REFUTED|NO-TEST)(?![\w-])", first)
     return m.group(1) if m else None
 
 
@@ -288,11 +296,17 @@ def dispositions(d, index, rung, ids):
                 fails.append(
                     f"{r} is declined, but verify/{r}.md upheld it with a test"
                 )
-            elif re.search(r"\b(?:U\d+|S\d+)\b", basis):
+            elif re.search(r"\bU\d+\b", basis) or (
+                (sids := re.findall(r"\bS\d+\b", basis)) and set(sids) <= ids.keys()
+            ):
                 pass
             elif v == "REFUTED":
                 fails += refuted_gaps(d, r, found.get(r, ""))
             else:
+                gone = [s for s in re.findall(r"\bS\d+\b", basis) if s not in ids]
+                fails += [
+                    f"{r} is declined on {s}, which is not in SETTLED" for s in gone
+                ]
                 fails.append(
                     f"{r} is declined on '{basis[:60]}': the basis is a user ruling U<n>, a "
                     f"SETTLED row S<n>, or a REFUTED verdict — run "
