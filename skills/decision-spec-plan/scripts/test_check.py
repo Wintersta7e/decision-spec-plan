@@ -13,8 +13,9 @@ agents that cheated did it mostly by editing the tests. This lists five kinds of
     EDITED   <file>  <commit>…   an acceptance test file one of whose assertions or tests a
                                  commit changes or removes after it was written
 
-An acceptance test file is a test file a row under a plan's `| Id | Task | Test file |` header
-maps an `AC-` id to (a source file holding the test changes with its code). Its assertions and
+An acceptance test file is a test file a row of a plan's mapping table (`| Id | Task | Test file |`,
+read as criteria_check.py reads it) maps an `AC-` id to (a source file holding the test changes
+with its code); a rename inside the test paths carries it along. Its assertions and
 tests are read-only once written — by the base, or by the range's first commit that touches it —
 and later commits may only add beside them: an assertion loosened in place keeps every count the
 same.
@@ -30,7 +31,7 @@ moved, one rewritten in place offsets the line it replaced, and a removed test's
 REMOVED line.
 
 A DELETED or REMOVED line passes when a plan matching `--glob` names it: the path, or the test's
-name standing alone. A SKIP, FEWER or EDITED line never passes: the lead rules each one, since a
+name standing alone. A SKIP, FEWER or EDITED line, or a deleted acceptance test file, never passes: the lead rules each one, since a
 plan that names a skip does not say the test it hides was meant to fail. Not caught: an assertion
 loosened in place outside an acceptance test file, a test body emptied there, assertions dropped
 from a test inside a source file (a Rust `mod tests`), a test excluded by the runner's
@@ -74,18 +75,19 @@ ATTR = re.compile(
     r"^\s*(?:#\[(?:\w+::)?test\]|@Test\b|\[(?:Fact|Theory|Test|TestMethod)\])"
 )
 AFTER_ATTR = re.compile(r"\bfn\s+(\w+)|\b(\w+)\s*\(")
+# the attributes a line opens with: `@Test fun name()` names its test on the same line
+ATTRS = re.compile(r"^\s*(?:(?:@[\w.]+(?:\([^)]*\))?|#?\[[^\]]*\])\s*)+")
 SKIP = re.compile(
     r"\b(?:it|test|describe|context|suite)\.(?:skip|only|todo|fixme)\b|\bx(?:it|describe|test)\s*\("
-    r"|@pytest\.mark\.(?:skip|skipif|xfail)\b|@unittest\.(?:skip\w*|expectedFailure)\b"
-    r"|\bpytest\.(?:skip|xfail)\s*\(|#\[ignore\b|\bt\.Skip(?:Now|f)?\s*\(|@Disabled\b|@Ignore\b"
-    r"|\[Ignore\]|\bSkip\s*=\s*\""
+    r"|\bpytest\.mark\.(?:skip|skipif|xfail)\b|@unittest\.(?:skip\w*|expectedFailure)\b"
+    r"|\bpytest\.(?:skip|xfail)\s*\(|\.skipTest\s*\(|#\[ignore\b|\bt\.Skip(?:Now|f)?\s*\("
+    r"|@Disabled\b|@Ignore\b|\[Ignore\b|\bSkip\s*=\s*\""
 )
 ASSERT = re.compile(
     r"^\s*assert\b|\b(?:assert\w*!?|assert\.\w+|(?<![.\w])expect|Assert\.\w+|t\.(?:Error|Fatal)f?"
     r"|require\.\w+)\s*\("
 )
 HUNK = re.compile(r"^@@ -\d+(?:,\d+)? \+(\d+)")
-MAPPING = re.compile(r"^\|\s*Id\s*\|\s*Task\s*\|\s*Test file\s*\|", re.IGNORECASE)
 
 
 def git(repo, *args):
@@ -105,11 +107,11 @@ def scan(diff):
     """(names on removed lines, names on added lines, added skip lines, {test file: assertion
     lines removed minus added}) of a -U0 diff; a name is (test, file), a skip (file, line, text).
     An assertion removed after a removed test's defining line in one hunk is that test's, which
-    its REMOVED line (or its move) already covers."""
+    its REMOVED line (or its move) already covers — unless the range adds a test of that name."""
     names = {"-": set(), "+": set()}
     added, asserts, gone, came = [], [], set(), set()
     old = new = path = None
-    line, header, armed, inside = 0, False, {"-": False, "+": False}, False
+    line, header, armed, inside = 0, False, {"-": False, "+": False}, None
     for raw in diff.splitlines():
         if raw.startswith("diff --git "):
             header, old, new = True, None, None
@@ -123,32 +125,34 @@ def scan(diff):
                 path = new or old
             elif m := HUNK.match(raw):
                 line, header, armed = int(m[1]), False, {"-": False, "+": False}
-                inside = False
+                inside = None
             continue
         if m := HUNK.match(raw):
-            line, armed, inside = int(m[1]), {"-": False, "+": False}, False
+            line, armed, inside = int(m[1]), {"-": False, "+": False}, None
             continue
         sign, text = raw[:1], raw[1:]
         if sign not in ("+", "-"):
             continue
-        if ATTR.match(text):
-            armed[sign] = True
+        name, rest = None, None
+        if ATTR.match(text) or (armed[sign] and ATTRS.match(text)):
+            # the test marker, or another attribute between it and its function
+            armed[sign], rest = True, ATTRS.sub("", text, count=1)
         elif m := NAME.match(text):
-            names[sign].add((m[1] or m[2] or m[4], path))
-            inside = inside or sign == "-"
-        elif armed[sign] and text.lstrip().startswith(("@", "#[", "[")):
-            pass  # another attribute between the test marker and its function
-        elif armed[sign] and (m := AFTER_ATTR.search(text)):
-            names[sign].add((m[1] or m[2], path))
-            armed[sign] = False
-            inside = inside or sign == "-"
+            name = m[1] or m[2] or m[4]
+        elif armed[sign]:
+            rest = text
+        if rest and (m := AFTER_ATTR.search(rest)):
+            name, armed[sign] = m[1] or m[2], False
+        if name:
+            names[sign].add((name, path))
+            if sign == "-":
+                inside = name
         if (
             TEST_PATH.search(path)
             and ASSERT.search(text)
             and not text.lstrip().startswith(("//", "#", "*", "/*"))
-            and not (sign == "-" and inside)
         ):
-            asserts.append((sign, path, text.strip()))
+            asserts.append((sign, path, text.strip(), inside if sign == "-" else None))
         if sign == "+":
             if SKIP.search(text):
                 added.append((path, line, text.strip()))
@@ -158,8 +162,10 @@ def scan(diff):
             gone.add(text.strip())
     # an assertion whose line the range adds back anywhere moved; one rewritten in place offsets
     # the line it replaced
-    fewer = {}
-    for sign, p, t in asserts:
+    fewer, readded = {}, {n for n, _ in names["+"]}
+    for sign, p, t, owner in asserts:
+        if owner and owner not in readded:
+            continue  # the removed test's REMOVED line covers it
         if t not in (came if sign == "-" else gone):
             fewer[p] = fewer.get(p, 0) + (1 if sign == "-" else -1)
     skips = [s for s in added if s[2] not in gone]
@@ -171,35 +177,48 @@ def named(text, word):
 
 
 def acceptance_files(plans):
-    """The test files the rows under a `| Id | Task | Test file |` header map, `::test` cut off;
-    a source file holding the test changes with the code, so it is never one."""
-    files, mapping = set(), False
+    """The test files a mapping table's rows map, `::test` cut off, read as criteria_check reads
+    them: a table whose header's second cell starts with "Task", its test cell the first column
+    after Task whose header names a test, else the third. A source file holding the test changes
+    with the code, so it is never one."""
+    files, header, col = set(), None, 2
     for line in plans.splitlines():
-        if MAPPING.match(line):
-            mapping = True
-        elif not line.startswith("|"):
-            mapping = False
-        elif mapping and len(cells := line.split("|")) > 3:
-            for f in re.findall(r"`([^`]+)`", cells[3]):
+        if not line.startswith("|"):
+            header = None
+            continue
+        cells = [c.strip() for c in line.strip().strip("|").split("|")]
+        if header is None:
+            header = cells
+            col = next(
+                (k for k, h in enumerate(cells) if k > 1 and "test" in h.lower()), 2
+            )
+        elif (
+            len(header) > 2
+            and header[1].lower().startswith("task")
+            and col < len(cells)
+        ):
+            for f in re.findall(r"`([^`]+)`", cells[col]):
                 if TEST_PATH.search(path := f.split("::")[0]):
                     files.add(path)
     return files
 
 
-def edited(repo, rng, path):
+def edited(repo, rng, path, now=None):
     """The commits of the range, oldest first, that change or remove an assertion or a test's
     defining line of `path` after it was written: a file the base lacks is written by its first
-    commit, which is never one. An import widened for a test added beside it is not."""
+    commit, which is never one. An import widened for a test added beside it is not. `now` is
+    the path the range renames it to inside the test paths: the rename itself changes nothing."""
     base = rng.partition("..")[0]
+    paths = [path, now] if now else [path]
     commits = git(
-        repo, "log", "--reverse", "--no-merges", "--format=%h", rng, "--", path
+        repo, "log", "--no-merges", "--follow", "--format=%h", rng, "--", paths[-1]
     )
-    commits = commits.split()
+    commits = commits.split()[::-1]
     if not git(repo, "ls-tree", base, "--", path).strip():
         commits = commits[1:]
     out = []
     for c in commits:
-        diff = git(repo, "diff", "-U0", f"{c}^", c, "--", path).splitlines()
+        diff = git(repo, "diff", "-U0", "-M", f"{c}^", c, "--", *paths).splitlines()
         if any(
             ln.startswith("-")
             and not ln.startswith("--- ")
@@ -231,7 +250,7 @@ def main():
         return 2
     # a test file renamed out of the test paths no longer runs: it is deleted, and its new path's
     # lines are its DELETED line's, like a deleted file's
-    deleted, retired, i = set(), set(), 0
+    deleted, retired, moved, i = set(), set(), {}, 0
     while i < len(status) - 1:
         kind = status[i]
         if kind == "D":
@@ -239,15 +258,23 @@ def main():
         elif kind[:1] == "R" and not TEST_PATH.search(status[i + 2]):
             deleted.add(status[i + 1])
             retired.add(status[i + 2])
+        elif kind[:1] == "R":
+            moved[status[i + 1]] = status[i + 2]
         i += 3 if kind[:1] in "RC" else 2
-    removed, added, skips, fewer = scan(git(args.repo, "diff", "-U0", "-M", args.diff))
+    # explicit prefixes: header_path() cuts two characters, whatever diff.noprefix says
+    diff = git(
+        args.repo, "diff", "-U0", "-M", "--src-prefix=a/", "--dst-prefix=b/", args.diff
+    )
+    removed, added, skips, fewer = scan(diff)
     added_names = {n for n, _ in added}
     gone = deleted | retired
 
+    accept = acceptance_files(plans)
+    # the mapping row that names an acceptance test is no plan to delete it
     bad = [
         f"DELETED  {f}"
         for f in sorted(deleted)
-        if TEST_PATH.search(f) and not named(plans, f)
+        if TEST_PATH.search(f) and (f in accept or not named(plans, f))
     ]
     bad += [
         f"REMOVED  {n}  {f}"
@@ -262,8 +289,8 @@ def main():
     ]
     bad += [
         f"EDITED   {f}  {' '.join(cs)}"
-        for f in sorted(acceptance_files(plans) - gone)
-        if (cs := edited(args.repo, args.diff, f))
+        for f in sorted(accept - gone)
+        if (cs := edited(args.repo, args.diff, f, moved.get(f)))
     ]
     for b in bad:
         print(b)

@@ -2209,6 +2209,71 @@ code=$?
 	bad "test_check, read-only acceptance tests (exit $code): $out"
 out=$(python3 "$SCRIPTS/test_check.py" "$TA/plans" --diff HEAD~3..HEAD~1 --repo "$TA/repo")
 [ $? = 0 ] && ok "test_check: an acceptance test written and then added to passes" || bad "test_check, acceptance additions: $out"
+# a fresh repo with one base commit of the files written so far; tcrun runs the check over it
+tcrepo() {
+	TB=$(mktemp -d "$T/tc.XXXX")
+	mkdir -p "$TB/plans" "$TB/repo/tests"
+	git init -q -b main "$TB/repo"
+}
+tcbase() { git -C "$TB/repo" add -A . && git -C "$TB/repo" "${G[@]}" commit -q -m "${1:-base}"; }
+tcrun() { out=$(python3 "$SCRIPTS/test_check.py" "$TB/plans" --diff "${1:-HEAD~1}..HEAD" --repo "$TB/repo"); }
+# an assertion dropped beside a test's changed signature: the test is still there, so no REMOVED
+# line covers the assertion
+tcrepo
+printf 'def test_x():\n    assert g() == 2\n    assert f() == 1\n' >"$TB/repo/tests/test_a.py" && tcbase
+printf 'def test_x(tmp_path):\n    assert f() == 1\n' >"$TB/repo/tests/test_a.py" && tcbase sig
+tcrun
+grep -qx 'FEWER    tests/test_a.py  1 fewer assertions' <<<"$out" &&
+	ok "test_check: an assertion dropped in the hunk of a test re-defined under its name is counted" || bad "test_check, re-defined test: $out"
+# skips written as pytestmark, skipTest and [Ignore("…")]
+tcrepo
+printf 'import pytest\n\n\ndef test_a():\n    assert a()\n' >"$TB/repo/tests/test_a.py"
+printf 'class T(unittest.TestCase):\n    def test_b(self):\n        self.assertTrue(b())\n' >"$TB/repo/tests/test_b.py"
+printf 'public class CTests {\n    [Test]\n    public void Works() { Assert.That(c()); }\n}\n' >"$TB/repo/tests/CTests.cs"
+tcbase
+printf 'import pytest\n\npytestmark = pytest.mark.skip(reason="flaky")\n\n\ndef test_a():\n    assert a()\n' >"$TB/repo/tests/test_a.py"
+printf 'class T(unittest.TestCase):\n    def test_b(self):\n        self.skipTest("later")\n        self.assertTrue(b())\n' >"$TB/repo/tests/test_b.py"
+printf 'public class CTests {\n    [Test]\n    [Ignore("later")]\n    public void Works() { Assert.That(c()); }\n}\n' >"$TB/repo/tests/CTests.cs"
+tcbase skip
+tcrun
+[ "$(grep -c '^SKIP' <<<"$out")" = 3 ] && ok "test_check: pytestmark, skipTest and [Ignore(\"…\")] are skips" || bad "test_check, skip forms: $out"
+# the user's diff.noprefix leaves the paths whole
+tcrepo
+printf '#[test]\nfn parses() {\n    assert_eq!(1, f());\n    assert_eq!(2, g());\n}\n' >"$TB/repo/tests/parse.rs" && tcbase
+printf '#[test]\nfn parses() {\n    assert_eq!(1, f());\n}\n' >"$TB/repo/tests/parse.rs" && tcbase drop
+git -C "$TB/repo" config diff.noprefix true
+tcrun
+[ "$out" = "$(printf 'FEWER    tests/parse.rs  1 fewer assertions\n1 deleted test files, removed tests, added skips, dropped assertions or edited acceptance tests need a ruling')" ] &&
+	ok "test_check: diff.noprefix does not cut the paths" || bad "test_check, noprefix: $out"
+# a mapping table read as criteria_check reads it: `Task(s)`, and a Test file column that is not
+# the third; a same-line `@Test fun name()` names its own test
+tcrepo
+printf 'def test_ac():\n    assert parse("a") == ["a"]\n' >"$TB/repo/tests/test_ac.py"
+mkdir -p "$TB/repo/src/test/kotlin"
+printf 'class ParserTest {\n    @Test fun parsesEmpty() {\n        assertEquals(0, parse(""))\n    }\n\n    @Test fun parsesOne() {\n        assertEquals(1, parse("a"))\n    }\n}\n' >"$TB/repo/src/test/kotlin/ParserTest.kt"
+tcbase
+printf 'def test_ac():\n    assert parse("a")\n' >"$TB/repo/tests/test_ac.py"
+printf 'class ParserTest {\n    @Test fun parsesEmpty() {\n        assertEquals(0, parse(""))\n    }\n}\n' >"$TB/repo/src/test/kotlin/ParserTest.kt"
+tcbase loosen
+printf '# p1-01\n| Id | Task(s) | Notes | Test file |\n|---|---|---|---|\n| AC-P1-1-1 | 1 | see x | `tests/test_ac.py` |\n\n## Task 1 — x\n' >"$TB/plans/p1-01-x.md"
+tcrun
+grep -q '^EDITED   tests/test_ac.py' <<<"$out" && grep -qx 'REMOVED  parsesOne  src/test/kotlin/ParserTest.kt' <<<"$out" &&
+	ok "test_check: a Task(s) table's Test file column, and a same-line @Test fun" || bad "test_check, table and same-line test: $out"
+# an acceptance test moved inside the test paths is no edit; one loosened after its move is, and one
+# deleted goes to the lead though its mapping row names it
+tcrepo
+printf 'import x\n\n\ndef test_ac():\n' >"$TB/repo/tests/test_ac.py"
+for l in a b c d e; do printf '    assert parse("%s") == ["%s"]\n' $l $l >>"$TB/repo/tests/test_ac.py"; done
+printf 'def test_gone():\n    assert 1\n' >"$TB/repo/tests/test_gone.py"
+tcbase
+git -C "$TB/repo" mv tests/test_ac.py tests/test_parse_ac.py && tcbase move
+printf '# p1-01\n| Id | Task | Test file |\n|---|---|---|\n| AC-P1-1-1 | 1 | `tests/test_ac.py` |\n| AC-P1-1-2 | 1 | `tests/test_gone.py` |\n\n## Task 1 — x\n' >"$TB/plans/p1-01-x.md"
+tcrun
+[ -z "$(grep '^EDITED\|^DELETED' <<<"$out")" ] && ok "test_check: an acceptance test moved inside the test paths is not edited" || bad "test_check, git mv: $out"
+sed -i 's/== \["a"\]//' "$TB/repo/tests/test_parse_ac.py" && git -C "$TB/repo" rm -q tests/test_gone.py && tcbase loosen
+tcrun HEAD~2
+grep -q '^EDITED   tests/test_ac.py' <<<"$out" && grep -qx 'DELETED  tests/test_gone.py' <<<"$out" &&
+	ok "test_check: an acceptance test loosened after its move, or deleted, goes to the lead" || bad "test_check, move then loosen: $out"
 
 # --- F41: a lane's commits past its merged SHA that main lacks; a lane the integrator rebased
 # and merged has none, though its tip is not the checkpoint's SHA
