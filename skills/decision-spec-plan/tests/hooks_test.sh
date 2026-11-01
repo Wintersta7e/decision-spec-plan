@@ -2014,6 +2014,14 @@ code=$?
 [ $code = 1 ] && grep -q '1 of 3 criteria mapped to a task and a test' <<<"$out" &&
 	grep -q 'NO TEST FILE: AC-P4-39-2, AC-P4-39-3$' <<<"$out" &&
 	ok "criteria_check: only the test cell names a test" || bad "criteria_check test cell (exit $code): $out"
+# a table row's id may be bold around code; colocated pytest files and .Tests projects are tests
+printf '# 45 Parsing\n## Acceptance criteria\n| Id | Criterion |\n|---|---|\n| **`AC-P4-45-1`** | empty input |\n| **`AC-P4-45-2`** | one row |\n' >"$C/spec/45-parse.md"
+mkdir -p "$C/plans45"
+printf '# p4-02\n| Id | Task | Test file |\n|---|---|---|\n| AC-P4-45-1 | 1 | `src/parser/test_parse.py` |\n| AC-P4-45-2 | 1 | `MyApp.Tests/ParserTests.cs` |\n\n## Task 1 — parse\n' >"$C/plans45/p4-02-parse.md"
+out=$(python3 "$SCRIPTS/criteria_check.py" "$C/spec" --phase 4 --sections 45 --plans "$C/plans45")
+code=$?
+[ $code = 0 ] && grep -q '2 of 2 criteria mapped' <<<"$out" &&
+	ok "criteria_check: bold-code table ids, colocated and .Tests test paths" || bad "criteria_check ids and paths (exit $code): $out"
 
 # --- plan_lint.py: a plan cut off inside a code fence indented under a step is unbalanced
 L=$T/lint

@@ -49,7 +49,11 @@ TASK_HEADING = re.compile(r"^#{2,3} Task (\d+)", re.MULTILINE)
 SPAN = re.compile(r"`([^`]*)`")
 AC_ID = re.compile(r"AC-[A-Za-z0-9-]+")
 MANUAL = re.compile(r"\bmanual\b", re.IGNORECASE)
-TEST_RE = r"(^|/)(tests?|spec|__tests__)/|[._-](test|spec)\.|_test\.|::"
+# test_check.py's test paths too: colocated `test_*.py`, `*Test.java`, `*Tests.cs`
+TEST_RE = (
+    r"(^|/)(tests?|spec|__tests__)/|[._-](test|spec)\.|_test\.|::"
+    r"|(^|/)test_[^/]*\.py\b|Tests?\.(java|kt|cs)\b"
+)
 RULING_RE = r"\b(?:U|R|[A-Z]?A)\d+\b"
 TOKEN = re.compile(
     r"AC-P(\d+)-(\d+)-(\d+)"  # a full id
@@ -94,7 +98,7 @@ def acceptance_block(text):
 
 def definitions(block, p, nn):
     ided = re.compile(
-        rf"^(?:(?:\d+[a-z]?\.|[-*])\s+)?(?:\*\*`?|\|\s*`?\*{{0,2}})"
+        rf"^(?:(?:\d+[a-z]?\.|[-*])\s+)?(?:\*\*`?|\|\s*`?\*{{0,2}}`?)"
         rf"AC-P{p}-{nn}-(\d+)([a-z]?(?:-[A-Za-z]\w*)*)"
     )
     idless = re.compile(r"^(\d+)\.\s+\*\*(?!`?AC-)")
