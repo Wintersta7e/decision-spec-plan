@@ -2099,6 +2099,36 @@ for j in noclause object; do
 		bad "apply_markers malformed $j (exit $code): $out"
 done
 
+# --- apply_markers.py: a clause that repeats its anchor re-runs as present; an anchor in a code
+# block is marked above the fence; mixed line endings stay mixed; a BOM stays first
+printf '# D3\n\nThe client retries three times on a timeout.\n' >"$M/d/D3-r.md"
+echo '[{"file":"D3-r.md","anchor":"retries three times","ruling":"A7","clause":"it retries three times only when idempotent"}]' >"$M/r.json"
+python3 "$SCRIPTS/apply_markers.py" "$M/d" "$M/r.json" >/dev/null
+out=$(python3 "$SCRIPTS/apply_markers.py" "$M/d" "$M/r.json" 2>&1)
+code=$?
+[ $code = 0 ] && [ "$(grep -c 'SUPERSEDED BY A7' "$M/d/D3-r.md")" = 1 ] &&
+	ok "apply_markers: a clause repeating its anchor re-runs as present" || bad "apply_markers re-run (exit $code): $out"
+printf '# D4\n\n```sql\nCREATE TABLE a (id INTEGER);\n\nCREATE TABLE item (\n  qty INTEGER CHECK (qty <= 3)\n);\n```\n' >"$M/d/D4-s.md"
+echo '[{"file":"D4-s.md","anchor":"CHECK (qty <= 3)","ruling":"A4","clause":"qty is capped at 5"}]' >"$M/s.json"
+out=$(python3 "$SCRIPTS/apply_markers.py" "$M/d" "$M/s.json" 2>&1)
+code=$?
+[ $code = 0 ] && grep -A1 'SUPERSEDED BY A4' "$M/d/D4-s.md" | grep -q '^```sql$' &&
+	ok "apply_markers: an anchor in a code block is marked above the fence" ||
+	bad "apply_markers fence (exit $code): $out $(cat "$M/d/D4-s.md")"
+printf '# D5\n\nAlpha paragraph.\r\n\nBeta anchor here.\n' >"$M/d/D5-m.md"
+echo '[{"file":"D5-m.md","anchor":"Beta anchor","ruling":"A1","clause":"gone"}]' >"$M/m.json"
+out=$(python3 "$SCRIPTS/apply_markers.py" "$M/d" "$M/m.json" 2>&1)
+code=$?
+[ $code = 0 ] && [ "$(crlf "$M/d/D5-m.md")" = "7 1" ] &&
+	ok "apply_markers: mixed line endings stay mixed" || bad "apply_markers mixed (exit $code, lf crlf: $(crlf "$M/d/D5-m.md")): $out"
+printf '\xef\xbb\xbf# D6\n\nGamma anchor here.\n' >"$M/d/D6-b.md"
+echo '[{"file":"D6-b.md","anchor":"Gamma anchor","ruling":"A2","clause":"gone"}]' >"$M/b.json"
+out=$(python3 "$SCRIPTS/apply_markers.py" "$M/d" "$M/b.json" 2>&1)
+code=$?
+[ $code = 0 ] && [ "$(head -c 7 "$M/d/D6-b.md" | od -An -tx1 | tr -d ' \n')" = efbbbf23204436 ] &&
+	[ "$(sed -n 2p "$M/d/D6-b.md")" = '> **Read 00-arbiter.md first.**' ] &&
+	ok "apply_markers: a BOM stays first, the header under the title" || bad "apply_markers BOM (exit $code): $out $(head -3 "$M/d/D6-b.md" | od -c | head -3)"
+
 # --- the hook on a route of its own (session h1): a dispatch refused before it ran is no dispatch
 H=$T/hk
 git init -q -b main "$H"
