@@ -24,7 +24,11 @@ With `--waves <plan-index>` it checks the wave order instead: every file two pla
 both list in their File structure sections. Their lanes run in parallel worktrees, so each edits the
 file without the other's change and the integrator meets the collision — three lanes of one wave
 edited the same four UI files, and of the seven seam defects that left, the integrator fixed four.
-Plans sharing a file go in different waves.
+Plans sharing a file go in different waves. A `Depends on` cell opening with `all` waits for every
+plan of the waves it names (`all of wave 1`), else of every earlier wave.
+
+A file is a backticked path with one of `--ext`'s extensions, a build file that has none
+(`Makefile`, `Dockerfile`, …) or a dotfile (`.gitignore`).
 
 With `--asks <decision-index> [<arbiter>]` it checks the scope fence: every file row of every File
 structure section must cite an ask (`Ask<n>`, a row of the index's asks table) or a user ruling
@@ -60,6 +64,10 @@ DEFAULT_EXT = "rs,ts,tsx,js,jsx,mjs,cjs,css,scss,json,sql,yml,yaml,toml,py,go,ja
 SECTION_RE = re.compile(
     r"^#{2,3} File structure\s*$(.*?)(?:^#{2,3} (?:Task|Tasks|Global|Interfaces)|\Z)",
     re.MULTILINE | re.DOTALL | re.IGNORECASE,
+)
+NAMED = (
+    "Makefile|GNUmakefile|Dockerfile|Containerfile|Jenkinsfile|Procfile|Gemfile|Rakefile"
+    "|Justfile|justfile|Vagrantfile|LICENSE|CODEOWNERS"
 )
 DIR_RE = re.compile(r"`([A-Za-z0-9_./-]*/)`")
 PLAN_ID = re.compile(r"p\d+-\d+[a-z]?(?=-|$)")
@@ -187,17 +195,37 @@ def plan_table(index):
     return rows
 
 
+def wave_no(wave):
+    m = re.search(r"\d+", wave)
+    return int(m[0]) if m else None
+
+
 def depends(rows):
-    """{plan stem: every plan it waits for}, directly or through others; `all` waits for all."""
+    """{plan stem: every plan it waits for}, directly or through others. A cell opening with `all`
+    waits for every plan of the waves it names (`all of wave 1`), else of every earlier wave —
+    never its own wave's, which run beside it."""
     ident = {s: m.group(0) if (m := PLAN_ID.match(s)) else s for s in rows}
+
+    def everything(s, text):
+        named = {
+            int(n) for n in re.findall(r"\bwaves?[\s-]*(\d+)", text, re.IGNORECASE)
+        }
+        mine = wave_no(rows[s][0])
+        return {
+            o
+            for o in rows
+            if o != s
+            and (w := wave_no(rows[o][0])) is not None
+            and (w in named if named else mine is not None and w < mine)
+        }
+
     direct = {
-        s: set(rows) - {s}
-        if text.strip().lower().startswith("all")
-        else {
+        s: {
             o
             for o in rows
             if o != s and re.search(rf"(?<![\w-]){re.escape(ident[o])}(?!\w)", text)
         }
+        | (everything(s, text) if text.strip().lower().startswith("all") else set())
         for s, (_, text) in rows.items()
     }
     reach = {}
@@ -220,15 +248,19 @@ def overlaps(plans, index, file_re):
         print(f"no plan-set table with Plan and Wave columns in {index}")
         return 2
     reach = depends(rows)
-    owners, unlisted = {}, []
+    owners, unlisted, row = {}, [], {}
     for name, text in plans.items():
         stem = name.removesuffix(".md")
-        if stem not in rows:
+        # the Plan column holds the stem or the plan id (`p1-02`), as the other docs name a plan
+        m = PLAN_ID.match(stem)
+        key = stem if stem in rows else m.group(0) if m and m.group(0) in rows else None
+        if key is None:
             unlisted.append(name)
             continue
+        row[stem] = key
         m = SECTION_RE.search(text)
         for f in promised(m.group(1), file_re) if m else ():
-            owners.setdefault((rows[stem][0], f), []).append(stem)
+            owners.setdefault((rows[key][0], f), []).append(stem)
     shared = []
     for (wave, f), stems in sorted(owners.items()):
         both = sorted(
@@ -236,7 +268,9 @@ def overlaps(plans, index, file_re):
                 s
                 for a in stems
                 for b in stems
-                if a != b and b not in reach[a] and a not in reach[b]
+                if a != b
+                and row[b] not in reach[row[a]]
+                and row[a] not in reach[row[b]]
                 for s in (a, b)
             }
         )
@@ -265,7 +299,11 @@ def main():
     ap.add_argument("--repo", default=".")
     args = ap.parse_args()
     exts = "|".join(re.escape(e.strip()) for e in args.ext.split(",") if e.strip())
-    file_re = re.compile(rf"`([A-Za-z0-9_./-]+\.(?:{exts}))`")
+    # a path with one of the extensions, a build file with none, or a dotfile (`.gitignore`)
+    file_re = re.compile(
+        rf"`((?:[A-Za-z0-9_./-]*/)?(?:{NAMED}|\.[A-Za-z0-9_][A-Za-z0-9_.-]*)"
+        rf"|[A-Za-z0-9_./-]+\.(?:{exts}))`"
+    )
 
     plans = {
         f.name: f.read_text(errors="replace")

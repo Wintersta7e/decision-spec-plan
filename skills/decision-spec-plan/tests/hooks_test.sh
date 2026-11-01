@@ -1165,6 +1165,23 @@ code=$?
 out=$(python3 "$SCRIPTS/scope_check.py" "$W" --waves "$W/p1-00-index.md" --glob 'p1-0[134]-*.md')
 [ $? = 0 ] && grep -q '^0 files changed' <<<"$out" && ok "scope_check --waves: exit 0 with no shared file" ||
 	bad "scope_check --waves, no overlap: $out"
+# `all` and `all of wave 1` wait for the earlier wave, not for the plan beside them
+W=$T/plans-all
+mkdir -p "$W"
+plan p1-01-a src/a.js
+plan p1-02-c src/app.js
+plan p1-03-d src/app.js
+printf '| Plan | Wave | Depends on |\n|---|---|---|\n| `p1-01-a` | 1 | — |\n| `p1-02-c` | 2 | all of wave 1 |\n| `p1-03-d` | 2 | all |\n' >"$W/p1-00-index.md"
+out=$(python3 "$SCRIPTS/scope_check.py" "$W" --waves "$W/p1-00-index.md")
+code=$?
+[ $code = 1 ] && grep -q '^wave 2 *src/app.js  p1-02-c, p1-03-d$' <<<"$out" &&
+	ok "scope_check --waves: all (of wave 1) does not wait for its own wave" || bad "scope_check --waves, all (exit $code): $out"
+# the Plan column may hold plan ids (`p1-02`), as every other doc names a plan
+printf '| Plan | Wave | Depends on |\n|---|---|---|\n| p1-01 | 1 | — |\n| `p1-02` | 2 | p1-01 |\n| p1-03 | 2 | all |\n' >"$W/p1-00-index.md"
+out=$(python3 "$SCRIPTS/scope_check.py" "$W" --waves "$W/p1-00-index.md")
+code=$?
+[ $code = 1 ] && grep -q '^wave 2 *src/app.js  p1-02-c, p1-03-d$' <<<"$out" && ! grep -q 'not in the index' <<<"$out" &&
+	ok "scope_check --waves: a Plan column of plan ids" || bad "scope_check --waves, plan ids (exit $code): $out"
 
 # --- scope_check.py --asks: every planned file cites an ask or a user ruling and none is a file not
 # to touch; --diff: every file a range changed is in a plan (unasked changes, F89)
@@ -1218,6 +1235,23 @@ code=$?
 out=$(python3 "$SCRIPTS/scope_check.py" "$A/plans" --diff HEAD..HEAD --repo "$A/repo")
 [ $? = 2 ] && grep -q '^0 of 0 changed files' <<<"$out" && ok "scope_check --diff: an empty range fails" ||
 	bad "scope_check --diff, empty range: $out"
+# a build file with no extension and a dotfile are files a plan can list, and not touch
+X=$T/extless
+mkdir -p "$X/plans"
+git init -q -b main "$X/repo"
+git -C "$X/repo" "${G[@]}" commit -q --allow-empty -m base
+printf 'all:\n' >"$X/repo/Makefile" && echo 'FROM scratch' >"$X/repo/Dockerfile" && echo '*.log' >"$X/repo/.gitignore"
+git -C "$X/repo" add -A . && git -C "$X/repo" "${G[@]}" commit -q -m build
+printf '# p1-01\n## File structure\n| File | Why |\n|---|---|\n| `Makefile` | build (Ask1) |\n| `Dockerfile` | image (Ask1) |\n| `.gitignore` | logs (Ask1) |\n## Task 1\nCreate `Makefile`, `Dockerfile` and `.gitignore`.\n' >"$X/plans/p1-01-build.md"
+out=$(python3 "$SCRIPTS/scope_check.py" "$X/plans" --diff HEAD~1..HEAD --repo "$X/repo")
+code=$?
+[ $code = 0 ] && grep -q '^0 of 3 changed files' <<<"$out" && ok "scope_check --diff: Makefile, Dockerfile and .gitignore can be planned" ||
+	bad "scope_check --diff, extensionless (exit $code): $out"
+printf '| **Ask1** | x |\n### Do not touch\n- `Makefile` — the build stays\n' >"$X/00-index.md"
+out=$(python3 "$SCRIPTS/scope_check.py" "$X/plans" --asks "$X/00-index.md")
+code=$?
+[ $code = 1 ] && grep -q 'Makefile  (do not touch)$' <<<"$out" && ok "scope_check --asks: a Makefile not to touch" ||
+	bad "scope_check --asks, Makefile (exit $code): $out"
 # a rename onto a planned path still deletes an unplanned file, and a path with a space is one path
 D=$T/diffr
 mkdir -p "$D/plans" "$D/repo/src"
