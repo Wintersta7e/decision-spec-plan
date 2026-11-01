@@ -20,11 +20,12 @@ jobs:
         run: |
           sudo apt-get update -q
           sudo apt-get install -y -q jq shellcheck
-          pip install ruff
+          pip install -r requirements-dev.txt
       - name: Lint
         run: |
           ruff check skills/decision-spec-plan/scripts
           ruff format --check skills/decision-spec-plan/scripts
+          pyright
           shellcheck -S warning skills/decision-spec-plan/tests/hooks_test.sh
       - name: Hook and checker suite
         run: skills/decision-spec-plan/tests/hooks_test.sh

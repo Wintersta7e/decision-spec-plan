@@ -206,7 +206,7 @@ before it, `off` after; past 30 commits, slice by slice (`sins/lead.md`, code mo
 - A prompt no brief covers (a repair round, an ad-hoc role) ends with `prompts.md`'s closing lines and
   carries the rules listed there. **Never have one agent emit N large items** — one agent per item.
   An agent whose write was refused wrote to the scratchpad: copy its file.
-- The second model (`codex-delegation`), where the user has one, runs the framing, seam and
+- A second model (any the lead can call read-only), where the user has one, runs the framing, seam and
   cross-model reviews read-only, on its own usage, model and effort — never this skill's. Poll its
   background job by the **state line**, never a keyword (F39). **Unavailable** (none, quota,
   outage): run its prompt on a `dsp-deep` agent now, into the file the prompt names, and record which

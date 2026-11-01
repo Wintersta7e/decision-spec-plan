@@ -12,7 +12,7 @@ the user what you created.
 - Create `HANDOFF.md` there. **Update it at every stage boundary** with: the SHA, what is done, what
   is in flight (which agents, writing which files), the next action, and anything the user owes —
   and its in-flight block at every dispatch and return, since the lead may compact mid-stage. A lost
-  session must lose nothing; the `session-handoff` skill has the verification discipline. **Keep it
+  session must lose nothing: check each claim (SHA, test result, file state) before writing it. **Keep it
   under 40 KB — one `Read`**: closed lanes, settled rulings and old gate records move to
   `HANDOFF-archive.md`, which no one re-reads by default (`route_state.py` flags a larger file).
   **Why:** one lead re-read an 80 KB handoff — past the `Read` cap, two reads each time — after each
@@ -21,8 +21,7 @@ the user what you created.
 ## 2. The charter — what the phase *is*
 
 The decision round needs a charter to quote with file:line. If the project has a concept/roadmap
-document, use it. If not, **write a one-page charter with the user first** (the `brainstorming`
-skill is the right tool): the phase's goal, what is explicitly out, the release it belongs to, and
+document, use it. If not, **write a one-page charter with the user first**: the phase's goal, what is explicitly out, the release it belongs to, and
 the non-goals. Everything later cites it; a phase framed from memory produces decisions nobody can
 check.
 
@@ -66,7 +65,7 @@ to go green.**
 
 ## 7. The second model
 
-If the user has a second model available (see `codex-delegation`), confirm it works with one tiny
+If the user has a second model the lead can call read-only, confirm it works with one tiny
 read-only request **before** the round depends on it, and note its quota behaviour
 (unavailable: Lead mechanics).
 

@@ -147,6 +147,7 @@ def scan(diff):
             names[sign].add((name, path))
             if sign == "-":
                 inside = name
+        assert path is not None  # a hunk comes after its file's ---/+++ lines
         if (
             TEST_PATH.search(path)
             and ASSERT.search(text)

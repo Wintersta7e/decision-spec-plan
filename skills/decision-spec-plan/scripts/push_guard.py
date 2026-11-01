@@ -208,7 +208,8 @@ def gated(planning, sha, harness=None, why=None):
         if (f"harness={harness}" not in named) if harness else named:
             continue
         if not re.fullmatch(rf"sha={sha} dirty=0(\s.*)?", first):
-            why is not None and why.append(f"{log.name}: `{first[:80]}`, not dirty=0")
+            if why is not None:
+                why.append(f"{log.name}: `{first[:80]}`, not dirty=0")
             continue
         last = None
         with open(log, errors="replace", newline="\n") as f:
@@ -318,7 +319,7 @@ def route_marker(repo, session):
     return str(found[-1]) if found else None
 
 
-def cd(state, target, made=frozenset()):
+def cd(state, target, made: set[str] | frozenset[str] = frozenset()):
     """The directory after `cd target` from state: a path, None (computed by the command) or
     MISSING_DIR (a directory that does not exist, or a fresh temp one). A missing one whose name
     the command also uses elsewhere (made) is followed as one it may create first: `mkdir -p out
@@ -476,7 +477,7 @@ PUSH_WORD = re.compile(r"(?<![\w.$-])push(?![\w(-])")
 FILE_SUB = re.compile(r"\$\(\s*(?:cat\s+|<\s*)([^\s()|;&<>`$]+)\s*\)")
 
 
-def names_push(ws, env, here="", written=()):
+def names_push(ws, env, here: str | None = "", written=()):
     """Whether a computed command's own words, the values they expand to, or a file a
     `$(cat f)` or `$(<f)` in them reads, name push (`$(echo git) push`, `X="git push …"; $X`,
     `sh -c "$(cat deploy.sh)"`). A file the guard cannot read, or one whose name the command
@@ -541,7 +542,9 @@ def walk(command, cwd, depth=0, state=None):
         counts[n] = counts.get(n, 0) + 1
     made = {n for n, k in counts.items() if k > 1}
     # each shell's directory, its variables, and (dir,) where a `cd` that failed left it
-    stack = [(cwd, state["env"], None)]
+    stack: list[tuple[str | None, dict, tuple[str | None] | None]] = [
+        (cwd, state["env"], None)
+    ]
 
     def run(script, text, here, env, sourced, assigns=()):
         """Walk a script file the command runs, with the prefixes assigns
@@ -759,7 +762,9 @@ class Guard:
             m = json.loads(pathlib.Path(marker).read_text(errors="replace"))
         except (OSError, ValueError):
             m = None
-        planning = m.get("planning_dir") if isinstance(m, dict) else None
+        if not isinstance(m, dict):
+            m = {}
+        planning = m.get("planning_dir")
         if not planning:
             self.missing.append(
                 "the route's marker names no planning dir — re-run route_state.py --activate"
@@ -873,6 +878,7 @@ class Guard:
                         self.unreviewed.append(f"{src} = {sha[:12]}{tracking}")
 
     def report(self):
+        assert self.blocked is not None  # main() reports only a blocked push
         marker, planning, rung, harness = self.blocked
         out = []
         if self.forms:

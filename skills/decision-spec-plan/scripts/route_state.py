@@ -199,6 +199,7 @@ def bash_commands(command, cwd=None, depth=0):
             if inner is None:
                 return None
             out += inner
+            assert script is not None  # text was read from it
             if named.count(os.path.basename(script.text)) > 1:
                 # written by the command before it runs: the words it writes count too
                 out += text_commands(command)
@@ -535,6 +536,7 @@ def activate(a, main):
         return 2
     # A route activated before markers were per planning dir moves to its own.
     legacy = marker_path(repo)
+    assert legacy is not None  # the same repository path just resolved
     old = load_json(path)
     if not old and load_json(legacy).get("planning_dir") == planning:
         old = load_json(legacy)
@@ -544,7 +546,7 @@ def activate(a, main):
     prev = parser().parse_args(old["args"]) if old.get("args") else None
     same_phase = prev is not None and prev.phase == a.phase
     repo_arg = a.repo or (prev and prev.repo)
-    sections = a.sections or (prev.sections if same_phase else None)
+    sections = a.sections or (prev.sections if prev and same_phase else None)
     spec_dir = a.spec_dir or (prev and prev.spec_dir)
     args = [
         planning,
@@ -746,7 +748,7 @@ def budget(argv):
     )
     # sized by count, one route's groups ran 5 -> 11 where its own measure fit two commits (F60)
     line, fit = checked(measured_fit, session) or (None, None)
-    if line:
+    if line and fit is not None:  # measured_fit gives both or neither
         print(f"measured on this project: {line.partition('; ')[2] or line}")
         need = -(-a.tasks // max(fit, 1)) if a.tasks else 0
         if need > a.groups:
@@ -811,7 +813,7 @@ def now():
 def epoch(stamp):
     try:
         return datetime.datetime.fromisoformat(stamp).timestamp()
-    except (AttributeError, ValueError):
+    except (AttributeError, TypeError, ValueError):
         return None
 
 
@@ -1270,8 +1272,9 @@ def eta(paths, name):
                         if message.get("stop_reason") == "end_turn"
                         else None
                     )
-            if first and last:
-                spans.append((lane_of(agent), (epoch(last) - epoch(first)) / 60))
+            start, end = epoch(first), epoch(last)
+            if start is not None and end is not None:
+                spans.append((lane_of(agent), (end - start) / 60))
     route = [m for _, m in spans]
     if not route:
         return (
@@ -2003,9 +2006,9 @@ def report(a, fresh=True, extra=()):
         set(re.findall(r"^\|\s*\*{0,2}D(\d+)\b", index_text, re.MULTILINE)), key=int
     )
     have = {
-        re.match(r"D(\d+)", f.name).group(1): f
+        m.group(1): f
         for f in sorted(dec.glob("D*.md"))
-        if re.match(r"D\d+", f.name)
+        if (m := re.match(r"D(\d+)", f.name))
     }
     # At rung S the index holds the decisions themselves: no D file follows (templates.md §1).
     # without --repo, --activate wrote the marker in the planning dir's repository
@@ -2046,7 +2049,7 @@ def report(a, fresh=True, extra=()):
             if (m := re.match(r"0*(\d+)-", f.name))
             and first <= int(m.group(1)) <= (last if last is not None else 10**6)
         ]
-        got = {int(re.match(r"0*(\d+)-", f.name).group(1)) for f in spec}
+        got = {int(m.group(1)) for f in spec if (m := re.match(r"0*(\d+)-", f.name))}
         for f in spec:
             rep.file(f, base)
         if last is None:
@@ -2072,9 +2075,10 @@ def report(a, fresh=True, extra=()):
         else set()
     )
     plans = {
-        re.match(rf"p{p}-(\d+[a-z]?)-", f.name).group(1): f
+        m.group(1): f
         for f in sorted(plans_dir.glob(f"p{p}-*.md"))
-        if re.match(rf"p{p}-(\d+[a-z]?)-", f.name) and not f.name.startswith(f"p{p}-00")
+        if (m := re.match(rf"p{p}-(\d+[a-z]?)-", f.name))
+        and not f.name.startswith(f"p{p}-00")
     }
     waiting = [f"p{p}-{i}" for i in ids if i not in plans]
     manifests_ok = 0

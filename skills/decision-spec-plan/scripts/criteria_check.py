@@ -140,7 +140,7 @@ def mappings(text, p, test_re, ruling_re):
     tasks = {
         int(n) for n in TASK_HEADING.findall(re.sub(r"(?ms)^```.*?^```", "", text))
     }
-    out, header = [], None
+    out, header, col = [], None, 2
     for line in text.split("\n"):
         if not line.startswith("|"):
             header = None

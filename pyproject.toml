@@ -1,0 +1,12 @@
+# Tool configuration only: the plugin is a set of standard-library scripts, not a package.
+# Pinned tool versions live in requirements-dev.txt.
+
+[tool.ruff]
+target-version = "py311"
+src = ["skills/decision-spec-plan/scripts"]
+
+[tool.pyright]
+include = ["skills/decision-spec-plan/scripts"]
+extraPaths = ["skills/decision-spec-plan/scripts"]
+pythonVersion = "3.11"
+typeCheckingMode = "standard"

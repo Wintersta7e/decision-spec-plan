@@ -44,12 +44,15 @@ Set an auto-compact window of about 300000 for the lead's model, e.g.
 
 Headless (`claude -p`): set `CLAUDE_CODE_PRINT_BG_WAIT_CEILING_MS=0`. Otherwise background agents
 are stopped 10 minutes after the lead's last turn, and the lead ends its turn to wait for them.
+A headless run has no user to answer the budget hold, so the hold lets dispatches through: cap the
+spend with `claude -p --max-budget-usd <USD>` (it counts subagents; past the cap no new agent
+starts and running background agents are stopped — a client-side estimate, and it can overshoot).
 
-Requires python3, bash, jq and git. `dsp-deep`'s memory cap uses `systemd-run --user`; without it
+Requires Python 3.11+, bash, jq and git. `dsp-deep`'s memory cap uses `systemd-run --user`; without it
 the agent falls back to `timeout` + `setsid`.
 
-`agents/dsp-*.md` list Context7 MCP tools — edit their `tools:` line to the MCP servers
-you have.
+`agents/dsp-*.md` list no MCP tools — add any you want the route's agents to have (a documentation
+server, say) to their `tools:` line.
 
 Before editing the skill, and after: `bash ~/.claude/skills/decision-spec-plan/tests/hooks_test.sh`
 (it tests the copy it sits in; throwaway repos only; fails if SKILL.md grows past 19,000 characters

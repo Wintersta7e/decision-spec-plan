@@ -1027,6 +1027,15 @@ hook '/^ETA exec-p1-08-d: about 20 min, the median of lane p1-08.s 2 finished ta
 hook '/^ETA exec-p1-10-a: about 30 min, the median of the route.s 3 finished task groups\. Tell the user/' \
 	"$(dispatch exec-p1-10-a t9)"
 hook '/^ETA exec-wave2: about 120 min, the median of the route.s 1 finished integrator\./' "$(dispatch exec-wave2 t10)"
+# a finished agent whose start time does not parse (a non-ISO string, a number) is no span: it
+# once raised, and the dispatch went out with no ETA at all
+fin f6 exec-p1-11-a -600 -60 end_turn
+sed -i '1s/"timestamp":"[^"]*"/"timestamp":"soon"/' "$EA/agent-f6.jsonl"
+fin f7 exec-p1-12-a -600 -60 end_turn
+sed -i '1s/"timestamp":"[^"]*"/"timestamp":123/' "$EA/agent-f7.jsonl"
+hook '/^ETA exec-p1-10-a: about 30 min, the median of the route.s 3 finished task groups\./' \
+	"$(dispatch exec-p1-10-a t11)"
+rm "$EA"/agent-f6.* "$EA"/agent-f7.*
 
 # --- two routes in one repository: each keeps its own phase, budgets, spend and push checks (F93)
 P2=$R/.plan2
@@ -1765,7 +1774,7 @@ grep -qF 'After the second run every row is there twice' "$DF/verify/R1.prompt.m
 	bad "finding cut short: $(cat "$DF/verify/R1.prompt.md")"
 # a REFUTED from a test that cannot see the defect refutes nothing: it must fail on a mutant that
 # makes the claim true, and quote the claim it checks (published: generated tests are jointly
-# valid on 9.21% of tasks)
+# valid on 9.21% of tasks, arXiv 2610.18004)
 echo 'Verdict: REFUTED' >"$DC/verify/R1.md"
 dcheck 1 "R1's REFUTED in verify/R1.md quotes no line of the claim" --rung S
 printf 'Verdict: REFUTED\nClaim: "merges two people with one name"\nRun: npm test -- a → exit=0\nMutant: key by name alone\nMutant run: npm test -- a → exit=0\n' >"$DC/verify/R1.md"

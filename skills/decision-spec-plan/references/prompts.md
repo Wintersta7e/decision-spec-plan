@@ -214,7 +214,7 @@ a fresh worktree of the commit and `verify/R<n>.md`: UPHELD (apply the finding),
 only basis to decline it without a ruling), NO-TEST (at M and L ask the user; at S apply the
 reviewer's fix as a default and flag it in the handoff). A REFUTED counts only with the claim
 quoted and the test failing on a mutant that makes the claim true: `decision_check.py` reads both
-lines. **Why:** published, generated tests were jointly valid on 9.21% of tasks, and a test
+lines. **Why:** published, generated tests were jointly valid on 9.21% of tasks (arXiv 2610.18004), and a test
 that cannot see the defect passes either way.
 
 ---

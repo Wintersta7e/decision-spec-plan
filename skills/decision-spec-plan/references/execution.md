@@ -127,14 +127,14 @@ run `criteria_check.py` on the one spec file.)
   included, hit the 200k stop, and one needed a second agent). You fix the plan before the first
   task group.
   **Why:** a lead that did this unprompted found 30 of 44 claims stale in a plan 230 commits old;
-  published, a false premise is the commonest root cause of agent failure (30.7%, F91).
+  published, a false premise is the commonest root cause of agent failure (30.7%, arXiv 2607.09510; F91).
 - **Offer every unblocked lane at once.** When a lane ends, and when you prepare a wave's budget
   ask, list each lane whose dependencies are merged and that shares no file with a running one
   (`scope_check.py --waves`). Offer them to run in parallel, with one combined figure. Only
   independent lanes: splitting one coupled task across agents does worse. **Why:** on two routes
   the lanes ran one after another until each user wrote, in the same hour, "you can use more
   lanes in parallel"; published, subagent fan-out inside one task fell from 71.7% to 50.0% at
-  1.65× the cost (F102).
+  1.65× the cost (arXiv 2606.10662; F102).
 - **A group that stops on no progress** (`dsp-deep`: the same failing tests after two fix attempts)
   returns a checkpoint naming the failing tests and the hypotheses it ruled out. You rule: a fresh
   agent told what is already ruled out, a plan fix, or a question to the user (`failure-modes` F58).

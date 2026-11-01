@@ -209,7 +209,10 @@ def literal(text):
 
 class Cmd:
     """A simple command: its NAME=value assignments and its words, wrappers removed; after is the
-    operator before it (`&&`, `;`, `|`, …), None first in its list."""
+    operator before it (`&&`, `;`, `|`, …), None first in its list; loose, whether its words come
+    in no known order (cut from text the reader cannot follow)."""
+
+    loose = False
 
     def __init__(self, assigns, words, after=None):
         self.assigns = assigns
@@ -231,6 +234,12 @@ class Opaque(str):
     command's own shell (`source`, `.`), so its `cd` and variables hold after it; words, those of
     a computed `eval` or `bash -c` string; assigns, the (name, Word) prefixes it runs with
     (`GIT_DIR=x bash deploy.sh`); held, whether it may push whatever its words say."""
+
+    script: Word | None
+    sourced: bool
+    words: list
+    assigns: list
+    held: bool
 
     def __new__(
         cls, what, script=None, sourced=False, words=(), assigns=(), held=False
@@ -300,6 +309,7 @@ def _dquote(text, i, word):
             i = _dollar(text, i, word)
         else:
             m = DQ_LITERAL.match(text, i)
+            assert m  # `|.` matches any character, and i < n
             word.add("q", m[0])
             i = m.end()
     return n
@@ -308,7 +318,7 @@ def _dquote(text, i, word):
 def _ansi_c(s):
     """The value of a `$'…'` string's text."""
 
-    def one(m):
+    def one(m: re.Match[str]) -> str:
         e = m[1]
         if e[0] == "x":
             return chr(int(e[1:], 16))
@@ -443,6 +453,7 @@ def _scan(text, i=0, close=False, cuts=None):
                 cuts.append(i)
         else:
             m = LITERAL.match(text, i)
+            assert m  # `|.` matches any character, and i < n
             word = word or Word()
             word.add("lit", m[0])
             i = m.end()
@@ -658,7 +669,7 @@ def _parse(tokens):
                 break
             nest += (w.text in OPENERS) - (w.text in CLOSERS)
         for kind, c in _command(words):
-            if kind == "cmd":
+            if isinstance(c, Cmd):  # the "cmd" events
                 c.after = last
             element.append((kind, c))
         words = []

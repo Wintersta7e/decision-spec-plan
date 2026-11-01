@@ -7,7 +7,7 @@
 [![CI](https://github.com/Wintersta7e/decision-spec-plan/actions/workflows/ci.yml/badge.svg)](https://github.com/Wintersta7e/decision-spec-plan/actions/workflows/ci.yml)
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 [![Claude Code plugin](https://img.shields.io/badge/Claude%20Code-plugin-d97757.svg)](#install)
-[![Python 3](https://img.shields.io/badge/python-3%20%C2%B7%20stdlib%20only-3776ab.svg?logo=python&logoColor=white)](skills/decision-spec-plan/scripts)
+[![Python 3](https://img.shields.io/badge/python-3.11%2B%20%C2%B7%20stdlib%20only-3776ab.svg?logo=python&logoColor=white)](skills/decision-spec-plan/scripts)
 [![Platform](https://img.shields.io/badge/platform-Linux%20%C2%B7%20WSL2-lightgrey.svg)](#requirements)
 
 [What it does](#what-it-does) · [How a route runs](#how-a-route-runs) · [Hooks](#hooks) · [Cost](#cost) · [Install](#install) · [Development](#development)
@@ -25,7 +25,8 @@ does not write the decisions, specs or plans itself.
 
 > **Why it is built this way:** about 40 agents partitioned by spec section left **105**
 > cross-section contradictions. About 10 agents partitioned by decision, with an arbiter settling
-> the seams, left **1**.
+> the seams, left **1**. That is two phases of one project with different agent counts, an
+> observation rather than a controlled comparison (`failure-modes.md` F1).
 
 The unit of work changes with the stage, so no two agents ever own the same question:
 
@@ -158,7 +159,7 @@ tool list in the agent files.
 ### Requirements
 
 - Claude Code with plugin support
-- `python3`, `bash`, `jq` and `git`
+- Python 3.11+, `bash`, `jq` and `git`
 - Optional: `systemd-run --user` for the execution agents' memory cap; without it they fall back to
   `timeout` and `setsid`
 - Optional: a second model for cross-model review; without one, a Claude agent does the review

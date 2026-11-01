@@ -24,7 +24,7 @@ second round struck the first-proposed fix of each, one of which would have cras
 (`failure-modes` F70). The second high was designed in: its spec section and its plan agreed with each other, so
 reconciliation, which reads for consistency, could not see it (F71). **Why slices and no debate.**
 Review recall collapses as a diff grows (a published benchmark: F1 0.657 under 10 changed lines,
-0.043 over 150), so a phase's push is reviewed slice by slice; debate gains less than independent
+0.043 over 150; arXiv 2606.15689), so a phase's push is reviewed slice by slice; debate gains less than independent
 passes at equal budget, and one executed test settles what argument cannot (F95).
 
 ## 1. Preflight — one Bash call, stop at the first failure

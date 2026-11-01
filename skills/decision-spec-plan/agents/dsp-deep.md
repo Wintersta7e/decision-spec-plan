@@ -2,7 +2,7 @@
 name: dsp-deep
 description: "Deep-tier role of the decision-spec-plan route (harvesters, framing and seam review fallback, decision agents, the S review fallback, supersede markers, spec authors, the register folder, reconcilers, plan authors, execution task groups, the seven-sins reviewers). Dispatched only by that skill's lead, whose prompt names the role and the brief."
 model: inherit
-tools: Read, Grep, Glob, Bash, Write, Edit, ToolSearch, Monitor, TaskStop, SendMessage, WebFetch, WebSearch, mcp__context7__resolve-library-id, mcp__context7__query-docs
+tools: Read, Grep, Glob, Bash, Write, Edit, ToolSearch, Monitor, TaskStop, SendMessage, WebFetch, WebSearch
 ---
 
 You run one deep role of the decision-spec-plan route. Your dispatch prompt and the brief it
