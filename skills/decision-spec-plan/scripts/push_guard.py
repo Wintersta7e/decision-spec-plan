@@ -15,8 +15,9 @@ unsent). A review of more than 30 commits counts only with a `slices=` line whos
 most 30 commits, cover every commit of it (sins/lead.md: one review per slice).
 
 With a CI harness in the marker (`--ci-harness <label>`: a suite CI runs that the local gate does
-not) the push also needs a passing gate log for that commit whose first 20 lines hold
-`harness=<label>`.
+not) a push also needs a passing gate log for that commit whose first 20 lines hold
+`harness=<label>`, except one to `refs/heads/<branch>` other than main — the push that starts the
+CI run, which needs only the full gate (a bare name may be a tag on the remote).
 
 Every `git push` the command runs is checked — inside `if`/`for`, `( )`, `$( )`, `bash -c`, `eval`
 and pass-through wrappers (`env`, `timeout`, …) too — each in the repository its `cd`s and `-C`s
@@ -772,15 +773,27 @@ class Guard:
         if form:
             self.forms.append(form)
         else:
+            args = m.get("args") or []
+            main = args[args.index("--main") + 1] if "--main" in args[:-1] else None
+            main = main and main.removeprefix("refs/heads/")
             self.refspecs(
-                repo, planning, harness, review, p["args"], tags, p.get("computed", [])
+                repo,
+                planning,
+                harness,
+                review,
+                p["args"],
+                tags,
+                p.get("computed", []),
+                main,
             )
         now = len(self.missing) + len(self.no_harness) + len(self.unreviewed)
         if now + len(self.forms) > had:
             # the message names the route of the push that failed
             self.blocked = (marker, planning, rung, harness)
 
-    def refspecs(self, repo, planning, harness, review, args, tags, computed=()):
+    def refspecs(
+        self, repo, planning, harness, review, args, tags, computed=(), main=None
+    ):
         pos, skip = [], False
         for w in args:
             if skip:
@@ -831,6 +844,14 @@ class Guard:
             }
             if not shas:
                 self.missing.append(f"{src} (does not resolve to a commit in {repo})")
+            to = dst if colon else src
+            to = (branch or "") if to == "HEAD" else to
+            # the branch push that starts the CI run cannot carry its log: the harness guards
+            # every push but one to `refs/heads/<x>`, x not main — the remote reads a bare
+            # name against its own refs, which may hold a tag of that name
+            branch_ref = to.startswith("refs/heads/")
+            to = to.removeprefix("refs/heads/")
+            ci = harness and (main is None or not branch_ref or to == main)
             for sha in sorted(shas):
                 why = []
                 if not gated(planning, sha, why=why):
@@ -839,13 +860,9 @@ class Guard:
                         or f"no gate log under {planning}/lanes/ names it"
                     )
                     self.missing.append(f"{src} = {sha[:12]} — {reason}")
-                elif harness and not gated(planning, sha, harness):
+                elif ci and not gated(planning, sha, harness):
                     self.no_harness.append(f"{src} = {sha[:12]}")
                 elif review:
-                    to = dst if colon else src
-                    to = ((branch or "") if to == "HEAD" else to).removeprefix(
-                        "refs/heads/"
-                    )
                     onto = commit(repo, f"refs/remotes/{remote}/{to}")
                     if not reviewed(repo, planning, sha, remote, onto):
                         tracking = (
@@ -880,7 +897,8 @@ on a clean tree and run the full gate into a log under the planning dir:
 
   {{ echo "sha=$(git rev-parse HEAD) dirty=$(git status --porcelain --untracked-files=no | grep -c .)"; <full gate>; echo "exit=$?"; }} > {planning}/lanes/<name>-gate.log 2>&1
 
-The push goes through once a log there starts with `sha=<the commit> dirty=0` and ends `exit=0`.
+The push goes through once a log there has `sha=<the commit> dirty=0` as its first `sha=` line,
+within its first 20 lines (a build may print first), and `exit=0` as its last `exit=` line.
 Bypass only on the user's explicit instruction: prefix the push with DSP_SKIP_PUSH_GUARD=1.""")
         if self.no_harness:
             out.append(
@@ -895,8 +913,9 @@ tree, into a log that names it:
 
   {{ echo "sha=$(git rev-parse HEAD) dirty=$(git status --porcelain --untracked-files=no | grep -c .)"; echo "harness={harness}"; <the CI's command>; echo "exit=$?"; }} > {planning}/lanes/<name>-{harness}-gate.log 2>&1
 
-The push goes through once such a log ends `exit=0`. If the suite cannot run here, tell the user;
-bypass only on their explicit instruction: DSP_SKIP_PUSH_GUARD=1.""")
+The push goes through once such a log ends `exit=0`. A suite only CI can run: push the commit to
+another branch first as `<commit>:refs/heads/<branch>` (that push needs only the full gate), let
+CI run it there, and write the log from that run's own output. Bypass only on the user's explicit instruction: DSP_SKIP_PUSH_GUARD=1.""")
         if self.unreviewed:
             out.append(
                 "[push_guard] `git push` of a commit no pre-push review covers — BLOCKED "

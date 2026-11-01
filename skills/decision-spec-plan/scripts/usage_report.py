@@ -15,7 +15,8 @@ Usage:
         [--until ISO-TIMESTAMP] [--top N] [--groups]
 
 Without a session id it reports the running session ($CLAUDE_CODE_SESSION_ID) of the project whose
-directory is the current working directory, else that project's newest session. `--since` and `--until` count only records in
+directory is the current working directory, else that project's newest session. `--project-dir`
+is the transcript dir (~/.claude/projects/<slug>) or the project's own directory. `--since` and `--until` count only records in
 that span (e.g. from the skill's start). Sessions a hook or plugin started through the Agent SDK in
 the project or one of its worktrees (entrypoint `sdk-*`, e.g. a security review of every commit) are
 counted too, over the same span — up to the last record of the lead or its agents without
@@ -357,12 +358,17 @@ def main():
     parser.add_argument("--groups", action="store_true")
     args = parser.parse_args()
 
-    project = args.project_dir or (
-        pathlib.Path.home()
-        / ".claude"
-        / "projects"
-        / re.sub(r"[^A-Za-z0-9]", "-", str(pathlib.Path.cwd()))
-    )
+    # --project-dir is the transcript dir, or the project itself (a lead passed that, live)
+    project = args.project_dir
+    if not (project and any(project.glob("*.jsonl"))):
+        project = (
+            pathlib.Path.home()
+            / ".claude"
+            / "projects"
+            / re.sub(
+                r"[^A-Za-z0-9]", "-", str((project or pathlib.Path.cwd()).resolve())
+            )
+        )
     # Without a session id, the running session's own if it is in this project: the newest
     # transcript may be a hook's or another lead's.
     own = project / f"{os.environ.get('CLAUDE_CODE_SESSION_ID')}.jsonl"

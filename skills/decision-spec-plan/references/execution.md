@@ -50,7 +50,9 @@ run `criteria_check.py` on the one spec file.)
   commits*), a red fixed under `dsp-deep`'s no-progress rule; the integrator refuses a lane SHA
   without it (`prompts.md` §5). Each agent gets the plan path, its task numbers, the
   previous group's checkpoint, the lane's rulings file and any archived ruling ids its tasks need,
-  the brief's house rules, the
+  the brief's house rules, "run a gate into a file and read the file, never pipe it through
+  `tail`/`head`" (the pipe's exit status turns a red gate green; groups that never read the plan
+  brief piped 17 gates in one wave, each refused by the project's own hook), the
   commit-message rules (the subject convention the repo's `git log` shows — a `type:` prefix, a
   scope — subject length, body length, trailers — **state them; subagents default to adding their
   own trailers**; one route's briefs left out the repo's `type:` prefix, the lead's rewords collided
@@ -118,9 +120,12 @@ run `criteria_check.py` on the one spec file.)
   full (`failure-modes` F100).
 - **Before a lane's first group, check its plan against today's tree** when commits since the
   plan's base touched files its tasks name (`git log --oneline <base>..<main> -- <files>`). One
-  `dsp-deep` preflight group checks each claim the tasks make (a path, a symbol, a line, a
-  behaviour, a test name) against the lane's base, and writes the stale ones to
-  `<planning-dir>/lanes/<plan-id>-preflight.md`. You fix the plan before the first task group.
+  `dsp-deep` preflight group checks each claim the tasks make (a path, a symbol, a behaviour, a
+  test name — not line numbers, which a group finds in passing) against the lane's base, and writes
+  the stale ones to `<planning-dir>/lanes/<plan-id>-preflight.md`; a plan over 8 tasks gets one
+  preflight per half, by task range (two of four that checked ~95 claims each, line numbers
+  included, hit the 200k stop, and one needed a second agent). You fix the plan before the first
+  task group.
   **Why:** a lead that did this unprompted found 30 of 44 claims stale in a plan 230 commits old;
   published, a false premise is the commonest root cause of agent failure (30.7%, F91).
 - **Offer every unblocked lane at once.** When a lane ends, and when you prepare a wave's budget
@@ -180,7 +185,8 @@ line (within its first 20 lines) is `sha=<that commit> dirty=0` and whose last `
 `exit=0` — the integrator's last log covers the main it returns; a commit you add after it needs
 its own full gate first:
 `{ echo "sha=$(git rev-parse HEAD) dirty=$(git status --porcelain --untracked-files=no | grep -c .)"; <full gate>; echo "exit=$?"; } > <planning-dir>/lanes/<name>-gate.log 2>&1`.
-On a route activated with `--ci-harness <label>` the commit also needs a log of the CI's own suite,
+On a route activated with `--ci-harness <label>` a push also needs a log of the CI's own suite
+(only `<commit>:refs/heads/<branch>`, branch not main, the push that starts a CI run, needs just the full gate),
 `echo "harness=<label>"` after the `sha=` line — never a local stand-in for it (a stub in place of
 the CI's database harness passed four times locally and failed four CI runs; F90). CI on a runner
 this host is not (Windows, macOS) is such a suite: `--activate` names it until the route answers

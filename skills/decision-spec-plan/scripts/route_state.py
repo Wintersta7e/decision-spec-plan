@@ -20,7 +20,7 @@ ref that moved or merged into the base, a ref gone (F91).
 Usage:
     route_state.py <planning-dir> --phase P [--repo DIR] [--main BRANCH] [--sections 38-48 | 38-]
         [--spec-dir DIR] [--all] [--activate [--rung S|M|L] [--ci-harness LABEL] [--sins on|off]]
-    route_state.py --budget LABEL --estimate M --groups N [--tasks T]
+    route_state.py --budget LABEL --estimate M --groups N [--tasks T] [--phase P] [--repo R]
 
 --main defaults to the repository's default branch. --sections `38-` counts every section from
 §38 on (a phase whose last section is not known yet). --all lists every file with its size, age
@@ -177,7 +177,21 @@ def bash_commands(command, cwd=None, depth=0):
                 if name is None:
                     out += text_commands(" ".join(w.text for w in c.words))
                     continue
-                c = shell_cmd.Cmd(c.assigns, [shell_cmd.literal(name), *c.words[1:]])
+                if re.search(r"[*?\[]", name):  # a glob the shell expands against files
+                    return None
+                # bash splits the value into words (`G='gh pr merge'; $G 5`, `E=; $E gh …`) on
+                # IFS. A command that touches IFS splits on the value read and on any
+                # punctuation too: one set again where it cannot be read (`unset`, `export`,
+                # `read`, a subshell) then only splits more than bash would, never less.
+                if not re.search(r"\bIFS\b", command):
+                    parts = name.split()
+                else:
+                    ifs = "|[" + re.escape(env["IFS"]) + "]" if env.get("IFS") else ""
+                    parts = [p for p in re.split(r"[^\w./-]" + ifs, name) if p]
+                words = [*map(shell_cmd.literal, parts), *c.words[1:]]
+                if not words:
+                    continue
+                c = shell_cmd.Cmd(c.assigns, words)
             script = c.words[0] if c.words and depth < 3 else None
             text = shell_cmd.run_script(script, here)
         if kind == "opaque" or text is not None:
@@ -687,6 +701,8 @@ def budget(argv):
     ap.add_argument(
         "planning_dir", nargs="?", help="optional: this session's route's planning dir"
     )
+    ap.add_argument("--phase", help="optional: this session's route's phase")
+    ap.add_argument("--repo", help="optional: this session's route's repository")
     a = ap.parse_args(argv)
     session = os.environ.get("CLAUDE_CODE_SESSION_ID", "")
     entry = load_json(REGISTRY / f"{session}.json") if session else {}
@@ -702,7 +718,16 @@ def budget(argv):
     if a.planning_dir and pathlib.Path(a.planning_dir).resolve() != own:
         print(f"--budget: {a.planning_dir} is not this session's route ({own})")
         return 2
-    phase = parser().parse_args(marker["args"]).phase
+    route = parser().parse_args(marker["args"])
+    phase = route.phase
+    repo = a.repo and str(pathlib.Path(a.repo).resolve())
+    for flag, given, have in (
+        ("--phase", a.phase, phase),
+        ("--repo", repo, route.repo),
+    ):
+        if given and have and given != have:
+            print(f"--budget: {flag} {given} is not this session's route ({have})")
+            return 2
     record = {
         "label": a.budget,
         "estimate": a.estimate,

@@ -263,7 +263,8 @@ It commits merges and runs gates, so it does not end with the closing lines. Its
 > index's order, with the SHA each reported: <plan-id → SHA, worktree>. Baseline gate on <SHA>:
 > <counts; failing-test identities>. For each lane: 1. confirm its checkpoint
 > (`<planning-dir>/lanes/<plan-id>-checkpoint.md`) names that SHA and its lane gate log
-> (`<planning-dir>/lanes/<plan-id>-gate.log`) opens `sha=<that SHA> dirty=0` and ends `exit=0` — a
+> (`<planning-dir>/lanes/<plan-id>-gate.log`) has `sha=<that SHA> dirty=0` as its first `sha=` line,
+> within its first 20 lines (build output may come first), and `exit=0` as its last `exit=` line — a
 > lane SHA without one: stop and record it — and that
 > `<skill-dir>/scripts/scope_check.py <planning-dir>/plans --glob '<plan-id>-*.md' --diff <wave base>..<SHA> --repo <repo>`
 > exits 0 — a file outside the lane's plan: stop and record it — and that `test_check.py` with the

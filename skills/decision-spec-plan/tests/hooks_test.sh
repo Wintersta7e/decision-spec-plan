@@ -646,6 +646,17 @@ grep -q '"ci_harness": "it-3db"' "$(MK "$R")" && grep -q 'CI harness it-3db: pus
 out=$(jq -n --arg c "git push origin main" --arg d "$R" '{tool_input: {command: $c}, cwd: $d}' | python3 "$SCRIPTS/push_guard.py" 2>&1)
 [ $? = 2 ] && grep -q '^  not passed by the CI harness: main = ' <<<"$out" && grep -q 'echo "harness=it-3db"' <<<"$out" &&
 	ok "guard: a commit gated locally only is held, with the harness log's command" || bad "guard, CI harness: $out"
+# the branch push that starts the CI run cannot carry its log: only `refs/heads/<x>`, x not main, skips it
+guard 0 "$R" "git push origin main:refs/heads/ci-run"
+guard 2 "$R" "git push origin main:refs/heads/main"
+guard 2 "$R" "git push origin main:refs/tags/v9"
+# ...a bare name is read against the remote's refs, which may hold a tag of that name
+guard 2 "$R" "git push origin main:ci-run"
+guard 2 "$R" "git push origin main:heads/main"
+guard 2 "$R" "git push origin main:refs/remotes/origin/x"
+activate_ci --main refs/heads/main >/dev/null
+guard 2 "$R" "git push origin main:refs/heads/main"
+activate_ci --main main >/dev/null
 printf 'sha=%s dirty=0\nharness=it-3db\nok\nexit=1\n' "$MAIN" >"$P/lanes/ci-it-3db-gate.log"
 guard 2 "$R" "git push origin main"
 printf 'sha=%s dirty=0\nharness=other\nok\nexit=0\n' "$MAIN" >"$P/lanes/ci-it-3db-gate.log"
@@ -888,7 +899,14 @@ out=$(CLAUDE_CODE_SESSION_ID=s2 python3 "$SCRIPTS/route_state.py" --budget w1 --
 out=$(CLAUDE_CODE_SESSION_ID=s1 python3 "$SCRIPTS/route_state.py" --budget w1 "$T" --estimate 10 --groups 4 2>&1)
 [ $? = 2 ] && grep -q "not this session's route" <<<"$out" && ! jq -e '.budgets' "$(MK "$R")" >/dev/null &&
 	ok "--budget naming another planning dir records nothing" || bad "--budget other dir: $out"
-out=$(CLAUDE_CODE_SESSION_ID=s1 python3 "$SCRIPTS/route_state.py" --budget w1 "$P" --estimate 10 --groups 4)
+# so may the phase and repository, as a lead passed them from --activate (live); another route's is refused
+for flags in "--phase 2" "--repo $T"; do
+	# shellcheck disable=SC2086
+	out=$(CLAUDE_CODE_SESSION_ID=s1 python3 "$SCRIPTS/route_state.py" --budget w1 $flags --estimate 10 --groups 4 2>&1)
+	[ $? = 2 ] && grep -q "not this session's route" <<<"$out" && ! jq -e '.budgets' "$(MK "$R")" >/dev/null &&
+		ok "--budget $flags of another route records nothing" || bad "--budget $flags: $out"
+done
+out=$(CLAUDE_CODE_SESSION_ID=s1 python3 "$SCRIPTS/route_state.py" --budget w1 "$P" --phase 1 --repo "$R" --estimate 10 --groups 4)
 [ $? = 0 ] && jq -e '.budgets[-1] | .label == "w1" and .groups == 4 and .phase == "1"' "$(MK "$R")" >/dev/null &&
 	grep -q "past 12.5M spent or 5 exec- dispatches" <<<"$out" &&
 	grep -qF 'Ask exactly: "Wave w1: 10M for 4 exec- agents' <<<"$out" &&
@@ -1049,6 +1067,13 @@ b=$("${UR[@]}" --since "$o" | grep '^lead')
 [ "$a" = "$b" ] && grep -q 'turns=   2' <<<"$a" && ok "usage_report --since $o counts as $z" || bad "usage_report --since $z: $a | $o: $b"
 out=$("${UR[@]}" --since yesterday 2>&1)
 [ $? = 2 ] && grep -q 'argument --since' <<<"$out" && ok "usage_report refuses an unparseable --since" || bad "usage_report --since yesterday: $(head -3 <<<"$out")"
+# --project-dir naming the project itself, as a lead did (live): its transcripts are under its slug
+D="$T/proj.x" && mkdir -p "$D" && S="$HOME/.claude/projects/$(sed 's/[^A-Za-z0-9]/-/g' <<<"$D")"
+mkdir -p "$S" && cp "$HOME/.claude/projects/p/s1.jsonl" "$S/"
+out=$(python3 "$SCRIPTS/usage_report.py" s1 --project-dir "$D" 2>&1)
+[ $? = 0 ] && grep -q '^lead .*turns=   2' <<<"$out" && ok "usage_report --project-dir of the project reads its transcripts" ||
+	bad "usage_report --project-dir project: $(head -3 <<<"$out")"
+rm -r "$D" "$S"
 # the units by model (cache read ×0.05 on Opus and Sonnet 5.5; Haiku 5.5 over 100k ×0.125, read
 # ×0.1), and hook sessions counted only up to the round's last record or --until
 rec() { jq -nc --arg t "$(ts "$1")" --arg id "$2" --arg m "$3" --argjson n "$4" --arg e "${5:-}" \
@@ -1481,6 +1506,13 @@ EOF" \
 	hook silent "$(leadcmd "$c")"
 done
 hook 'ask:gh pr merge' "$(leadcmd "G=gh; \$G pr merge 5")"
+# the value is split into words as bash splits it: a name holding the subcommand, or none at all
+hook 'ask:gh pr merge' "$(leadcmd "G='gh pr merge'; \$G 5")"
+hook 'ask:gh pr merge' "$(leadcmd "E=; \$E gh pr merge 5")"
+for c in "IFS=,; G=gh,pr,merge; \$G 5" "export IFS=,; G=gh,pr,merge; \$G 5" "read IFS; G=gh:pr:merge; \$G 5" \
+	"IFS=,; unset IFS; G='gh pr merge'; \$G 5" "IFS=:; export IFS=,; G=gh,pr,merge; \$G 5" "IFS=x; G=ghxprxmerge; \$G 5"; do
+	hook 'ask:gh pr merge' "$(leadcmd "$c")"
+done
 # ...but a name set more than once, in a loop or from a command's output is read from the whole
 # text, and a computed graphql query may be a mutation
 for c in "X=\$(echo gh); \$X pr merge 5" "if true; then G=gh; else G=echo; fi; \$G pr merge 5" \
