@@ -49,9 +49,11 @@ OPENERS = {"{", "if", "while", "until", "for", "select", "case"}
 CLOSERS = {"}", "fi", "done", "esac"}
 # Operators that run what they join in subshells: a pipeline, a command run in the background.
 ASYNC = {"|", "|&", "&"}
+# Operators that end one element of a list: what comes after is a command of its own.
+LIST_OPS = {";", "&", "&&", "||", "\n"}
 # Pass-through wrappers: their options (and the options' values) skipped, the rest is the command.
 WRAPPERS = {
-    "env": {"-u", "--unset"},
+    "env": {"-u", "--unset", "-C", "--chdir", "-S", "--split-string"},
     "command": set(),
     "exec": {"-a"},
     "nice": {"-n", "--adjustment"},
@@ -62,10 +64,88 @@ WRAPPERS = {
     "ionice": {"-c", "-n", "-p", "--class", "--classdata"},
     "setsid": set(),
     "builtin": set(),
+    "chronic": set(),
+    "unbuffer": set(),
+    "coproc": set(),
+    "taskset": set(),
+    "ssh-agent": {"-a", "-E", "-t", "-P", "-O"},
+    "strace": {
+        "-o",
+        "-e",
+        "-p",
+        "-s",
+        "-u",
+        "-E",
+        "-a",
+        "-b",
+        "-I",
+        "-O",
+        "-S",
+        "-P",
+        "-X",
+        "--output",
+        "--trace",
+        "--attach",
+        "--string-limit",
+        "--user",
+        "--env",
+        "--columns",
+        "--signal",
+        "--status",
+        "--trace-path",
+        "--trace-fds",
+        "--inject",
+        "--fault",
+        "--summary-sort",
+        "--summary-columns",
+        "--const-print-style",
+    },
 }
-# Options after which a wrapper's rest is no plain command here: a directory change, a split
-# string, a lookup.
-WRAPPER_STOPS = {"-C", "--chdir", "-S", "--split-string", "-v", "-V"}
+# Long options of a wrapper that take no value. getopt_long takes any unique prefix of a long
+# option; one that is no prefix of a known option makes the rest of the command unreadable.
+FLAGS_LONG = {
+    "env": {"--ignore-environment", "--null", "--debug", "--help", "--version"},
+    "timeout": {
+        "--preserve-status",
+        "--foreground",
+        "--verbose",
+        "--help",
+        "--version",
+    },
+    "nice": {"--help", "--version"},
+    "nohup": {"--help", "--version"},
+    "stdbuf": {"--help", "--version"},
+    "ionice": {"--ignore", "--pid", "--pgid", "--uid", "--help", "--version"},
+    "setsid": {"--ctty", "--fork", "--wait", "--help", "--version"},
+    "taskset": {"--all-tasks", "--pid", "--cpu-list", "--help", "--version"},
+    "strace": {
+        "--follow-forks",
+        "--output-separately",
+        "--summary-only",
+        "--summary",
+        "--summary-wall-clock",
+        "--no-abbrev",
+        "--verbose",
+        "--raw",
+        "--relative-timestamps",
+        "--absolute-timestamps",
+        "--syscall-times",
+        "--instruction-pointer",
+        "--stack-trace",
+        "--decode-fds",
+        "--decode-pids",
+        "--quiet",
+        "--debug",
+        "--seccomp-bpf",
+        "--daemonize",
+        "--help",
+        "--version",
+    },
+}
+# Wrappers whose first plain words are values, not the command: `timeout 60`, `taskset 0x3`.
+POSITIONAL = {"timeout": 1, "taskset": 1}
+# Options after which a wrapper's rest is a lookup, not a command: `command -v git`.
+WRAPPER_STOPS = {"command": {"-v", "-V"}}
 SHELLS = {"bash", "sh", "zsh", "dash", "ksh"}
 ASSIGN = re.compile(r"[A-Za-z_][A-Za-z0-9_]*=")
 TEMP = "\0temp"  # a `$(mktemp …)` value: a fresh directory, in no repository
@@ -149,13 +229,18 @@ class Opaque(str):
     """What an ("opaque", …) event runs, as text; script is the word naming the script file
     (`source x`, `bash x`), None for a computed string or stdin; sourced, whether it runs in the
     command's own shell (`source`, `.`), so its `cd` and variables hold after it; words, those of
-    a computed `eval` or `bash -c` string."""
+    a computed `eval` or `bash -c` string; assigns, the (name, Word) prefixes it runs with
+    (`GIT_DIR=x bash deploy.sh`); held, whether it may push whatever its words say."""
 
-    def __new__(cls, what, script=None, sourced=False, words=()):
+    def __new__(
+        cls, what, script=None, sourced=False, words=(), assigns=(), held=False
+    ):
         self = super().__new__(cls, what)
         self.script = script
         self.sourced = sourced
         self.words = list(words)
+        self.assigns = list(assigns)
+        self.held = held
         return self
 
 
@@ -270,18 +355,28 @@ def _dollar(text, i, word):
     return i + 1
 
 
-def _scan(text, i=0, close=False):
+def _scan(text, i=0, close=False, cuts=None):
     """Words and operator strings of text[i:]; with close, up to the `)` that closes a `$(`.
-    Returns (tokens, the index after the last character read)."""
+    Returns (tokens, the index after the last character read). With cuts, a list, the index
+    after each list separator outside a subshell and a compound command is appended to it."""
     tokens, word, depth, n = [], None, 0, len(text)
     heredocs, delimiter_next = [], None
+    # compound commands open (`{`, `if`, `case`, `do`), and whether the next word is a command's
+    # first, where such a word is a keyword
+    groups, first = 0, True
 
     def end_word():
-        nonlocal word, delimiter_next
+        nonlocal word, delimiter_next, groups, first
         if word is not None:
             if delimiter_next:
                 heredocs.append((word.text, delimiter_next == "<<-"))
                 delimiter_next = None
+            if first and word.static:
+                t = word.text
+                groups += (t in ("{", "if", "case", "do")) - (t in CLOSERS)
+                first = t in KEYWORDS
+            else:
+                first = False
             tokens.append(word)
             word = None
 
@@ -329,6 +424,8 @@ def _scan(text, i=0, close=False):
                     return tokens, i
                 depth -= 1
             tokens.append(op)
+            if op not in REDIRECTS:
+                first = True
             if op in ("<<", "<<-"):
                 delimiter_next = op
             elif op == "\n":
@@ -342,6 +439,8 @@ def _scan(text, i=0, close=False):
                         if (line.lstrip("\t") if tabs else line) == delim:
                             break
                 heredocs = []
+            if cuts is not None and op in LIST_OPS and depth == groups == 0:
+                cuts.append(i)
         else:
             m = LITERAL.match(text, i)
             word = word or Word()
@@ -368,9 +467,56 @@ def _split_assign(w):
     return m[0][:-1], value
 
 
+def _tail(w, n):
+    """The word w with its first n characters cut: the value of `-o/x` or `--opt=x`. None when
+    they do not all lie in its first, unexpanded part."""
+    kind, first = w.parts[0]
+    if kind == "exp" or len(first) < n:
+        return None
+    value = Word()
+    value.subs = w.subs
+    if first[n:]:
+        value.add(kind, first[n:])
+    for kind, s in w.parts[1:]:
+        value.add(kind, s)
+    return value
+
+
+def _option(t, valued, flags=()):
+    """(option, cut) of an option word as getopt reads it: the valued option it sets, and how
+    many characters precede the value it carries (None: the value is the next word); (None, None)
+    for flags only; ("?", None) for a long option that is no unique prefix of a known one. `-fo x`
+    sets -o; `-o/x`, `--output=x` and `--out=x` carry their value."""
+    if t.startswith("--"):
+        name, eq, _ = t.partition("=")
+        known = valued | set(flags)
+        hits = [name] if name in known else [o for o in known if o.startswith(name)]
+        if len(hits) != 1:
+            return "?", None
+        if hits[0] not in valued:
+            return None, None
+        return hits[0], len(name) + 1 if eq else None
+    for k in range(1, len(t)):
+        if f"-{t[k]}" in valued:
+            return f"-{t[k]}", (k + 1 if k + 1 < len(t) else None)
+    return None, None
+
+
+def _prefixed(assigns, found):
+    """The events found, each command and opaque text run with the prefixes assigns."""
+    for kind, c in found:
+        if kind in ("cmd", "opaque") and assigns:
+            c.assigns = assigns + c.assigns
+        yield kind, c
+
+
 def _command(words):
-    while words and words[0].static and words[0].text in KEYWORDS:
-        words = words[1:]
+    # keywords before the command; `function f { …` runs its body here; `time -p`
+    while words and words[0].static and words[0].text in KEYWORDS | {"function"}:
+        t = words[0].text
+        words = words[2:] if t == "function" else words[1:]
+        while t == "time" and words and words[0].text in ("-p", "--"):
+            words = words[1:]
     if not words or (words[0].static and words[0].text in NOT_COMMANDS):
         return
     assigns = []
@@ -380,17 +526,59 @@ def _command(words):
     while words:
         name = os.path.basename(words[0].text)
         if name in WRAPPERS:
-            rest, valued, positional = words[1:], WRAPPERS[name], int(name == "timeout")
+            rest, valued = words[1:], WRAPPERS[name]
+            positional, stops = POSITIONAL.get(name, 0), WRAPPER_STOPS.get(name, ())
             while rest:
                 t = rest[0].text
-                if t in WRAPPER_STOPS:
+                if t in stops:
                     break
                 if t == "--":
                     rest = rest[1:]
                     break
                 if t.startswith("-") and t != "-":
-                    rest = rest[2:] if t in valued else rest[1:]
-                elif name == "env" and (a := _split_assign(rest[0])):
+                    opt, cut = _option(t, valued, FLAGS_LONG.get(name, ()))
+                    if opt == "?":
+                        # it may take the next word as its value or not: the command is unknown
+                        what = f"`{name}` with an option {t} the reader does not know"
+                        yield "opaque", Opaque(what, words=rest, assigns=assigns)
+                        return
+                    if cut is None:
+                        value, after = (rest[1:2] or [None])[0], rest[2:]
+                    else:
+                        value, after = _tail(rest[0], cut), rest[1:]
+                    if opt is None:
+                        rest = rest[1:]
+                        continue
+                    rest = after
+                    if name != "env" or opt in ("-u", "--unset"):
+                        continue
+                    # `env -C <dir> cmd` runs cmd there; `env -S '<cmd line>'` splits a string,
+                    # reading escapes and `${VAR}` in it that a shell does not
+                    if opt in ("-S", "--split-string"):
+                        line = [w for w in [value, *after] if w is not None]
+                        text = " ".join(w.text for w in line)
+                        static = value is not None and all(w.static for w in line)
+                        if static and not re.search(r"[\\$]", text):
+                            yield from _prefixed(assigns, _parse(_scan(text)[0]))
+                            return
+                        what = "`env -S` of a string it rewrites"
+                        # every escape read as a separator (`\_`, `\t`; `\c` ends it), so
+                        # `git\_push` names push; a `${VAR}` it fills in is held outright
+                        seen = [*line, literal(re.sub(r"\\.", " ", text))]
+                        yield (
+                            "opaque",
+                            Opaque(what, words=seen, assigns=assigns, held="$" in text),
+                        )
+                        return
+                    yield "open", None
+                    if value is None and cut is not None:
+                        yield "opaque", Opaque("`env -C` of a computed directory")
+                    elif value is not None:
+                        yield "cmd", Cmd([], [literal("cd"), value])
+                    yield from _prefixed(assigns, _command(after))
+                    yield "close", None
+                    return
+                if name == "env" and (a := _split_assign(rest[0])):
                     assigns.append(a)
                     rest = rest[1:]
                 elif positional:
@@ -398,8 +586,14 @@ def _command(words):
                     rest = rest[1:]
                 else:
                     break
-            if rest and rest[0].text in WRAPPER_STOPS:
+            if rest and rest[0].text in stops:
                 break
+            if name == "coproc":
+                # `coproc NAME { …; }`: a NAME before a compound command names the coprocess
+                if len(rest) > 1 and rest[1].static and rest[1].text in KEYWORDS:
+                    rest = rest[1:]
+                yield from _prefixed(assigns, _command(rest))
+                return
             words = rest
             continue
         if name in SHELLS:
@@ -415,29 +609,27 @@ def _command(words):
                 )
             if shell_c and i < len(words) and words[i].static:
                 yield "open", None
-                yield from _parse(_scan(words[i].text)[0])
+                yield from _prefixed(assigns, _parse(_scan(words[i].text)[0]))
                 yield "close", None
             elif shell_c or i >= len(words) or words[i].text in ("-", "--"):
                 what = f"`{name}` running a computed string or stdin"
-                yield "opaque", Opaque(what, words=words[i:])
+                yield "opaque", Opaque(what, words=words[i:], assigns=assigns)
             else:
-                yield "opaque", Opaque(f"`{name}` running a script", words[i])
+                what = f"`{name}` running a script"
+                yield "opaque", Opaque(what, words[i], assigns=assigns)
             return
         if name == "eval":
             if all(w.static for w in words[1:]):
-                yield from _parse(_scan(" ".join(w.text for w in words[1:]))[0])
+                text = " ".join(w.text for w in words[1:])
+                yield from _prefixed(assigns, _parse(_scan(text)[0]))
             else:
-                yield "opaque", Opaque("`eval` of a computed string", words=words[1:])
+                what = "`eval` of a computed string"
+                yield "opaque", Opaque(what, words=words[1:], assigns=assigns)
             return
         if name in ("source", "."):
-            yield (
-                "opaque",
-                Opaque(
-                    f"`{name}` of a script",
-                    words[1] if len(words) > 1 else None,
-                    sourced=True,
-                ),
-            )
+            script = words[1] if len(words) > 1 else None
+            what = f"`{name}` of a script"
+            yield "opaque", Opaque(what, script, sourced=True, assigns=assigns)
             return
         break
     yield "cmd", Cmd(assigns, words)
@@ -451,7 +643,17 @@ def _parse(tokens):
 
     def end_command():
         nonlocal nest, words
-        for w in words:
+        # `function f { …` and `coproc NAME { …`: the `{` after the name opens the body
+        skip, head = 0, words[0].text if words and words[0].static else ""
+        if head == "function":
+            skip = 2
+        elif head == "coproc":
+            skip = (
+                2
+                if len(words) > 2 and words[2].static and words[2].text in KEYWORDS
+                else 1
+            )
+        for w in words[skip:]:
             if not (w.static and w.text in KEYWORDS | NOT_COMMANDS):
                 break
             nest += (w.text in OPENERS) - (w.text in CLOSERS)
@@ -518,6 +720,19 @@ def words(text):
 
     collect(_scan(text)[0], text)
     return out
+
+
+def elements(text):
+    """The text of each element of text's top-level lists, a heredoc's body with its command: a
+    subshell, a `{ }` group, `if … fi`, `case … esac` and `do … done` stay whole, with the
+    redirects on them."""
+    cuts = []
+    _scan(text, cuts=cuts)
+    out, start = [], 0
+    for end in [*cuts, len(text)]:
+        out.append(text[start:end])
+        start = end
+    return [part for part in out if part.strip()]
 
 
 OUTPUTS = {">", ">>", ">|", "&>", "&>>"}

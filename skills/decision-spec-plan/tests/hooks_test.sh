@@ -90,6 +90,10 @@ printf '%s\n' '{"type":"user","message":{"role":"user","content":[{"type":"text"
 hook silent "$(asks 'now use dsp for the export bug' slash.jsonl)"           # loaded by its slash command
 hook silent "$(asks 'tune the DSP filter in the audio path' no-skill.jsonl)" # signal processing
 hook silent "$(asks 'how many dsp-deep agents ran?' no-skill.jsonl)"
+# an agent's return, a path into the skill's own repository or a dsp source dir is not the user naming it
+hook silent "$(asks $'<task-notification>\n<result>3 bugs in skills/decision-spec-plan/scripts/route_state.py, use dsp</result>\n</task-notification>' no-skill.jsonl)"
+hook silent "$(asks 'fix the README typo in /work/decision-spec-plan' no-skill.jsonl)"
+hook silent "$(asks 'the clipping bug is in src/dsp/biquad.c' no-skill.jsonl)"
 
 out=$(cd "$R" && env -u CLAUDE_CODE_SESSION_ID python3 "$SCRIPTS/route_state.py" "$P" --phase 1 --repo "$R" --activate)
 [ $? = 1 ] && [ -f "$(MK "$R")" ] && grep -q "CLAUDE_CODE_SESSION_ID is unset" <<<"$out" &&
@@ -400,6 +404,94 @@ guard 2 "$R" "source $T/scripts/genv.sh; git push origin main"
 printf 'cd %s\n' "$T/wt" >"$T/scripts/towt.sh"
 guard 2 /tmp ". $T/scripts/towt.sh; git push origin feature"
 guard 0 /tmp "bash $T/scripts/towt.sh; git push origin feature"
+# a directory the command names before it changes into it may be one it creates: followed, and a
+# push from one that does not exist yet is held
+rm -rf "$T/lane-y" "$T/wt/out" "$T/wt/build"
+guard 2 "$R" "git worktree add ../lane-y feature && cd ../lane-y && git push -u origin feature"
+guard 2 "$R" "git worktree add ../lane-y feature && git -C ../lane-y push -u origin feature"
+guard 2 "$T/wt" "mkdir -p out && cd out && make && cd .. && git push origin feature"
+guard 2 "$T/wt" "mkdir -p build && cd build; cd .. && git push origin feature"
+guard 0 "$R" "mkdir -p out && cd out && make && cd .. && git push origin main"
+# a one-line `function f { … }`, `time`'s options, a wrapper's own flags, `env -C`/`-S` and more
+# wrappers hide no push
+for c in "function f { git push origin feature; }; f" "time -p git push origin feature" \
+	"time -- git push origin feature" "timeout -v 120 git push origin feature" \
+	"ssh-agent bash -c 'ssh-add -q k; git push origin feature'" "op run -- git push origin feature" \
+	"direnv exec . git push origin feature" "nix develop -c git push origin feature" \
+	"chronic git push origin feature" "unbuffer git push origin feature" \
+	"strace -f -o /tmp/t git push origin feature" "taskset -c 0 git push origin feature" \
+	"uv run git push origin feature" "coproc git push origin feature" \
+	"env -S 'git push origin feature'" "strace -fo /tmp/t git push origin feature" \
+	"strace --output /tmp/t git push origin feature" "timeout -s9 5 git push origin feature" \
+	"env -vS 'git push origin feature'" "env '-Sgit push origin feature'" \
+	"env -S 'git\\_push origin feature'" "coproc P { git push origin feature; }" \
+	"coproc { git push origin feature; }"; do
+	guard 2 "$T/wt" "$c"
+done
+guard 2 /tmp "env -C $T/wt git push origin feature"
+guard 2 /tmp "env --chdir=$T/wt git push origin feature"
+guard 2 /tmp "env -iC$T/wt git push origin feature"
+# a GIT_* prefix holds in the script, shell string or sourced file it runs
+printf 'git push origin main\n' >"$T/scripts/pm.sh" && chmod +x "$T/scripts/pm.sh"
+guard 0 "$R" "bash $T/scripts/pm.sh"
+for c in "GIT_DIR=$R/.git bash $T/scripts/pm.sh" "GIT_DIR=$R/.git $T/scripts/pm.sh" \
+	"GIT_DIR=$R/.git bash -c 'git push origin main'" "GIT_DIR=$R/.git source $T/scripts/pm.sh" \
+	"env GIT_DIR=$R/.git bash $T/scripts/pm.sh"; do
+	guard 2 "$R" "$c"
+done
+# env -S reads `\t` as a separator and fills in `${VAR}`; getopt takes a long option's unique
+# prefix (`--out` is ambiguous: held), and a long option the reader does not know leaves the
+# command unread; a prefix on a sourced file is gone after it
+for c in "env -S 'git\\tpush origin main'" "env -S 'git push \${R:-origin} main'" \
+	"strace --bogus git push origin main"; do
+	guard 2 "$R" "$c"
+done
+guard 0 "$R" "strace --str 64 git push origin main"
+guard 2 "$R" "strace --out /tmp/t git push origin main"
+guard 0 "$R" "timeout --preserve-status 5 git push origin main"
+guard 2 "$T/wt" "strace --str 64 git push origin feature"
+printf 'true\n' >"$T/scripts/noop.sh"
+guard 2 /tmp "export D=$T/wt; D=/tmp source $T/scripts/noop.sh; cd \"\$D\" && git push origin feature"
+# a `cd` that fails leaves OLDPWD where the last one that worked set it
+guard 2 "$T/wt" "cd /tmp; cd $T/no-such-dir; cd - && git push origin feature"
+guard 0 "$R" "command -v git && git push origin main"
+# a script only read, shown or made executable before it runs is not written by the command
+printf 'echo hi\n' >"$T/scripts/build.sh" && chmod +x "$T/scripts/build.sh"
+for c in "chmod +x $T/scripts/build.sh && $T/scripts/build.sh && git push origin main" \
+	"cat $T/scripts/build.sh; bash $T/scripts/build.sh; git push origin main" \
+	"test -f $T/scripts/build.sh && source $T/scripts/build.sh && git push origin main" \
+	"git stash push && cat $T/scripts/build.sh && bash $T/scripts/build.sh"; do
+	guard 0 "$R" "$c"
+done
+# a shell string read from a file runs that file's push
+guard 2 "$R" "sh -c \"\$(cat $T/scripts/pm.sh)\""
+guard 2 "$R" "bash -c \"\$(<$T/scripts/pm.sh)\""
+guard 0 "$R" "sh -c \"\$(cat $T/scripts/build.sh)\""
+# one the command writes first, or one the guard cannot read, may hold anything
+guard 2 "$R" "printf 'echo hi\\\\n' >$T/scripts/gen.sh; sh -c \"\$(cat $T/scripts/gen.sh)\""
+guard 2 "$R" "sh -c \"\$(cat $T/scripts/no-such.sh)\""
+# a GIT_* prefix sets the variable for its own command only; deleting a branch moves no ref the
+# push sends; `cd -` goes back where the last `cd` left
+for c in "GIT_PAGER=cat git log --oneline -3 && git push origin main" \
+	"GIT_EDITOR=true git stash list; git push origin main" "git branch -d lane-x && git push origin main" \
+	"git branch -D old-lane; git push origin main" "cd /tmp && ls && cd - && git push origin main"; do
+	guard 0 "$R" "$c"
+done
+guard 2 "$R" "GIT_PAGER=cat git push origin main"
+guard 2 "$R" "cd - && git push origin main"
+guard 2 "$T/wt" "cd /tmp && cd - && git push origin feature"
+# git's own `tag <name>` refspec; a refspec the command computes is named as such, not as one that
+# does not resolve; a held form's hold says no gate log clears it; a bare `-C` is no crash
+git -C "$R" tag v1 main
+guard 0 "$R" "git push origin tag v1"
+git -C "$R" tag -d v1 >/dev/null
+grep -q 'a refspec the command computes' <<<"$(gmsg "$R" 'git push -u origin "$(git branch --show-current)"')" &&
+	ok "the hold names a computed refspec" || bad "computed refspec: $(gmsg "$R" 'git push -u origin "$(git branch --show-current)"')"
+out=$(gmsg /tmp "git --git-dir=$R/.git push origin main")
+grep -q 'No gate log clears' <<<"$out" && ! grep -q 'no full gate has passed' <<<"$out" &&
+	ok "a held form's hold says a gate log will not clear it" || bad "held-form banner: $out"
+out=$(gmsg "$R" "git -C")
+! grep -q 'the guard failed' <<<"$out" && ok "a bare git -C is no guard crash" || bad "git -C: $out"
 # every command is read now, so a long line of git commands stays fast: one alias lookup per name
 start=$SECONDS
 guard 0 "$T/wt" "$(printf 'git x; %.0s' {1..3000})"
@@ -535,6 +627,12 @@ jq -e '.rung == "S"' "$(MK "$R")" >/dev/null && ok "a re-activation of the phase
 CLAUDE_CODE_SESSION_ID=s1 python3 "$SCRIPTS/route_state.py" "$P" --phase 2 --repo "$R" --sections 1- --activate >/dev/null
 grep -q rung "$(MK "$R")" && bad "a new phase without --rung keeps the old phase's rung" || ok "a new phase without --rung has none"
 CLAUDE_CODE_SESSION_ID=s1 python3 "$SCRIPTS/route_state.py" "$P" --phase 1 --repo "$R" --sections 1- --activate >/dev/null
+# execution.md's `--activate --sins on` names neither --repo nor --sections: both are kept
+before=$(jq -c .args "$(MK "$R")")
+CLAUDE_CODE_SESSION_ID=s1 python3 "$SCRIPTS/route_state.py" "$P" --phase 1 --activate --sins off >/dev/null
+[ "$(jq -c .args "$(MK "$R")")" = "$before" ] && ok "a re-activation keeps --repo, --sections and --main" ||
+	bad "a re-activation dropped arguments: $before -> $(jq -c .args "$(MK "$R")")"
+CLAUDE_CODE_SESSION_ID=s1 python3 "$SCRIPTS/route_state.py" "$P" --phase 1 --repo "$R" --sections 1- --activate >/dev/null
 git -C "$R" update-ref -d refs/heads/rel
 git -C "$R" update-ref -d refs/heads/ung
 git -C "$R" update-ref -d refs/remotes/origin/main
@@ -601,6 +699,11 @@ hook '/took your recommendation in 9 of their last 10 answers/' "$(askq 'Keep it
 hook silent "$(askq 'Keep it' 'Keep it')" # no option recommended: not tallied
 hook '/9 of their last 10/' "$(askq 'Drop it')"
 hook silent "$(askq 'Drop it')"
+# the tally spans the route: a phase's re-activation (Stage 5's `--sins on`) keeps it
+n=$(jq '.asks | length' "$(MK "$R")")
+CLAUDE_CODE_SESSION_ID=s1 python3 "$RS" "$P" --phase 1 --repo "$R" --sections 1- --activate >/dev/null
+jq -e --argjson n "$n" '.asks | length == $n' "$(MK "$R")" >/dev/null && ok "a re-activation keeps the answer tally" ||
+	bad "re-activation dropped the answer tally: $(jq -c .asks "$(MK "$R")")"
 
 # --- pending, not missing: index rows without files
 printf '| D1 | a |\n| D2 | b |\n' >"$P/decisions/phase1/00-index.md"
@@ -772,6 +875,9 @@ reactivate --rung S
 hook 'deny:rung S has no harvester.*re-announce it at M' "$(harvester h1 'MR Harvest h1 runtime')"
 hook 'deny:rung S has no harvester' "$(harvester harvest-code 'code facts')"
 hook silent "$(harvester s-review 'S review of the plan')"
+# ...but a task group whose work names a harvest, or a review of harvested findings, is no harvester
+hook 'deny:has no Stage 5 budget' "$(harvester exec-p1-01-a 'Fix harvest-date parsing in crop importer')"
+hook silent "$(harvester review-1e 'Second-model review of harvested findings fallback')"
 reactivate --rung M
 hook silent "$(harvester h1 'MR Harvest h1 runtime')"
 reactivate
@@ -815,14 +921,26 @@ creq() { # offset id fresh write read
 	jq -nc --arg t "$(ts "$1")" --arg id "$2" --argjson f "$3" --argjson w "$4" --argjson r "$5" \
 		'{type:"assistant",timestamp:$t,requestId:$id,message:{id:$id,model:"claude-opus-5-5",content:[],usage:{input_tokens:$f,cache_creation_input_tokens:$w,cache_read_input_tokens:$r,output_tokens:0}}}'
 }
+uprompt() { # offset origin-kind — a user record: the user's prompt, or an agent's return
+	jq -nc --arg t "$(ts "$1")" --arg k "$2" '{type:"user",timestamp:$t,origin:{kind:$k},message:{role:"user",content:"x"}}'
+}
 IW=$T/idle
 mkdir -p "$IW"
 {
 	creq -9000 i1 1000 0 0
 	creq -8940 i2 0 1000 100000
+	uprompt -4010 human
 	creq -4000 i3 0 100000 0
 	creq -3990 i4 0 500 100000
 } >"$IW/gap.jsonl"
+# the same gap ended by a task group's return is the wave's own cost: the lead per group
+{
+	creq -9000 i1 1000 0 0
+	creq -8940 i2 0 1000 100000
+	uprompt -4010 task-notification
+	creq -4000 i3 0 100000 0
+	creq -3990 i4 0 500 100000
+} >"$IW/ret.jsonl"
 {
 	creq -9000 i1 1000 0 0
 	creq -8940 i2 0 1000 100000
@@ -836,8 +954,8 @@ mkdir -p "$IW"
 } >"$IW/busy.jsonl"
 out=$(python3 -c 'import pathlib, sys; sys.path.insert(0, sys.argv[1]); import route_state as r
 s = lambda f: r.spend([pathlib.Path(sys.argv[2], f)], sys.argv[3])
-print(s("gap.jsonl") == s("none.jsonl") < s("busy.jsonl"))' "$SCRIPTS" "$IW" "$(ts -10000)" 2>&1)
-[ "$out" = True ] && ok "budget spend: a lead's rewrite after an idle gap is not the wave's; one without a gap is" ||
+print(s("gap.jsonl") == s("none.jsonl") < s("busy.jsonl") == s("ret.jsonl"))' "$SCRIPTS" "$IW" "$(ts -10000)" 2>&1)
+[ "$out" = True ] && ok "budget spend: a rewrite after waiting for the user is not the wave's; one after a group's return or no gap is" ||
 	bad "budget spend, idle rewrite: $out"
 # a budget another lead session recorded, answered there, is not this session's (F74)
 CLAUDE_CODE_SESSION_ID=s9 python3 "$SCRIPTS/route_state.py" --budget w3 --estimate 50 --groups 9 >/dev/null
@@ -861,7 +979,7 @@ auq -1 'Which lane runs first, p1-01 or p1-02?' >>"$LEAD"
 out=$(CLAUDE_CODE_SESSION_ID=s1 python3 "$SCRIPTS/route_state.py" --budget w4b --estimate 50 --groups 9)
 grep -q "Tell the user this figure" <<<"$out" && ok "--budget: an answer to another question does not approve the figure" ||
 	bad "--budget took an unrelated answer: $out"
-auq -1 >>"$LEAD"
+auq -1 'Wave w5: ≈50M for 9 exec- agents — go ahead?' >>"$LEAD" # a non-ASCII sign before the figure
 out=$(CLAUDE_CODE_SESSION_ID=s1 python3 "$SCRIPTS/route_state.py" --budget w5 --estimate 50 --groups 9)
 grep -q "answered your question at .*earlier in this turn" <<<"$out" && ok "--budget after an answer in the turn says so" ||
 	bad "--budget after an answer: $out"
@@ -1004,6 +1122,12 @@ grep -q 'about 2 commits fit under 200k' <<<"$out" && grep -q '9 tasks need at l
 out=$(CLAUDE_CODE_SESSION_ID=g1 python3 "$SCRIPTS/route_state.py" --budget wg2 --estimate 5 --groups 6 --tasks 9 2>&1)
 grep -q 'about 2 commits fit' <<<"$out" && ! grep -q 'need at least' <<<"$out" &&
 	ok "--budget with enough groups only prints the fit" || bad "--budget fit, enough: $out"
+# the fit reads task groups only: a scan of every hook session per transcript took 54 s at 300
+out=$(python3 -c 'import sys; sys.path.insert(0, sys.argv[1]); import usage_report, route_state
+def read(*a): raise SystemExit("sdk sessions read")
+usage_report.sdk_sessions = read
+print(route_state.measured_fit("g1")[1])' "$SCRIPTS" 2>&1)
+[ "$out" = 2 ] && ok "--budget's fit never reads the hook sessions" || bad "--budget fit, sdk sessions: $out"
 rm "$HOME/.claude/dsp-routes/g1.json"
 
 # --- scope_check.py --waves: a file two plans of one wave change at once, unless one waits for the
@@ -1282,6 +1406,65 @@ for c in "{ echo \\\"sha=\$(git rev-parse HEAD) dirty=\$(git status --porcelain 
 	"cp /tmp/gate-final.txt $P/lanes/p1-01-gate-neutral.log" "tail -3 $GL; rg exit= $GL; sed -n 1p $GL"; do
 	hook silent "$(leadbash s1 "$c")"
 done
+leadcmd() { jq -nc --arg c "$1" '{hook_event_name:"PreToolUse",session_id:"s1",cwd:"/tmp",tool_name:"Bash",tool_input:{command:$c}}'; }
+# a claim spelled into another file in the same command, or a perl flag with an `i` in it, writes no
+# log; Python that names the log in the text it writes to the handoff writes none either
+RECIPE="{ echo \"sha=\$(git rev-parse HEAD) dirty=\$(git status --porcelain --untracked-files=no | grep -c .)\"; make check; echo \"exit=\$?\"; } > $GL 2>&1"
+for c in "$RECIPE; printf 'Gate: %s (exit=0)\n' $GL > $P/lanes/p1-01-checkpoint.md" \
+	"$RECIPE; tail -1 $GL | grep -q exit=0 && echo 'gate green (exit=0)'" \
+	"perl -Mstrict -ne 'print if /exit=/' $GL" \
+	"python3 - <<'EOF'
+log = \"$GL\"
+last = open(log).read().splitlines()[-1]
+open(\".plan/HANDOFF.md\", \"a\").write(f\"- gate: {log} ends {last} (exit=0 expected)\\n\")
+EOF" \
+	"python3 -c \"import pathlib; h=pathlib.Path('.plan/HANDOFF.md'); h.write_text(h.read_text() + '- gate: ' + '$GL' + ' exit=0')\""; do
+	hook silent "$(leadcmd "$c")"
+done
+# ...while a claim a loop or an `if` prints into the log is still held, and a log a Python write
+# opens through a pathlib receiver
+for c in "for f in a; do echo exit=0; done > $GL" "if true; then echo exit=0; fi >> $GL" \
+	"python3 -c \"import pathlib; pathlib.Path('$GL').open('a').write('exit=0')\""; do
+	hook 'deny:a gate log holds only what the gate printed' "$(leadcmd "$c")"
+done
+# the hold names the computed dirty count its own remedy needs (a literal `dirty=0` is held)
+hook 'deny:dirty=\$\(git status --porcelain' "$(leadcmd "sed -i s/1/0/ $GL")"
+# reads on the hosted repository are no actions: a GET with fields, a graphql query, a list whose
+# label is a verb; a mutation still asks
+for c in "gh api -X GET search/issues -f q='repo:o/r is:pr is:open'" \
+	"gh api graphql -f query='{ viewer { login } }'" "gh issue list --label delete --state open"; do
+	hook silent "$(leadcmd "$c")"
+done
+hook 'ask:gh api graphql' "$(leadcmd "gh api graphql -f query='mutation { closeIssue(input:{issueId:\"x\"}) { clientMutationId } }'")"
+# a commit message that mentions a gh action, next to a command the reader cannot follow or a script
+# it runs, runs no gh
+mkdir -p "$T/msg/scripts" && printf '#!/bin/bash\nexit 0\n' >"$T/msg/scripts/check.sh" && chmod +x "$T/msg/scripts/check.sh"
+for c in "\$PY -m pytest -q && git commit -qm \"docs: gh release create needs a tag\"" \
+	"\"\$(git rev-parse --show-toplevel)\"/scripts/test.sh && git commit -qF - <<'EOF'
+fix(release): stop gh pr merge before checks
+EOF" \
+	"cd $T/msg && ./scripts/check.sh && git commit -qam \"ci: check.sh blocks gh pr merge on red\""; do
+	hook silent "$(leadcmd "$c")"
+done
+hook 'ask:gh pr merge' "$(leadcmd "G=gh; \$G pr merge 5")"
+# ...but a name set more than once, in a loop or from a command's output is read from the whole
+# text, and a computed graphql query may be a mutation
+for c in "X=\$(echo gh); \$X pr merge 5" "if true; then G=gh; else G=echo; fi; \$G pr merge 5" \
+	"for G in gh; do \$G pr merge 5; done" "gh api graphql -f query=\"\$Q\""; do
+	hook 'ask:acts on the hosted repository' "$(leadcmd "$c")"
+done
+# a write helper's file argument is read whole, nested calls and all; PHP's fopen and an os.open
+# with write flags are opens too
+for c in "node -e \"require('fs').writeFileSync(require('path').resolve('$GL'), 'exit=0')\"" \
+	"php -r \"fwrite(fopen('$GL','w'), 'exit=0');\"" \
+	"python3 -c \"import os; os.write(os.open('$GL', os.O_WRONLY), b'exit=0')\""; do
+	hook 'deny:a gate log holds only what the gate printed' "$(leadcmd "$c")"
+done
+# a line of many calls is read in linear time
+start=$SECONDS
+out=$(leadcmd "python3 -c \"# gate exit=0 $(printf 'open(%.0s' {1..20000})\"" | timeout 20 python3 "$RS" --hook 2>&1)
+[ $((SECONDS - start)) -lt 5 ] && ok "20,000 calls on one interpreter line are read in $((SECONDS - start)) s" ||
+	bad "20,000 calls on one line: $((SECONDS - start)) s $out"
 for long in "$(printf 'gh pr x %.0s' {1..1000})" "$(printf 'git x push y %.0s' {1..1000})"; do
 	start=$SECONDS
 	out=$(leadbash s1 "$long" | timeout 20 python3 "$RS" --hook 2>&1)
@@ -1588,7 +1771,15 @@ p=$RD/verify/WRA-1.prompt.md
 	bad "decision_check --verifier --from: $out"
 hook silent "$(dispatch verify-WRA-1 "$(cat "$p")")"
 hook "deny:verifier's prompt is the file" "$(dispatch verify-WRA-1 "$(cat "$p") Wrath is usually right.")"
-rm -r "$RD"
+# ...and so does one from a sliced run's slice and from a review round's own folder
+mkdir -p "$RD/s2" "$P/decisions/phase1/r2"
+sed 's/a crafted tag crashes the parser/the loop is quadratic/' "$RD/wrath.md" >"$RD/s2/wrath.md"
+python3 "$SCRIPTS/decision_check.py" "$RD/s2" --verifier WRA-1 --sha abc123 --from "$RD/s2/wrath.md" >/dev/null
+hook silent "$(dispatch verify-WRA-1 "$(cat "$RD/s2/verify/WRA-1.prompt.md")")"
+printf '# Review round 2 findings\n\n- **R1** — the export drops the last row when the file ends without a newline.\n' >"$P/decisions/phase1/r2/00-seams.md"
+python3 "$SCRIPTS/decision_check.py" "$P/decisions/phase1/r2" --verifier R1 --sha abc123 >/dev/null
+hook silent "$(dispatch verify-R1 "$(cat "$P/decisions/phase1/r2/verify/R1.prompt.md")")"
+rm -r "$RD" "$P/decisions/phase1/r2"
 rm -r "$P/decisions/phase1/00-index.md" "$P/decisions/phase1/00-seams.md" "$P/decisions/phase1/verify"
 # a finding opens with its id — in a numbered list or a heading too — and a wrapped line that
 # begins with another finding's id stays in its finding
@@ -1749,7 +1940,7 @@ done)
 
 # --- a script's --help is its whole interface: shown only its docstring's first line, a lead read
 # ~20k characters of the scripts' source to learn their options (F84)
-for s in route_state.py criteria_check.py plan_lint.py scope_check.py test_check.py usage_report.py apply_markers.py decision_check.py; do
+for s in route_state.py push_guard.py criteria_check.py plan_lint.py scope_check.py test_check.py usage_report.py apply_markers.py decision_check.py; do
 	last=$(python3 -c 'import ast, sys; print(ast.get_docstring(ast.parse(open(sys.argv[1]).read())).strip().splitlines()[-1].strip())' "$SCRIPTS/$s")
 	python3 "$SCRIPTS/$s" --help 2>&1 | grep -qF -- "$last" && ok "$s --help prints its whole docstring" ||
 		bad "$s --help lacks its docstring's last line: $last"
@@ -2018,6 +2209,60 @@ code=$?
 	bad "test_check, read-only acceptance tests (exit $code): $out"
 out=$(python3 "$SCRIPTS/test_check.py" "$TA/plans" --diff HEAD~3..HEAD~1 --repo "$TA/repo")
 [ $? = 0 ] && ok "test_check: an acceptance test written and then added to passes" || bad "test_check, acceptance additions: $out"
+
+# --- F41: a lane's commits past its merged SHA that main lacks; a lane the integrator rebased
+# and merged has none, though its tip is not the checkpoint's SHA
+TF=$T/f41
+git init -q -b main "$TF/r"
+git -C "$TF/r" "${G[@]}" commit -q --allow-empty -m base
+git -C "$TF/r" worktree add -q -b p1-01-a "$TF/wt"
+echo x >"$TF/wt/x" && git -C "$TF/wt" add x && git -C "$TF/wt" "${G[@]}" commit -q -m lane
+c1=$(git -C "$TF/wt" rev-parse HEAD)
+echo y >"$TF/r/y" && git -C "$TF/r" add y && git -C "$TF/r" "${G[@]}" commit -q -m main2
+git -C "$TF/wt" "${G[@]}" rebase -q main && git -C "$TF/r" merge -q --ff-only p1-01-a
+mkdir -p "$TF/plan/lanes" && printf 'Final SHA: %s\n' "$c1" >"$TF/plan/lanes/p1-01-a-checkpoint.md"
+touch -d '-1 hour' "$TF/plan/lanes/p1-01-a-checkpoint.md"
+out=$(python3 "$RS" "$TF/plan" --phase 1 --repo "$TF/r" --all 2>&1)
+grep -q 'p1-01-a .*merged' <<<"$out" && ! grep -q F41 <<<"$out" &&
+	ok "report: a lane rebased and merged has not moved past its SHA" || bad "report, rebased lane: $out"
+echo z >"$TF/wt/z" && git -C "$TF/wt" add z && git -C "$TF/wt" "${G[@]}" commit -q -m late
+out=$(python3 "$RS" "$TF/plan" --phase 1 --repo "$TF/r" --all 2>&1)
+grep -q 'lane moved past its merged SHA *p1-01-a (1 commits, F41)' <<<"$out" &&
+	ok "report: a lane commit after its merge, missing from main, is flagged" || bad "report, late lane commit: $out"
+# a red CI-harness run is reported like any gate log, though it is no full gate
+printf 'sha=%s dirty=0\nharness=pg\n3 failed\nexit=1\n' "$c1" >"$TF/plan/lanes/p1-01-a-gate-pg.log"
+out=$(python3 "$RS" "$TF/plan" --phase 1 --repo "$TF/r" --all 2>&1)
+grep -q 'gates .* 1 red' <<<"$out" && grep -q 'RED harness=pg exit=1 *lanes/p1-01-a-gate-pg.log' <<<"$out" &&
+	ok "report: a red CI-harness gate log is flagged" || bad "report, red harness log: $out"
+
+# a rung-S route activated without --repo: its marker sits in the planning dir's repository, and
+# its index rows are the decisions — no D file is pending (templates.md §1)
+git init -q -b main "$T/sr" && git -C "$T/sr" "${G[@]}" commit -q --allow-empty -m one
+mkdir -p "$T/sr/.plan/decisions/phase1" && printf '| D1 | a |\n| D2 | b |\n' >"$T/sr/.plan/decisions/phase1/00-index.md"
+CLAUDE_CODE_SESSION_ID=rs1 python3 "$RS" "$T/sr/.plan" --phase 1 --activate --rung S >/dev/null
+out=$(echo '{"hook_event_name":"PostToolUse","session_id":"rs1","cwd":"/tmp","tool_name":"Read"}' | python3 "$RS" --hook 2>&1)
+grep -q 'decisions  0 D files (2 in the index)' <<<"$out" && ! grep -q pending <<<"$out" &&
+	ok "report: a rung-S route without --repo lists no D file as pending" || bad "report, rung S without --repo: $out"
+rm -f "$HOME/.claude/dsp-routes/rs1.json"
+
+# the hook's delta: a lane line that changed is no cleared flag
+TC=$T/cl
+git init -q -b main "$TC/r" && git -C "$TC/r" "${G[@]}" commit -q --allow-empty -m base
+git -C "$TC/r" worktree add -q -b p1-01-a "$TC/wt" && git -C "$TC/wt" "${G[@]}" commit -q --allow-empty -m l1
+mkdir -p "$TC/r/.plan/lanes"
+printf 'Final SHA: %s\n' "$(git -C "$TC/wt" rev-parse HEAD)" >"$TC/r/.plan/lanes/p1-01-a-checkpoint.md"
+touch -d '-1 hour' "$TC/r/.plan/lanes/p1-01-a-checkpoint.md"
+CLAUDE_CODE_SESSION_ID=rc1 python3 "$RS" "$TC/r/.plan" --phase 1 --repo "$TC/r" --activate >/dev/null
+cev='{"hook_event_name":"PostToolUse","session_id":"rc1","cwd":"/tmp","tool_name":"Read"}'
+echo "$cev" | python3 "$RS" --hook >/dev/null
+git -C "$TC/wt" "${G[@]}" commit -q --allow-empty -m l2
+printf 'Final SHA: %s\n' "$(git -C "$TC/wt" rev-parse HEAD)" >"$TC/r/.plan/lanes/p1-01-a-checkpoint.md"
+touch -d '-1 hour' "$TC/r/.plan/lanes/p1-01-a-checkpoint.md"
+rm -f "$HOME/.claude/dsp-routes/rc1.checked"
+out=$(echo "$cev" | python3 "$RS" --hook 2>&1)
+grep -q 'changed between' <<<"$out" && ! grep -q 'flags cleared' <<<"$out" &&
+	ok "hook delta: a changed lane line is no cleared flag" || bad "hook delta, lane line: $out"
+rm -f "$HOME/.claude/dsp-routes/rc1.json"
 
 [ "$FAIL" = 0 ] && echo "ALL PASS" || echo "FAILURES"
 exit "$FAIL"

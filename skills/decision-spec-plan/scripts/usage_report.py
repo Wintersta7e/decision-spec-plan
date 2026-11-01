@@ -65,6 +65,20 @@ def rates(model, prompt):
     return OPUS
 
 
+def human(record):
+    """A prompt the user typed or queued, or their answer to AskUserQuestion."""
+    if record.get("isMeta") or record.get("isCompactSummary"):
+        return False
+    result = record.get("toolUseResult")
+    if isinstance(result, dict) and "answers" in result:
+        return True
+    attachment = record.get("attachment")
+    origin = record.get("origin") or (
+        attachment.get("origin") if isinstance(attachment, dict) else None
+    )
+    return isinstance(origin, dict) and origin.get("kind") == "human"
+
+
 def scan(path, since, until=None):
     """One transcript: weighted units, per-turn context sizes, model, first and last timestamp."""
     seen = set()
@@ -73,6 +87,7 @@ def scan(path, since, until=None):
     model = None
     efforts = []
     first = last = previous = None
+    asked = False  # the user prompted or answered since the last request
     with open(path, encoding="utf-8", errors="replace") as fh:
         for line in fh:
             try:
@@ -82,6 +97,7 @@ def scan(path, since, until=None):
             stamp = record.get("timestamp")
             message = record.get("message")
             if record.get("type") != "assistant" or not isinstance(message, dict):
+                asked = asked or human(record)
                 continue
             usage = message.get("usage")
             key = (message.get("id"), record.get("requestId"))
@@ -91,6 +107,7 @@ def scan(path, since, until=None):
             now, before = epoch(stamp), epoch(previous)
             gap = now - before if now is not None and before is not None else 0
             previous = stamp or previous
+            waited, asked = asked, False
             if stamp and ((since and stamp < since) or (until and stamp > until)):
                 continue
             model = message.get("model") or model
@@ -113,8 +130,9 @@ def scan(path, since, until=None):
             units += writes + factor * (
                 WEIGHTS["input"] * fresh + read_weight * read + WEIGHTS["output"] * out
             )
-            # past the cache's life the whole prompt is written again: that is the wait's cost
-            if gap >= CACHE_LIFE and write_all > read:
+            # past the cache's life the whole prompt is written again: when the user ended the
+            # wait, that is the wait's cost; after a task group's return it is the wave's (F93)
+            if waited and gap >= CACHE_LIFE and write_all > read:
                 idle += writes
             contexts.append(fresh + write_all + read)
     return {
@@ -249,6 +267,15 @@ def sdk_sessions(project, lead_path, since, until):
 def route_cost(lead_path, since, until=None):
     """(lead, agents, sdk sessions) of a lead session in [since, until] — each a scan() row."""
     lead = scan(lead_path, since, until)
+    agents = subagents(lead_path, since, until)
+    # Hook sessions go on after the round: without --until, up to its last record.
+    end = until or max((r["last"] for r in [lead, *agents] if r["last"]), default=None)
+    sdk = sdk_sessions(lead_path.parent, lead_path, since or lead["first"], end)
+    return lead, agents, sdk
+
+
+def subagents(lead_path, since, until=None):
+    """The scan() rows of a session's subagents, each with its label, name and path."""
     agents = []
     floor = epoch(since)
     for path in sorted(
@@ -264,10 +291,7 @@ def route_cost(lead_path, since, until=None):
             row["name"] = str(meta.get("name") or meta.get("agentType") or "")
             row["path"] = path
             agents.append(row)
-    # Hook sessions go on after the round: without --until, up to its last record.
-    end = until or max((r["last"] for r in [lead, *agents] if r["last"]), default=None)
-    sdk = sdk_sessions(lead_path.parent, lead_path, since or lead["first"], end)
-    return lead, agents, sdk
+    return agents
 
 
 def describe(row):

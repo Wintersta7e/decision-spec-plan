@@ -39,7 +39,7 @@ runs that the local full gate does not; push_guard.py then also wants, per pushe
 log whose first 20 lines hold `harness=<label>` (F90).
 
 --budget records a Stage 5 wave's estimate in M units (costs.md) and the `exec-` agents it covers
-in the marker (execution.md). Registered for PreToolUse (Agent|Bash), the hook then holds the
+in the marker (execution.md). As a PreToolUse hook (Registration, below), it then holds the
 lead's dispatch of an `exec-` agent until the phase has a budget recorded in this session and the
 user has answered after it here — or answered an AskUserQuestion earlier in the turn that records
 it, so ask, then record, and the one answer is enough (F93) — and again once the dispatches since it pass 125% of its agents or the spend since it 125% of
@@ -133,16 +133,23 @@ def bash_commands(command, cwd=None, depth=0):
     read as bash reads it (shell_cmd.py): regexes over the text missed wrapped and quoted forms and
     backtracked for 36 s on a long line. A script file it runs is read in turn, three deep. None
     when a part cannot be read — stdin or an unreadable script fed to a shell, a computed `bash -c`
-    or `eval`, a computed command name or git subcommand — or the reader fails on it (nesting too
-    deep): the caller then reads the words (text_commands)."""
+    or `eval`, a computed git subcommand — or the reader fails on it (nesting too deep): the
+    caller then reads the words (text_commands). A computed command name the command's own
+    assignments do not fill (`$PY -m pytest`) has only its own words read so: read with the whole
+    text, a commit message naming `gh release create` beside it was held."""
     try:
         found = shell_cmd.events(command)
-        named = [os.path.basename(w.text) for w in shell_cmd.words(command)]
+        # the words a script is named by: those of the commands run, and the files written
+        named = [w.text for k, c in found if k == "cmd" for w in c.words]
+        named += [c.script.text for k, c in found if k == "opaque" and c.script]
+        named = [os.path.basename(t) for t in named]
+        named += [os.path.basename(t.text) for t, _ in shell_cmd.redirects(command)]
     except Exception:  # noqa: BLE001 — unreadable text falls back to the text check
         return None
     out = []
     # each shell's directory, where a script path is read from: None after a `cd` to a computed path
     dirs = [cwd]
+    env = {}  # the command's own `NAME=value` assignments (`G=gh; $G pr merge 5`)
     for kind, c in found:
         if kind == "open":
             dirs.append(dirs[-1])
@@ -155,6 +162,22 @@ def bash_commands(command, cwd=None, depth=0):
             script = c.script
             text = shell_cmd.read_script(script, here) if depth < 3 else None
         else:
+            if not c.words:
+                env |= {n: x for n, v in c.assigns if (x := v.expand(env)) is not None}
+            elif not c.words[0].static:
+                # a variable the command sets once is read as that value; one it sets more
+                # than once, in a loop or by `read` sends the whole text to the word read
+                refs = re.findall(r"\$\{?([A-Za-z_]\w*)", c.words[0].text)
+                sets = sum(
+                    len(re.findall(rf"(?<![\w${{]){v}(?!\w)", command)) for v in refs
+                )
+                name = c.words[0].expand(env) if sets == 1 else None
+                if name is None and sets:
+                    return None
+                if name is None:
+                    out += text_commands(" ".join(w.text for w in c.words))
+                    continue
+                c = shell_cmd.Cmd(c.assigns, [shell_cmd.literal(name), *c.words[1:]])
             script = c.words[0] if c.words and depth < 3 else None
             text = shell_cmd.run_script(script, here)
         if kind == "opaque" or text is not None:
@@ -166,8 +189,6 @@ def bash_commands(command, cwd=None, depth=0):
                 # written by the command before it runs: the words it writes count too
                 out += text_commands(command)
             continue
-        if c.words and not c.words[0].static:
-            return None
         if c.name == "cd":
             to = next(
                 (w for w in c.words[1:] if w.text not in ("-L", "-P", "--")), None
@@ -214,11 +235,11 @@ def text_commands(command):
         if name in ("git", "gh"):
             end = min(len(names), i + 41)
             end = next((k for k in range(i + 1, end) if names[k] in ("git", "gh")), end)
-            out.append(
-                shell_cmd.Cmd(
-                    [], [shell_cmd.literal(t) for t in [name, *texts[i + 1 : end]]]
-                )
+            cmd = shell_cmd.Cmd(
+                [], [shell_cmd.literal(t) for t in [name, *texts[i + 1 : end]]]
             )
+            cmd.loose = True  # words in no known order: outward_cmd reads them loosely
+            out.append(cmd)
     return out
 
 
@@ -245,23 +266,42 @@ def outward_cmd(cmd):
     """Whether cmd, a command from a `gh` or `git` word on, is an outward action."""
     if cmd.name == "gh":
         rest = cmd.argv[1:]
-        last = {w: i for i, w in enumerate(rest)}
-        if "--delete-branch" in last or any(
-            w in GH_ACTIONS and any(last.get(v, -1) > i for v in GH_ACTIONS[w])
-            for i, w in enumerate(rest)
-        ):
+        if "--delete-branch" in rest:
             return True
+        # the noun and the verb: the first two words that are no option or `-R`'s value (`gh -R
+        # o/r pr merge`, `gh pr -R o/r close`); a later word is a value (`--label delete`)
+        verb, skip = [], False
+        for w in rest:
+            if not (skip or w.startswith("-")):
+                verb.append(w)
+            skip = w in ("-R", "--repo")
+        if getattr(cmd, "loose", False):
+            # words read from text the reader could not follow: a noun with its verb anywhere after
+            last = {w: i for i, w in enumerate(rest)}
+            if any(
+                w in GH_ACTIONS and any(last.get(v, -1) > i for v in GH_ACTIONS[w])
+                for i, w in enumerate(rest)
+            ):
+                return True
+        elif verb[:1] != ["api"]:
+            return len(verb) > 1 and verb[1] in GH_ACTIONS.get(verb[0], ())
         if "api" not in rest:
             return False
-        # `gh api` that writes: a method other than GET, or a field (which makes it a POST)
+        # `gh api` that writes: a method other than GET, else a field (which makes it a POST), but
+        # a graphql query only when it is a mutation or read from a file
         after = rest[rest.index("api") + 1 :] + [""]
+        method, fields = None, []
         for i, w in enumerate(after[:-1]):
             if m := re.fullmatch(r"(?:-X|--method)=?(.*)", w):
-                if (m[1] or after[i + 1]).upper() in ("POST", "PATCH", "PUT", "DELETE"):
-                    return True
+                method = (m[1] or after[i + 1]).upper()
             elif re.match(r"-[fF]|--(?:field|raw-field|input)\b", w):
-                return True
-        return False
+                fields.append(w + " " + after[i + 1])
+        if method:
+            return method in ("POST", "PATCH", "PUT", "DELETE")
+        if verb[1:2] == ["graphql"]:
+            # a computed query (`query="$Q"`) may be a mutation too
+            return any(re.search(r"\bmutation\b|=@|^--input|[$`]", f) for f in fields)
+        return bool(fields)
     # remote refs deleted by `git push`: --delete, -d (alone or grouped), --prune, --mirror, or a
     # refspec with no source (`:<ref>`, `+:<ref>`)
     g = shell_cmd.git_args(cmd)
@@ -394,7 +434,8 @@ def parser():
     ap.add_argument(
         "--activate",
         action="store_true",
-        help=f"also write these arguments to <git-common-dir>/{MARKER} and register this session",
+        help="also write these arguments to <git-common-dir>/dsp-route-<id>.json (one per "
+        "planning dir) and register this session",
     )
     return ap
 
@@ -484,22 +525,36 @@ def activate(a, main):
     if not old and load_json(legacy).get("planning_dir") == planning:
         old = load_json(legacy)
         legacy.unlink()
-    args = [planning, "--phase", a.phase, "--main", main]
-    if a.repo:
-        args += ["--repo", str(pathlib.Path(a.repo).resolve())]
-    if a.sections:
-        args += ["--sections", a.sections]
-    if a.spec_dir:
-        args += ["--spec-dir", str(pathlib.Path(a.spec_dir).resolve())]
+    # A re-activation that leaves out the route's repo, main branch, spec dir or (in the same
+    # phase) sections keeps them: execution.md's `--activate --sins on` names none of them.
+    prev = parser().parse_args(old["args"]) if old.get("args") else None
+    same_phase = prev is not None and prev.phase == a.phase
+    repo_arg = a.repo or (prev and prev.repo)
+    sections = a.sections or (prev.sections if same_phase else None)
+    spec_dir = a.spec_dir or (prev and prev.spec_dir)
+    args = [
+        planning,
+        "--phase",
+        a.phase,
+        "--main",
+        a.main or (prev and prev.main) or main,
+    ]
+    if repo_arg:
+        args += ["--repo", str(pathlib.Path(repo_arg).resolve())]
+    if sections:
+        args += ["--sections", sections]
+    if spec_dir:
+        args += ["--spec-dir", str(pathlib.Path(spec_dir).resolve())]
     marker = {"args": args, "planning_dir": planning, "activated": time.time()}
     # A re-activation keeps the phase's rung (execution.md's `--activate --sins on` names none),
     # the waves' recorded budgets (--budget) and the CI harness, a fact about the repository's CI
     # rather than the round.
-    same_phase = old.get("args") and parser().parse_args(old["args"]).phase == a.phase
     if rung := a.rung or (old.get("rung") if same_phase else None):
         marker["rung"] = rung
     if budgets := old.get("budgets"):
         marker["budgets"] = budgets
+    if asks := old.get("asks"):  # the answer tally spans the route (F101)
+        marker["asks"] = asks
     harness = a.ci_harness or old.get("ci_harness")
     if harness and harness != "none":
         marker["ci_harness"] = harness
@@ -543,7 +598,7 @@ def activate(a, main):
             "(references/sins/lead.md; `--sins off` clears it)"
         )
     unanswered = "ci_harness" not in marker and "ci_none" not in marker
-    if foreign := unanswered and a.repo and foreign_runners(a.repo):
+    if foreign := unanswered and repo_arg and foreign_runners(repo_arg):
         print(
             f"CI runs on {', '.join(foreign)}, which this host is not: the local full gate "
             "never runs what it tests. Activate again with --ci-harness <label> (each push then "
@@ -601,7 +656,7 @@ def measured_fit(session):
     agents = []
     for path in lead.parent.glob("*.jsonl"):
         if path.stat().st_mtime >= floor.timestamp():
-            agents += usage_report.route_cost(path, since)[1]
+            agents += usage_report.subagents(path, since)
     lines = usage_report.group_lines(agents, since)
     m = lines and re.search(r"about (\d+) commits? fits? under", lines[-1])
     return (lines[-1], int(m[1])) if m else (None, None)
@@ -713,7 +768,10 @@ def answered_this_turn(session, estimate):
                 if message.get("stop_reason") == "end_turn":
                     answered = None
             elif isinstance(result, dict) and "answers" in result:
-                figures = re.findall(r"(\d+(?:\.\d+)?)\s*M\b", json.dumps(result))
+                # unescaped: `≈5M` dumped as `≈5M` read as 22485M
+                figures = re.findall(
+                    r"(\d+(?:\.\d+)?)\s*M\b", json.dumps(result, ensure_ascii=False)
+                )
                 if any(abs(float(f) - estimate) < 1e-9 for f in figures):
                     answered = r.get("timestamp")
     return answered
@@ -754,16 +812,9 @@ def tool_uses(record, kind="tool_use"):
 
 def human(record):
     """A prompt the user typed or queued, or their answer to AskUserQuestion."""
-    if record.get("isMeta") or record.get("isCompactSummary"):
-        return False
-    result = record.get("toolUseResult")
-    if isinstance(result, dict) and "answers" in result:
-        return True
-    attachment = record.get("attachment")
-    origin = record.get("origin") or (
-        attachment.get("origin") if isinstance(attachment, dict) else None
-    )
-    return isinstance(origin, dict) and origin.get("kind") == "human"
+    import usage_report
+
+    return usage_report.human(record)
 
 
 def leads(event, marker):
@@ -865,29 +916,80 @@ GATE_LOG = re.compile(r"(?:^|/)lanes/(?:[^/\s]+/)*[^/\s]*gate[^/\s]*\.log$")
 CLAIM = re.compile(r"\b(?:exit=\d+|dirty=\d+|sha=[0-9a-f]{7,40})\b")
 EDIT_TOOLS = ("Write", "Edit", "MultiEdit", "NotebookEdit")
 INTERPRETERS = re.compile(r"python[\d.]*|node|perl|ruby|php|deno|bun")
-# a file write in interpreter code: open() in a write mode (Python, Perl), a write helper
+# a file write in interpreter code: open() (in a write mode: Python, Perl), a write method, a
+# write helper
 WRITE_CALL = re.compile(
-    r"open\([^)\n]*['\"](?:[wax]|r\+|>>?|\+<)[+bt]*['\"]|\.write_(?:text|bytes)\("
-    r"|(?:write|append)File(?:Sync)?\(|createWriteStream\(|File\.write\(|file_put_contents\("
+    r"\b(?:f|sys)?open\(|\bopenSync\(|\.write_(?:text|bytes)\("
+    r"|(?:(?:write|append)File(?:Sync)?|createWriteStream|File\.write|file_put_contents)\("
+)
+# an open mode that writes: a quoted one (Python, Perl, PHP, Node) or an O_* flag (os.open, sysopen)
+WRITE_MODE = re.compile(
+    r"['\"](?:[wax]|r\+|>>?|\+<)[+bt]*['\"]|\bO_(?:WRONLY|RDWR|APPEND|CREAT|TRUNC)\b"
 )
 LOG_LITERAL = re.compile(r"['\"]([^'\"\s]*gate[^'\"\s]*\.log)['\"]")
 
 
+def call_args(line):
+    """{index of each `(`: (end of its first argument, its closing `)`)} in line, quotes skipped
+    and brackets balanced, in one pass (a scan per call was quadratic on a long line); an unclosed
+    one runs to the end of the line."""
+    out, stack, quote, j = {}, [], None, 0
+    while j < len(line):
+        ch = line[j]
+        if ch == "\\":
+            j += 1
+        elif quote:
+            quote = None if ch == quote else quote
+        elif ch in "'\"`":
+            quote = ch
+        elif ch in "([{":
+            stack.append([j, ch, None])
+        elif ch in ")]}" and stack:
+            start, kind, comma = stack.pop()
+            if kind == "(":
+                out[start] = (j if comma is None else comma), j
+        elif ch == "," and stack and stack[-1][2] is None:
+            stack[-1][2] = j
+        j += 1
+    for start, kind, comma in stack:
+        if kind == "(":
+            out[start] = (len(line) if comma is None else comma), len(line)
+    return out
+
+
 def code_writes_log(code, is_log):
-    """Interpreter code with a write call naming a gate log on one line, by its literal path or
-    by a name a line bound to one (`p='lanes/x-gate.log'` … `open(p,'w')`). A log quoted in the
-    text being written elsewhere is not one: leads edit handoffs that cite gate logs (live)."""
+    """Interpreter code with a write call naming a gate log as the file it writes, by its literal
+    path or by a name a line bound to one (`p='lanes/x-gate.log'` … `open(p,'w')`): the line up
+    to the call's file — open()'s arguments, the receiver of `.write_text(`, a helper's first
+    argument, nested calls in them read whole (`path.join(d, 'x-gate.log')`). A log quoted in the
+    text being written is not one: leads edit handoffs that cite gate logs (live)."""
     names, lines = set(), code.splitlines()
     for line in lines:
         bound = re.match(r"\s*(?:my\s+|const\s+|let\s+|var\s+)?\$?(\w+)\s*=(?!=)", line)
         if bound and any(is_log(m[1]) for m in LOG_LITERAL.finditer(line)):
             names.add(bound[1])
     for line in lines:
-        if WRITE_CALL.search(line) and (
-            any(is_log(m[1]) for m in LOG_LITERAL.finditer(line))
-            or any(re.search(rf"(?<!\w){re.escape(n)}(?!\w)", line) for n in names)
-        ):
-            return True
+        # where the line first names a log: a head holds one when it reaches that far
+        marks = [m.end() for m in LOG_LITERAL.finditer(line) if is_log(m[1])]
+        for n in names:
+            if m := re.search(rf"(?<!\w){re.escape(n)}(?!\w)", line):
+                marks.append(m.end())
+        if not marks:
+            continue
+        mark, args = min(marks), call_args(line)
+        for call in WRITE_CALL.finditer(line):
+            # a call inside what the scan took for a quote: the whole line
+            first, end = args.get(call.end() - 1, (len(line), len(line)))
+            if call[0].startswith("."):
+                head = call.start()
+            elif call[0].endswith(("open(", "openSync(")):
+                if not WRITE_MODE.search(line, call.end(), end):
+                    continue
+                head = end
+            else:
+                head = first
+            if mark <= head:
+                return True
     return False
 
 
@@ -932,33 +1034,44 @@ def gate_log_edit(event):
     def is_log(t):
         return any(GATE_LOG.search(os.path.join(d, t)) for d in dirs)
 
-    spelled, into = [], [t for t, _ in shell_cmd.redirects(command) if is_log(text(t))]
     for c in found:
         args = [text(w) for w in c.words[1:]]
-        if c.name in ("echo", "printf") and args:
-            spelled += [shell_cmd._ansi_c(a) for a in args]
-            if c.name == "printf":
-                spelled.append(shell_cmd._ansi_c(printf_text(args)))
         # the code is in the command: a `-c` argument or a heredoc body
         m = INTERPRETERS.fullmatch(c.name) and CLAIM.search(command)
         if m and code_writes_log(command, is_log):
             return f"`{c.name}` code writing a gate log, `{m[0]}` in it"
-        logs = [a for a in args if is_log(a)]
-        if not logs:
-            continue
-        if c.name == "tee":
-            into += logs
-        flags = [a for a in args if a.startswith("-")]
-        if c.name in ("sed", "perl") and any(
-            re.fullmatch(r"-[a-zA-Z]*i\S*|--in-place\S*", f) for f in flags
+        # `-i` alone or grouped (`-pi`), not inside a switch that takes the rest of its word
+        # (`perl -Mstrict`)
+        inplace = (
+            r"-[a-zA-Z]*i\S*"
+            if c.name == "sed"
+            else r"-[a-cf-ln-wyzABGHJ-LN-UW-Z0-9]*i\S*"
+        )
+        if (
+            c.name in ("sed", "perl")
+            and any(is_log(a) for a in args)
+            and any(re.fullmatch(rf"{inplace}|--in-place\S*", a) for a in args)
         ):
             return f"`{c.name}` editing it in place"
-    if not into:
-        return None
-    if "<<" in command:
-        spelled.append(command)  # a heredoc's text is in the command, not in a word
-    if m := CLAIM.search(" ".join(spelled)):
-        return f"`{m[0]}` spelled out into it"
+    # what a list element prints counts only when that element writes into a log: a checkpoint
+    # line or a status echo after the gate run is no claim in it
+    for part in shell_cmd.elements(command):
+        into = [t for t, _ in shell_cmd.redirects(part) if is_log(text(t))]
+        spelled = []
+        for c in (c for k, c in shell_cmd.events(part) if k == "cmd" and c.words):
+            args = [text(w) for w in c.words[1:]]
+            if c.name in ("echo", "printf") and args:
+                spelled += [shell_cmd._ansi_c(a) for a in args]
+                if c.name == "printf":
+                    spelled.append(shell_cmd._ansi_c(printf_text(args)))
+            if c.name == "tee":
+                into += [a for a in args if is_log(a)]
+        if not into:
+            continue
+        if "<<" in part:
+            spelled.append(part)  # a heredoc's text is in the command, not in a word
+        if m := CLAIM.search(" ".join(spelled)):
+            return f"`{m[0]}` spelled out into it"
     return None
 
 
@@ -975,13 +1088,20 @@ def unrouted(event, entry_path):
 
 
 def s_harvester(event, entry):
-    """The lead dispatching a harvester on a rung-S route, where it harvests itself (F87)."""
+    """The lead dispatching a harvester on a rung-S route, where it harvests itself (F87): a
+    harvest named in the dispatch, not a task group or verifier whose work names one (`Fix
+    harvest-date parsing`) or a review of harvested findings."""
     if event.get("tool_name") != "Agent":
         return False
     dispatch = event.get("tool_input") or {}
-    text = f"{dispatch.get('name') or ''} {dispatch.get('description') or ''}"
+    name = str(dispatch.get("name") or "")
+    if name.startswith(("exec-", "verify-")):
+        return False
+    text = f"{name} {dispatch.get('description') or ''}"
     rung = load_json(pathlib.Path(entry["marker"])).get("rung")
-    return rung == "S" and "harvest" in text.lower()
+    return rung == "S" and bool(
+        re.search(r"\bharvest(?:ers?|ing|s)?\b", text, re.IGNORECASE)
+    )
 
 
 def ledger_hold(event, entry):
@@ -996,7 +1116,11 @@ def ledger_hold(event, entry):
     if str(tool_input.get("name") or "").startswith("verify-"):
         prompt = str(tool_input.get("prompt") or "").strip()
         reviews = pathlib.Path(entry["planning_dir"]) / "reviews"
-        files = [*d.glob("verify/*.prompt.md"), *reviews.glob("*/verify/*.prompt.md")]
+        # the phase's, a review round's (`<round>/verify/`), a sins run's or its slice's
+        files = [
+            *d.glob("**/verify/*.prompt.md"),
+            *reviews.glob("**/verify/*.prompt.md"),
+        ]
         written = {p.read_text(errors="replace").strip() for p in files}
         if prompt not in written:
             return (
@@ -1455,7 +1579,11 @@ def emit(name, text):
 
 def unloaded(event):
     """The line for a prompt naming the route in a session whose transcript never loaded it."""
-    if not NAMED.search(event.get("prompt") or ""):
+    prompt = event.get("prompt") or ""
+    # an agent's return is not the user; a path (the skill's repository, `src/dsp/`) names no route
+    if prompt.lstrip().startswith(RETURNS) or not NAMED.search(
+        re.sub(r"\S*/\S*", " ", prompt)
+    ):
         return None
     try:
         text = pathlib.Path(event.get("transcript_path") or "").read_text(
@@ -1559,7 +1687,8 @@ def hook():
             return deny(
                 f"{how}: a gate log holds only what the gate printed — it is the evidence a "
                 "push and a lane return are judged on. Re-run the gate into it "
-                '(`{ echo "sha=$(git rev-parse HEAD) dirty=<n>"; <gate>; echo "exit=$?"; } '
+                '(`{ echo "sha=$(git rev-parse HEAD) dirty=$(git status --porcelain '
+                '--untracked-files=no | grep -c .)"; <gate>; echo "exit=$?"; } '
                 "> <log> 2>&1`), or copy a real run's output in. A gate that cannot pass goes "
                 "back to the lead and the user: escalating is a success, an edited log is not "
                 "(F97)."
@@ -1673,7 +1802,12 @@ def hook():
         before = set(old.splitlines())
         now_lines = body.splitlines()
         new = [ln for ln in now_lines if ln not in before]
-        cleared = sum(1 for ln in before - set(now_lines) if ln.startswith("  "))
+        # a flag is indented two spaces; a lane's or a file's line four
+        cleared = sum(
+            1
+            for ln in before - set(now_lines)
+            if ln.startswith("  ") and not ln.startswith("    ")
+        )
         delta = (
             f"route_state.py (hook) — changed between {since} and "
             f"{time.strftime('%m-%d %H:%M')}:\n"
@@ -1714,27 +1848,26 @@ def lane_checkpoints(lanes, phase):
 
 def gate_logs(lanes, phase):
     """(log, the commit and dirty count of its first `sha=` line within 20 lines, its last `exit=`
-    or None) for each full gate log but another phase's — the lines push_guard.py reads. A log
-    whose first 20 lines name a CI harness ran only that suite: no full gate."""
+    or None, the CI harness its first 20 lines name or None) for each gate log but another
+    phase's — the lines push_guard.py reads. A harness log ran only that suite: no full gate."""
     out = []
     # Line by line: a whole log read at once raised ENOMEM on a large one. Lines end at `\n`
     # only, as push_guard.py reads them: a progress bar's `\r` before `exit=` is no line break.
     for log in sorted(lanes.glob("*-gate*.log")):
         if (m := re.match(r"p(\d+)-", log.name)) and m.group(1) != phase:
             continue
-        first, last, harness = "", None, False
+        first, last, harness = "", None, None
         with log.open(errors="replace", newline="\n") as f:
             for n, ln in enumerate(f):
                 if n < 20 and not first and ln.startswith("sha="):
                     first = ln
-                harness |= n < 20 and ln.startswith("harness=")
+                if n < 20 and not harness and ln.startswith("harness="):
+                    harness = ln[len("harness=") :].strip()
                 if m := re.fullmatch(r"exit=(\d+)\s*", ln):
                     last = m.group(1)
-        if harness:
-            continue
         head = re.fullmatch(r"sha=([0-9a-f]{40}) dirty=(\d+)\s*", first)
         sha, dirty = head.groups() if head else ("", "")
-        out.append((log, sha, dirty, last))
+        out.append((log, sha, dirty, last, harness))
     return out
 
 
@@ -1742,7 +1875,7 @@ def lane_check(repo, main, full, gates, worktree):
     """What the lead checked by hand on a group's return: the lane's commits since the main branch,
     the gate at its SHA, their trailers, and what its worktree left uncommitted (F80)."""
     parts = [f"{git(repo, 'rev-list', '--count', f'{main}..{full}')[1]} commits"]
-    at = [(dirty, code) for _, sha, dirty, code in gates if sha == full]
+    at = [(dirty, code) for _, sha, dirty, code, ci in gates if sha == full and not ci]
     if any(at_ == ("0", "0") for at_ in at):
         parts.append("gate exit=0")
     elif at:
@@ -1850,7 +1983,8 @@ def report(a, fresh=True, extra=()):
         if re.match(r"D\d+", f.name)
     }
     # At rung S the index holds the decisions themselves: no D file follows (templates.md §1).
-    route = marker_path(a.repo, str(base.resolve())) if a.repo else None
+    # without --repo, --activate wrote the marker in the planning dir's repository
+    route = marker_path(a.repo or base, str(base.resolve()))
     rung = a.rung or (load_json(route).get("rung") if route else None)
     waiting = [f"D{n}" for n in wanted if n not in have and rung != "S"]
     markers = headers = 0
@@ -2002,8 +2136,17 @@ def report(a, fresh=True, extra=()):
                 if plan_id in worktrees:
                     head = worktrees[plan_id][1]
                     if head != full:
-                        ahead = git(a.repo, "rev-list", "--count", f"{full}..{head}")[1]
-                        state += f", branch {ahead} ahead"
+                        # the branch's commits main lacks, by patch: a lane the integrator
+                        # rebased and merged has none, though its tip is not the checkpoint's
+                        ahead = git(
+                            a.repo,
+                            "rev-list",
+                            "--count",
+                            "--right-only",
+                            "--cherry-pick",
+                            f"{main}...{head}",
+                        )[1]
+                        state += f", branch {ahead} not on main"
                         if inside and ahead not in ("", "0"):
                             rep.flag(
                                 f"{'lane moved past its merged SHA':<34} {plan_id} ({ahead} commits, F41)"
@@ -2045,7 +2188,7 @@ def report(a, fresh=True, extra=()):
     )
 
     green = red = running = 0
-    for log, _, _, code in gates:
+    for log, _, _, code, ci in gates:
         if code is None:
             running += 1
             rep.flag(f"{'gate log has no exit= line':<34} lanes/{log.name}")
@@ -2053,7 +2196,8 @@ def report(a, fresh=True, extra=()):
             green += 1
         else:
             red += 1
-            rep.flag(f"{'RED exit=' + code:<34} lanes/{log.name}")
+            what = f"RED harness={ci} exit={code}" if ci else f"RED exit={code}"
+            rep.flag(f"{what:<34} lanes/{log.name}")
     waves = sorted(lanes.glob("wave*-integration.md"))
     for w in waves:
         rep.file(w, base)
