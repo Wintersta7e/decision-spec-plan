@@ -10,7 +10,8 @@ lane), and a lane branch that moved past a merged checkpoint (F41); each lane no
 line with its commits since the main branch, the gate log at its SHA, their trailers and what its
 worktree left uncommitted — the check of a group's return (F80). A lane is any
 `lanes/*-checkpoint.md` but another phase's `p<Q>-…`. Every gate log's last `exit=`
-line is reported; a log without one is still running or was piped. A HANDOFF.md over 40 KB and an
+line is reported; a log without one is still running or was piped. A HANDOFF.md (or
+SESSION-HANDOFF.md) over 40 KB and an
 unmerged lane's checkpoint over 35 lines are flagged (F76), and its rulings file over 12 KB (F67).
 With --repo, the decision index's `> **Base**: `<ref>` at `<sha>`` and `> **Assumes**: `<ref>` at
 `<sha>`` lines are checked against the refs as of the last fetch: a base that moved, an assumed
@@ -52,8 +53,10 @@ with `--rung S` it refuses the lead's dispatch of an agent whose name or descrip
 at S the lead harvests itself (F87). While a route is
 active it asks the user before the lead's `gh pr close|merge`, `gh issue close|delete`, `gh release
 create|delete|edit|upload`, `gh repo delete|archive|rename`, a `gh api` write, `--delete-branch`
-or a remote branch delete by `git push`, and refuses them inside a route agent (F81). A check
-that fails lets the call through. Registered for SubagentStop and TeammateIdle, it sends an agent
+or a remote branch delete by `git push`, and refuses them inside a route agent (F81). It refuses
+a hand-written gate log (`lanes/*gate*.log`) to the lead and its agents alike: Write or Edit on one,
+`sed -i` on one, `echo`/`printf`/heredoc text or a literal `exit=<n>` redirected into one (F97). A
+check that fails lets the call through. Registered for SubagentStop and TeammateIdle, it sends an agent
 that ends its turn while its own background shell or monitor runs back to wait on it, twice at
 most per job: nothing wakes it when the job ends (F92). It holds the lead's `exec-` dispatch while
 `decision_check.py` fails on the phase — one whose index did not exist at its first --activate —
@@ -61,7 +64,7 @@ and a `verify-` agent whose prompt is not the file `decision_check.py --verifier
 
 Registration: the plugin's `hooks/hooks.json` runs `route_state.py --hook` under SessionStart
 matcher `compact|resume`, PostToolUse matcher `*`, UserPromptSubmit, PreToolUse matcher
-`Agent|Bash`, SubagentStop, TeammateIdle.
+`Agent|Bash|Write|Edit|MultiEdit|NotebookEdit`, SubagentStop, TeammateIdle.
 """
 
 import argparse
@@ -98,6 +101,8 @@ SLACK = 1.25
 JOB_WAITS = 2
 CONTEXT_STOP = 200_000
 HANDOFF_MAX = 40_000
+# the route's handoff (bootstrap.md), or the project's session handoff where it keeps one
+HANDOFFS = ("HANDOFF.md", "SESSION-HANDOFF.md")
 CHECKPOINT_MAX = 35
 RULINGS_MAX = 12_000
 # The tools whose input naming a rulings file counts as the agent reading it.
@@ -264,10 +269,11 @@ def outward_cmd(cmd):
 
 
 def outward_in(command, cwd=None):
+    """The first outward action the command runs, as its words, or None."""
     cmds = bash_commands(command, cwd)
     if cmds is None:
         cmds = text_commands(command)
-    return any(outward_cmd(c) for c in cmds)
+    return next((" ".join(c.argv) for c in cmds if outward_cmd(c)), None)
 
 
 PLAN_ID = re.compile(r"p\d+-\d+[a-z]?(?=-|$)")
@@ -491,6 +497,11 @@ def activate(a, main):
     for phase, bound in kept.items():
         ledger.setdefault(phase, bound)
     index = pathlib.Path(planning) / "decisions" / f"phase{a.phase}" / "00-index.md"
+    if a.phase not in ledger:
+        # so does a review round's own index (`phase<P>/<round>/00-index.md`); a round written
+        # later is bound, absent from the ledger
+        for r in sorted(index.parent.glob("*/00-index.md")):
+            ledger[f"{a.phase}/{r.parent.name}"] = False
     ledger.setdefault(a.phase, not index.exists())
     marker["ledger"] = ledger
     path.write_text(json.dumps(marker) + "\n")
@@ -558,6 +569,9 @@ def budget(argv):
         required=True,
         help="the exec- agents it covers: task groups, fix groups, the integrator",
     )
+    ap.add_argument(
+        "planning_dir", nargs="?", help="optional: this session's route's planning dir"
+    )
     a = ap.parse_args(argv)
     session = os.environ.get("CLAUDE_CODE_SESSION_ID", "")
     entry = load_json(REGISTRY / f"{session}.json") if session else {}
@@ -568,6 +582,10 @@ def budget(argv):
             "--budget: no route is registered for this session — run route_state.py "
             "--activate first"
         )
+        return 2
+    own = pathlib.Path(entry.get("planning_dir", "")).resolve()
+    if a.planning_dir and pathlib.Path(a.planning_dir).resolve() != own:
+        print(f"--budget: {a.planning_dir} is not this session's route ({own})")
         return 2
     phase = parser().parse_args(marker["args"]).phase
     record = {
@@ -757,8 +775,113 @@ def outward(event, entry):
     ):
         return None
     command = str((event.get("tool_input") or {}).get("command") or "")
-    found = outward_in(command, event.get("cwd"))
-    return " ".join(command.split())[:120] if found else None
+    if not (found := outward_in(command, event.get("cwd"))):
+        return None
+    # the action matched, then the command it is in: an excerpt alone once showed no gh at all
+    whole = " ".join(command.split())[:120]
+    return found[:120] if found == whole else f"{found[:120]}` in `{whole}"
+
+
+GATE_LOG = re.compile(r"(?:^|/)lanes/(?:[^/\s]+/)*[^/\s]*gate[^/\s]*\.log$")
+# What push_guard.py reads from a gate log, spelled out rather than computed by the shell.
+CLAIM = re.compile(r"\b(?:exit=\d+|dirty=\d+|sha=[0-9a-f]{7,40})\b")
+EDIT_TOOLS = ("Write", "Edit", "MultiEdit", "NotebookEdit")
+INTERPRETERS = re.compile(r"python[\d.]*|node|perl|ruby|php|deno|bun")
+# a file write in interpreter code: open() in a write mode (Python, Perl), a write helper
+WRITE_CALL = re.compile(
+    r"open\([^)\n]*['\"](?:[wax]|r\+|>>?|\+<)[+bt]*['\"]|\.write_(?:text|bytes)\("
+    r"|(?:write|append)File(?:Sync)?\(|createWriteStream\(|File\.write\(|file_put_contents\("
+)
+LOG_LITERAL = re.compile(r"['\"]([^'\"\s]*gate[^'\"\s]*\.log)['\"]")
+
+
+def code_writes_log(code, is_log):
+    """Interpreter code with a write call naming a gate log on one line, by its literal path or
+    by a name a line bound to one (`p='lanes/x-gate.log'` … `open(p,'w')`). A log quoted in the
+    text being written elsewhere is not one: leads edit handoffs that cite gate logs (live)."""
+    names, lines = set(), code.splitlines()
+    for line in lines:
+        bound = re.match(r"\s*(?:my\s+|const\s+|let\s+|var\s+)?\$?(\w+)\s*=(?!=)", line)
+        if bound and any(is_log(m[1]) for m in LOG_LITERAL.finditer(line)):
+            names.add(bound[1])
+    for line in lines:
+        if WRITE_CALL.search(line) and (
+            any(is_log(m[1]) for m in LOG_LITERAL.finditer(line))
+            or any(re.search(rf"(?<!\w){re.escape(n)}(?!\w)", line) for n in names)
+        ):
+            return True
+    return False
+
+
+def printf_text(args):
+    """What `printf <format> <args>` prints, as far as static text can say: each `%…` takes the
+    next argument (`printf 'exit=%d' 0` prints `exit=0`)."""
+    rest = iter(args[1:])
+    return re.sub(r"%[-+ #0-9.]*[a-zA-Z]", lambda m: next(rest, m[0]), args[0])
+
+
+def gate_log_edit(event):
+    """How the tool call writes a gate log by hand, if it does (F97): an edit tool on one,
+    `sed -i`/`perl -i` on one, an interpreter whose code names one and a claim, or a command
+    that writes into one (a redirect, `tee`) while `echo`, `printf` or a heredoc spells out a
+    line the push check reads (`exit=0`, `dirty=0`, `sha=<hex>`). A gate's own output
+    redirected, piped or copied in is what a log holds, and so is a status the shell computed
+    (`echo release=$?`, `echo "exit=PRE-$?"` after a failed step). An editor by name is not
+    read: a lead's own function `ex` read two logs (live)."""
+    tool, given = event.get("tool_name"), event.get("tool_input") or {}
+    if tool in EDIT_TOOLS:
+        path = str(given.get("file_path") or given.get("notebook_path") or "")
+        return f"{tool} on {path}" if GATE_LOG.search(path) else None
+    command = str(given.get("command") or "") if tool == "Bash" else ""
+    if "gate" not in command:
+        return None
+    cmds = [c for k, c in shell_cmd.events(command) if k == "cmd"]
+    found = [c for c in cmds if c.words]
+    # the command's own `NAME=value` assignments, so `> $LOG` reads as the path it names
+    env = {}
+    for c in cmds:
+        if not c.words:
+            env |= {n: x for n, v in c.assigns if (x := v.expand(env)) is not None}
+
+    def text(w):
+        return w.expand(env) or w.text
+
+    # a relative name read from the cwd or from any directory the command `cd`s to: the live
+    # edit named `x-gate.log` from inside lanes/
+    dirs = [str(event.get("cwd") or "")]
+    dirs += [text(c.words[1]) for c in found if c.name == "cd" and c.words[1:]]
+
+    def is_log(t):
+        return any(GATE_LOG.search(os.path.join(d, t)) for d in dirs)
+
+    spelled, into = [], [t for t, _ in shell_cmd.redirects(command) if is_log(text(t))]
+    for c in found:
+        args = [text(w) for w in c.words[1:]]
+        if c.name in ("echo", "printf") and args:
+            spelled += [shell_cmd._ansi_c(a) for a in args]
+            if c.name == "printf":
+                spelled.append(shell_cmd._ansi_c(printf_text(args)))
+        # the code is in the command: a `-c` argument or a heredoc body
+        m = INTERPRETERS.fullmatch(c.name) and CLAIM.search(command)
+        if m and code_writes_log(command, is_log):
+            return f"`{c.name}` code writing a gate log, `{m[0]}` in it"
+        logs = [a for a in args if is_log(a)]
+        if not logs:
+            continue
+        if c.name == "tee":
+            into += logs
+        flags = [a for a in args if a.startswith("-")]
+        if c.name in ("sed", "perl") and any(
+            re.fullmatch(r"-[a-zA-Z]*i\S*|--in-place\S*", f) for f in flags
+        ):
+            return f"`{c.name}` editing it in place"
+    if not into:
+        return None
+    if "<<" in command:
+        spelled.append(command)  # a heredoc's text is in the command, not in a word
+    if m := CLAIM.search(" ".join(spelled)):
+        return f"`{m[0]}` spelled out into it"
+    return None
 
 
 def unrouted(event, entry_path):
@@ -804,17 +927,28 @@ def ledger_hold(event, entry):
                 f"rationale or reviewer name ({script}; failure-modes F86)."
             )
         return None
-    if not (marker.get("ledger") or {}).get(phase) or not (d / "00-index.md").exists():
-        return None
-    out = io.StringIO()
-    with contextlib.redirect_stdout(out):
-        code = decision_check.main([str(d), "--rung", marker.get("rung") or "M"])
-    if code == 1:
-        return (
-            f"the decision ledger fails `{script} {d}` — fix each line, then dispatch:\n"
-            + out.getvalue().strip()
-        )
-    return None
+    ledger = marker.get("ledger") or {}
+    # the phase's index when bound, and each review round's own index unless it predates the
+    # phase's first activation
+    rounds = [d] if ledger.get(phase) else []
+    rounds += [
+        i.parent
+        for i in sorted(d.glob("*/00-index.md"))
+        if ledger.get(f"{phase}/{i.parent.name}", True)
+    ]
+    held = []
+    for r in rounds:
+        if not (r / "00-index.md").exists():
+            continue
+        out = io.StringIO()
+        with contextlib.redirect_stdout(out):
+            code = decision_check.main([str(r), "--rung", marker.get("rung") or "M"])
+        if code == 1:
+            held.append(
+                f"the decision ledger fails `{script} {r}` — fix each line, then dispatch:\n"
+                + out.getvalue().strip()
+            )
+    return "\n".join(held) or None
 
 
 def gate_dispatch(event, entry):
@@ -1131,7 +1265,8 @@ def own_rulings(planning, name, dispatch):
 
 
 def unread_rulings(transcript, planning, name):
-    """The agent's own rulings files that changed after its last read of them. Only its own: a
+    """(file, read before) for each of the agent's own rulings files that changed after its last
+    read of them, or that it never read. Only its own: a
     listing of `lanes/` in its transcript once made every lane's file count as its (F59)."""
     files = own_rulings(planning, name, dispatch_text(transcript))
     last = {}
@@ -1146,7 +1281,7 @@ def unread_rulings(transcript, planning, name):
             for f in files:
                 if block.get("name") in READS and f.name in said:
                     last[f] = stamp
-    return [f for f in files if last.get(f, 0) < f.stat().st_mtime]
+    return [(f, f in last) for f in files if last.get(f, 0) < f.stat().st_mtime]
 
 
 def agent_pre(event, session, entry):
@@ -1164,10 +1299,13 @@ def agent_pre(event, session, entry):
     if event.get("tool_name") == "Bash" and makes_commit(command, event.get("cwd")):
         stale = unread_rulings(transcript, pathlib.Path(entry["planning_dir"]), name)
         if stale:
+            why = {
+                True: "the lead changed it after your last read",
+                False: "you have not read it",
+            }
+            files = ", ".join(f"{f} ({why[read]})" for f, read in stale)
             return deny(
-                f"re-read {', '.join(str(f) for f in stale)} before you commit: the lead "
-                "added a ruling after your last read of it, or you have not read it yet. "
-                "Apply each entry you have not applied "
+                f"re-read {files} before you commit. Apply each entry you have not applied "
                 "and name its id in your checkpoint, then commit (execution.md, F59)."
             )
     size = context(transcript)
@@ -1270,6 +1408,15 @@ def hook():
         except Exception:  # noqa: BLE001 — a broken check never holds an agent
             return 0
     if name == "PreToolUse":
+        if how := checked(gate_log_edit, event):
+            return deny(
+                f"{how}: a gate log holds only what the gate printed — it is the evidence a "
+                "push and a lane return are judged on. Re-run the gate into it "
+                '(`{ echo "sha=$(git rev-parse HEAD) dirty=<n>"; <gate>; echo "exit=$?"; } '
+                "> <log> 2>&1`), or copy a real run's output in. A gate that cannot pass goes "
+                "back to the lead and the user: escalating is a success, an edited log is not "
+                "(F97)."
+            )
         if act := checked(outward, event, entry):
             if event.get("agent_id"):
                 return deny(
@@ -1346,7 +1493,10 @@ def hook():
 
     if name == "SessionStart":
         stage, docs = stage_docs(a, marker.get("rung"))
-        handoff = f"{a.planning_dir}/HANDOFF.md"
+        base = pathlib.Path(a.planning_dir)
+        handoff = " and ".join(
+            str(base / n) for n in HANDOFFS if (base / n).exists()
+        ) or str(base / HANDOFFS[0])
         where = f"for Stage {stage} (going by the planning dir) {docs}, in {SKILL_DIR}"
         reread = (
             f"Read {SKILL} in full — a resumed session has no skill text — then {handoff} "
@@ -1387,7 +1537,12 @@ def main():
         return hook()
     if "--budget" in argv:
         return budget(argv)
-    a = parser().parse_args()
+    ap = parser()
+    a = ap.parse_args()
+    flags = {"--rung": a.rung, "--sins": a.sins, "--ci-harness": a.ci_harness}
+    if (given := [f for f, v in flags.items() if v]) and not a.activate:
+        # dropped in silence, a lead believed the route had them (live)
+        ap.error(f"{', '.join(given)} take effect only with --activate")
     code = report(a)
     if code == 0 and a.activate:
         code = activate(a, a.main or (default_branch(a.repo) if a.repo else "main"))
@@ -1521,12 +1676,13 @@ def report(a, fresh=True, extra=()):
         fallback = default_branch(a.repo)
         rep.flag(f"{'--main ' + main + ' does not exist':<34} using {fallback}")
         main = fallback
-    handoff = base / "HANDOFF.md"
-    if handoff.exists() and handoff.stat().st_size > HANDOFF_MAX:
-        rep.flag(
-            f"{'HANDOFF.md over 40 KB':<34} {handoff.stat().st_size / 1024:.0f} KB — move "
-            "closed lanes and settled history to HANDOFF-archive.md (F76)"
-        )
+    for name in HANDOFFS:
+        handoff = base / name
+        if handoff.exists() and handoff.stat().st_size > HANDOFF_MAX:
+            rep.flag(
+                f"{name + ' over 40 KB':<34} {handoff.stat().st_size / 1024:.0f} KB — move "
+                "closed lanes and settled history to HANDOFF-archive.md (F76)"
+            )
 
     dec = base / "decisions" / f"phase{p}"
     index = dec / "00-index.md"

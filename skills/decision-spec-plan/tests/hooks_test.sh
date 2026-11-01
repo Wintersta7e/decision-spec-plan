@@ -91,6 +91,13 @@ jq -e '.ledger["1"] == true' "$(MK "$R")" >/dev/null && ok "a phase with no inde
 	bad "a fresh phase's marker lacks ledger: $(cat "$(MK "$R")")"
 hook silent "$(route_agent s1 dsp-deep)"
 hook 'deny:no active decision-spec-plan route' "$(route_agent s2 dsp-deep)" # another session
+# a route setting given without --activate was dropped in silence (live)
+for flag in "--rung L" "--sins on" "--ci-harness e2e"; do
+	# shellcheck disable=SC2086 # the flag and its value are two words
+	out=$(CLAUDE_CODE_SESSION_ID=s1 python3 "$SCRIPTS/route_state.py" "$P" --phase 1 --repo "$R" $flag 2>&1)
+	[ $? = 2 ] && grep -q 'only with --activate' <<<"$out" && ok "$flag without --activate is refused" ||
+		bad "$flag without --activate: $out"
+done
 
 # --- route active, no gate log
 guard 0 "$R" "ls -la"
@@ -730,7 +737,11 @@ reactivate
 
 out=$(CLAUDE_CODE_SESSION_ID=s2 python3 "$SCRIPTS/route_state.py" --budget w1 --estimate 10 --groups 4)
 [ $? = 2 ] && ok "--budget without a registered session: exit 2" || bad "--budget unregistered: $out"
-out=$(CLAUDE_CODE_SESSION_ID=s1 python3 "$SCRIPTS/route_state.py" --budget w1 --estimate 10 --groups 4)
+# the planning dir may be named, as leads did (live, 3 refusals); another route's is refused
+out=$(CLAUDE_CODE_SESSION_ID=s1 python3 "$SCRIPTS/route_state.py" --budget w1 "$T" --estimate 10 --groups 4 2>&1)
+[ $? = 2 ] && grep -q "not this session's route" <<<"$out" && ! jq -e '.budgets' "$(MK "$R")" >/dev/null &&
+	ok "--budget naming another planning dir records nothing" || bad "--budget other dir: $out"
+out=$(CLAUDE_CODE_SESSION_ID=s1 python3 "$SCRIPTS/route_state.py" --budget w1 "$P" --estimate 10 --groups 4)
 [ $? = 0 ] && jq -e '.budgets[-1] | .label == "w1" and .groups == 4 and .phase == "1"' "$(MK "$R")" >/dev/null &&
 	grep -q "past 12.5M spent or 5 exec- dispatches" <<<"$out" && ok "--budget records the wave in the marker" || bad "--budget: $out"
 hook 'deny:has not answered' "$(dispatch exec-p1-01-a t1)"
@@ -1048,9 +1059,10 @@ hook silent "$(inagent x1 'ls')"              # told once
 hook silent "$(inagent y1 'ls')"              # not an exec- agent
 hook silent "$(inagent x1 'git commit -m x')" # no rulings file yet
 echo "R1 use the old API" >"$P/lanes/p1-01-rulings.md"
-hook 'deny:re-read .*p1-01-rulings.md before you commit' "$(inagent x1 'git -C /w commit -m x')"
-# the text holds for a file the agent never read; a fast-forward makes no commit of the agent's
-hook 'deny:or you have not read it yet' "$(inagent x1 'git commit -m x')"
+hook 'deny:re-read .*p1-01-rulings.md \(.*\) before you commit' "$(inagent x1 'git -C /w commit -m x')"
+# the text says which: a file the agent never read is not one changed "after your last read"
+# (live); a fast-forward makes no commit of the agent's
+hook 'deny:p1-01-rulings.md \(you have not read it\) before you commit' "$(inagent x1 'git commit -m x')"
 hook silent "$(inagent x1 'git merge --ff-only exec-p1-01-a')"
 hook silent "$(inagent x1 'git status')"
 hook silent "$(inagent y1 'git commit -m x')"
@@ -1060,7 +1072,7 @@ hook silent "$(inagent x1 'git commit -m x')"
 jq -nc --arg f "$P/lanes/p1-01-rulings.md" '{type:"api-request-blob",agentId:"x1",hash:"h1",sessionId:"s1",message:{id:"r1",content:[{type:"tool_use",id:"r1",name:"Read",input:{file_path:$f}}]}}' >>"$SUB/agent-x1.jsonl"
 hook silent "$(inagent x1 'git commit -m x')"
 touch -d '+2 minutes' "$P/lanes/p1-01-rulings.md"
-hook 'deny:re-read .*p1-01-rulings.md' "$(inagent x1 'git commit -m x')"
+hook 'deny:re-read .*p1-01-rulings.md \(the lead changed it after your last read\)' "$(inagent x1 'git commit -m x')"
 # every form that makes a commit, read as bash reads it: a regex missed each of these
 hook 'deny:re-read .*p1-01-rulings.md' "$(inagent x1 "git -C '/a b/wt' commit -m x")"
 hook 'deny:re-read .*p1-01-rulings.md' "$(inagent x1 'git --no-pager commit -m x')"
@@ -1121,6 +1133,9 @@ hook "ask:git push origin ':old'" "$(leadbash s1 "git push origin ':old'")"
 hook silent "$(leadbash s1 'gh api repos/o/r/pulls/5')"
 hook silent "$(leadbash s1 'git push origin main && git push origin HEAD:refs/heads/x')"
 hook silent "$(leadbash s1 'git push --dry-run -u origin main --follow-tags')"
+# the text names the action it matched, past the excerpt of a long command (live: the excerpt
+# showed no gh at all)
+hook 'ask:`gh pr close 9` in `echo' "$(leadbash s1 "$(printf 'echo x; %.0s' {1..30})gh pr close 9")"
 # read as bash reads the command: wrapped forms count, quoted text does not, and a long line is
 # read in linear time (a regex took 36 s on 1,000 repeats of `gh pr x`)
 hook 'ask:timeout 30 gh pr close 5' "$(leadbash s1 'timeout 30 gh pr close 5')"
@@ -1140,6 +1155,49 @@ hook silent "$(leadbash s1 'eval $X; gh pr view 5; git log --grep merge')"
 printf 'gh pr merge 7 --squash\n' >"$T/scripts/merge.sh"
 hook 'ask:acts on the hosted repository' "$(leadbash s1 "bash $T/scripts/merge.sh")"
 hook silent "$(leadbash s1 "bash $T/scripts/env.sh")"
+
+# --- a gate log holds only what the gate printed: a lead sed -i'd one and wrote `exit=0` into
+# another, and two pushes went out on them (F97). A gate's own output, redirected or copied, passes.
+GL=$P/lanes/p1-01-gate.log
+gl() { ev PreToolUse s1 "\"tool_name\":\"$1\",\"tool_input\":{\"file_path\":\"$2\"}"; }
+hook 'deny:a gate log holds only what the gate printed' "$(gl Write "$GL")"
+hook 'deny:a gate log holds only what the gate printed' "$(gl Edit "$GL")"
+hook silent "$(gl Write "$P/lanes/p1-01-rulings.md")"
+for c in "sed -i 's/dirty=1/dirty=0/' $GL" "echo \\\"exit=0\\\" >> $GL" \
+	"printf 'sha=abc dirty=0\\\\nexit=0\\\\n' > $GL" "cat > $GL <<EOF\\nsha=abc dirty=0\\nEOF" \
+	"{ echo sha=abc dirty=0; true; echo exit=0; } > $GL" "perl -pi -e s/1/0/ $GL" \
+	"{ echo \\\"sha=\$(git rev-parse HEAD) dirty=0\\\"; make test; echo \\\"exit=\$?\\\"; } > $GL"; do
+	hook 'deny:a gate log holds only what the gate printed' "$(leadbash s1 "$c")"
+done
+hook 'deny:a gate log holds only what the gate printed' "$(inagent x1 "sed -i s/1/0/ $GL")"
+# a log named from the lanes directory, as the live edit was: by the command's `cd` or its cwd
+hook 'deny:a gate log holds only what the gate printed' "$(leadbash s1 "cd $P/lanes && sed -i s/1/0/ p1-01-gate.log")"
+hook 'deny:a gate log holds only what the gate printed' "$(ev PreToolUse s1 "\"cwd\":\"$P/lanes\",\"tool_name\":\"Bash\",\"tool_input\":{\"command\":\"echo exit=0 >> p1-01-gate.log\"}")"
+hook silent "$(ev PreToolUse s1 "\"cwd\":\"$T\",\"tool_name\":\"Bash\",\"tool_input\":{\"command\":\"echo exit=0 >> p1-01-gate.log\"}")"
+# the same claims through a variable, tee, an interpreter, a printf format or another edit tool
+hook 'deny:a gate log holds only what the gate printed' "$(gl MultiEdit "$GL")"
+hook 'deny:a gate log holds only what the gate printed' "$(gl NotebookEdit "$GL")"
+for c in "L=$GL; echo exit=0 > \$L" "echo exit=0 | tee $GL" "tee $GL <<EOF\\nexit=0\\nEOF" \
+	"python3 -c \\\"open('$GL','w').write('exit=0')\\\"" "python3 - <<EOF\\nopen('$GL','a').write('exit=0')\\nEOF" \
+	"printf 'exit=%d\\\\n' 0 >> $GL" \
+	"python3 - <<EOF\\np='$GL'\\ns=open(p).read().replace('exit=1','exit=0')\\nopen(p,'w').write(s)\\nEOF"; do
+	hook 'deny:a gate log holds only what the gate printed' "$(leadbash s1 "$c")"
+done
+# code that writes a handoff whose text quotes a gate log and its claims (live, 50 times)
+for c in "printf 'exit=%s\\\\n' \$? >> $GL" "python3 tools/summarize.py $GL" "make gate 2>&1 | tee $GL" \
+	"python3 - <<EOF\\np='HANDOFF.md'\\ns=open(p).read()+'gate lanes/p1-01-gate.log sha=abc1234 dirty=0 exit=0'\\nopen(p,'w').write(s)\\nEOF"; do
+	hook silent "$(leadbash s1 "$c")"
+done
+# a function the command names `ex` that reads two logs (live)
+hook silent "$(leadbash s1 "cd $P/lanes && ex(){ grep ok \$1 | sort; }; ex a-gate.log > /tmp/b.txt; ex p1-01-gate.log")"
+# a status the shell computed is the gate's; so is a marker for a step that failed before it
+for c in "{ echo \\\"sha=\$(git rev-parse HEAD) dirty=\$(git status --porcelain | grep -c .)\\\"; make test; echo \\\"exit=\$?\\\"; } > $GL 2>&1" \
+	"cargo build > /tmp/b.txt; echo release=\$? > $GL" \
+	"grep -q '^exit=' $GL || echo \\\"exit=PRE-\$?\\\" >> $GL; rg -q 'exit=0' $GL" \
+	"tools/full-gate.sh /tmp/s > $P/lanes/deps-1-gate.log 2>&1; echo \\\"gate exit=\$?\\\"" \
+	"cp /tmp/gate-final.txt $P/lanes/p1-01-gate-neutral.log" "tail -3 $GL; rg exit= $GL; sed -n 1p $GL"; do
+	hook silent "$(leadbash s1 "$c")"
+done
 for long in "$(printf 'gh pr x %.0s' {1..1000})" "$(printf 'git x push y %.0s' {1..1000})"; do
 	start=$SECONDS
 	out=$(leadbash s1 "$long" | timeout 20 python3 "$RS" --hook 2>&1)
@@ -1156,6 +1214,12 @@ unthrottle
 hook '/HANDOFF.md over 40 KB[\s\S]*checkpoint over 35 lines +lanes\/p1-04-checkpoint.md \(40/' "$(ev PostToolUse s1 '"tool_name":"Read"')"
 rm "$P/HANDOFF.md" "$P/lanes/p1-04-checkpoint.md"
 hook '/Re-read .*HANDOFF.md and, for Stage 5 \(going by the planning dir\) references\/execution.md,/' "$(ev SessionStart s1 '"source":"compact"')"
+# a project whose handoff is SESSION-HANDOFF.md: the size check and the re-read name it (live)
+head -c 41000 /dev/zero | tr '\0' x >"$P/SESSION-HANDOFF.md"
+unthrottle
+hook '/SESSION-HANDOFF.md over 40 KB/' "$(ev PostToolUse s1 '"tool_name":"Read"')"
+hook '/Re-read \S*\/SESSION-HANDOFF.md and,/' "$(ev SessionStart s1 '"source":"compact"')"
+rm "$P/SESSION-HANDOFF.md"
 cp -rp "$SCRIPTS/.." "$T/skill"
 RS=$T/skill/scripts/route_state.py
 touch "$T/skill/references/execution.md"
@@ -1186,7 +1250,7 @@ PLUGIN=$SCRIPTS/..
 	ok "plugin.json names the plugin decision-spec-plan" || bad "plugin.json does not name the plugin decision-spec-plan"
 reg=$(jq -r '.hooks | to_entries[] | .key as $e | .value[] | "\($e) \(.matcher // "") \(.hooks[].command)"' "$PLUGIN/hooks/hooks.json" | sort)
 want='PostToolUse * python3 "${CLAUDE_PLUGIN_ROOT}/scripts/route_state.py" --hook
-PreToolUse Agent|Bash python3 "${CLAUDE_PLUGIN_ROOT}/scripts/route_state.py" --hook
+PreToolUse Agent|Bash|Write|Edit|MultiEdit|NotebookEdit python3 "${CLAUDE_PLUGIN_ROOT}/scripts/route_state.py" --hook
 PreToolUse Bash python3 "${CLAUDE_PLUGIN_ROOT}/scripts/push_guard.py"
 SessionStart compact|resume python3 "${CLAUDE_PLUGIN_ROOT}/scripts/route_state.py" --hook
 SubagentStop  python3 "${CLAUDE_PLUGIN_ROOT}/scripts/route_state.py" --hook
@@ -1337,11 +1401,28 @@ echo 'Verdict: REFUTED' >"$DC/verify/R1.md"
 dcheck 0 '0 failure' --rung S
 echo 'Verdict: UPHELD' >"$DC/verify/R1.md"
 dcheck 1 'R1 is declined, but verify/R1.md upheld it' --rung S
+# a round with no arbiter (a review round run S-shaped under an M route) keeps them in its index
+dcheck 1 'R1 is declined, but verify/R1.md upheld it' --rung M
+echo '# Arbiter' >"$DC/00-arbiter.md"
 dcheck 1 '00-arbiter.md has no Dispositions table' --rung M
 disp '| R1 | applied | A3 |
 | R2 | applied | A1 |
 | R3 | applied | A2 |' >"$DC/00-arbiter.md"
 dcheck 0 '0 failure' --rung M
+# a fix that holds a SETTLED row says so and the row stays: findings that upheld a row were
+# relabelled "declined" to pass (live)
+index '| S1 | **x** | U2 |' '' "$(disp '| R1 | applied (upholds S1) | D1 |
+| R2 | applied | D1 |
+| R3 | declined | U4 |')" >"$DC/00-index.md"
+dcheck 0 '0 failure' --rung S
+index '| S1 | **x** | U2 |' '' "$(disp '| R1 | applied (upholds S7) | D1 |
+| R2 | applied | D1 |
+| R3 | declined | U4 |')" >"$DC/00-index.md"
+dcheck 1 'R1 upholds S7, which is not in SETTLED' --rung S
+index '| S1 | **x** | U2 |' '' "$(disp '| R1 | declined (upholds S1) | D1 |
+| R2 | applied | D1 |
+| R3 | declined | U4 |')" >"$DC/00-index.md"
+dcheck 1 "R1: disposition 'declined \(upholds S1\)' is not" --rung S
 # the hook holds the lead's exec- dispatch while the route's ledger fails, and a verifier whose
 # prompt is not the script-written file
 dispatch() { ev PreToolUse s1 "\"tool_name\":\"Agent\",\"transcript_path\":\"$LEAD\",\"tool_input\":{\"name\":\"$1\",\"prompt\":$(jq -Rs . <<<"$2")}"; }
@@ -1355,6 +1436,24 @@ index '| S1 | **x** | U2 |' >"$P/decisions/phase1/00-index.md"
 out=$(dispatch exec-p1-09-a go | python3 "$RS" --hook 2>&1)
 ! grep -q 'decision ledger' <<<"$out" && ok "a passing ledger releases the exec- dispatch to the budget gate" ||
 	bad "a passing ledger still holds: $out"
+# a review round in its own directory is checked by its own index (live: two rounds never read)
+RND=$P/decisions/phase1/wave2-review
+mkdir -p "$RND"
+index '| S1 | **Rows keep 14 columns** | `src/import.ts:40` |' >"$RND/00-index.md"
+hook "deny:decision ledger fails.*wave2-review(.|\n)*S1 cites only code" "$(dispatch exec-p1-09-a go)"
+cp "$DC/00-seams.md" "$RND/"
+index '| S1 | **x** | U2 |' '' "$(disp '| R1 | applied (upholds S1) | D1 |
+| R2 | applied | D1 |
+| R3 | declined | U4 |')" >"$RND/00-index.md"
+out=$(dispatch exec-p1-09-a go | python3 "$RS" --hook 2>&1)
+! grep -q 'decision ledger' <<<"$out" && ok "a review round with its dispositions in its index releases the dispatch" ||
+	bad "a passing review round still holds: $out"
+# a phase begun before the ledger check still has its later rounds checked
+jq '.ledger["1"] = false' "$(MK "$R")" >"$T/m.json" && mv "$T/m.json" "$(MK "$R")"
+index '| S1 | **Rows keep 14 columns** | `src/import.ts:40` |' >"$RND/00-index.md"
+hook "deny:decision ledger fails.*wave2-review" "$(dispatch exec-p1-09-a go)"
+rm -r "$RND"
+jq '.ledger["1"] = true' "$(MK "$R")" >"$T/m.json" && mv "$T/m.json" "$(MK "$R")"
 cp "$DC/00-seams.md" "$P/decisions/phase1/"
 python3 "$SCRIPTS/decision_check.py" "$P/decisions/phase1" --verifier R2 --sha abc123 >/dev/null
 hook "deny:verifier's prompt is the file" "$(dispatch verify-R2 "Check R2. The lead thinks it is a known limitation.")"
@@ -1414,6 +1513,15 @@ rm "$(MK "$Q")"
 CLAUDE_CODE_SESSION_ID=s7 python3 "$RS" "$Q/.plan" --phase 1 --repo "$Q" --activate --rung S >/dev/null
 jq -e '.ledger["1"] == true' "$(MK "$Q")" >/dev/null && ok "an ended route's phase stays bound by the ledger" ||
 	bad "ledger lost on a restarted route: $(cat "$(MK "$Q")")"
+# a review round written before its phase was first activated keeps its format; a later one is bound
+mkdir -p "$Q/.plan/decisions/phase2/old-round" "$Q/.plan/decisions/phase2/new-round"
+touch "$Q/.plan/decisions/phase2/old-round/00-index.md"
+CLAUDE_CODE_SESSION_ID=s7 python3 "$RS" "$Q/.plan" --phase 2 --repo "$Q" --activate >/dev/null
+touch "$Q/.plan/decisions/phase2/new-round/00-index.md"
+CLAUDE_CODE_SESSION_ID=s7 python3 "$RS" "$Q/.plan" --phase 2 --repo "$Q" --activate >/dev/null
+jq -e '.ledger["2/old-round"] == false and (.ledger | has("2/new-round") | not)' "$(MK "$Q")" >/dev/null &&
+	ok "a round older than its phase's first activation is unbound, a later one bound" ||
+	bad "round binding: $(cat "$(MK "$Q")")"
 rm "$HOME/.claude/dsp-routes/s7.json"
 
 # --- the report on odd inputs: a squashed lane named in backticks, another phase's gate log, a

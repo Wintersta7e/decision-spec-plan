@@ -74,7 +74,8 @@ one-group limit live in the `dsp-deep` and `dsp-mechanical` definitions, so they
 prompt or brief is worded — a lead-written lane brief left the rule out of 21 of 24 dispatches
 (2026-10-04). A `general-purpose` dispatch gets both paragraphs pasted from `<skill-dir>/agents/dsp-deep.md`.
 
-Substitute `<repo>`, `<planning-dir>`, `<P>`, `<scratchpad>`.
+Substitute `<repo>`, `<planning-dir>`, `<P>`, `<scratchpad>` — each as an absolute path: a lane
+agent works in a worktree with no planning dir (`execution.md`, *A lane*).
 
 ---
 

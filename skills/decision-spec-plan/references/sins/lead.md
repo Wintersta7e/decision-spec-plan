@@ -77,8 +77,9 @@ When all seven reports exist, read their Findings tables and assign every critic
 to one sin other than its owner: a rival named in the owner's persona whose domain the evidence
 touches, no sin more than two. Send `reproduce` to all seven in one message (seven `SendMessage`
 calls, one text): "reproduce — the seven reports are in <run dir>; protocol.md Round 2 applies.
-Reproductions: REPRODUCE <finding ID> → <sin>, …" (or "Reproductions: none"). Never relay or
-summarise between sins. An assigned reproduction missing from its sin's table at `pending: none`:
+Reproductions: REPRODUCE <finding ID> → <sin>, …". **No critical or high finding: skip Round 2** —
+send nothing, the Round 1 reports are final, go to the verdict (an empty `reproduce` sent one
+reviewer at a time cost seven lead turns and 0.3M, live). Never relay or summarise between sins. An assigned reproduction missing from its sin's table at `pending: none`:
 message once; still missing → the verdict marks the finding "not reproduced".
 
 **A disputed finding** — a FAILED or PARTIAL reproduction the owner did not amend, or a finding you

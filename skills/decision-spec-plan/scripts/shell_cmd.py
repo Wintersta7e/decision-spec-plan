@@ -520,6 +520,39 @@ def words(text):
     return out
 
 
+OUTPUTS = {">", ">>", ">|", "&>", "&>>"}
+
+
+def redirects(text):
+    """(target word, the words of the simple command before it) for each output redirect in
+    text, `$( )` and `bash -c` strings included as words() reads them; the words are only `}`
+    after a group and none after a `)`."""
+    out = []
+
+    def collect(tokens, text):
+        before, op = [], None
+        for t in tokens:
+            if isinstance(t, str):
+                if t in REDIRECTS:
+                    op = t
+                else:
+                    before = []
+                continue
+            if op:
+                if op in OUTPUTS:
+                    out.append((t, list(before)))
+                op = None
+            else:
+                before.append(t)
+            for sub in t.subs:
+                collect(sub, text)
+            if t.static and t.text != text and SYNTAX.search(t.text):
+                collect(_scan(t.text)[0], t.text)
+
+    collect(_scan(text)[0], text)
+    return out
+
+
 def git_args(cmd):
     """(git's own options as [(option, value or None)], subcommand, its argument words) when cmd
     runs git, else None. The subcommand is None when its word is not static."""

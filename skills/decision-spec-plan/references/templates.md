@@ -116,12 +116,15 @@ before execution — no decision agent reads it. Close it with the review's disp
     ## Dispositions
     | Finding | Disposition | Basis |
     |---|---|---|
-    | R1 | applied · declined · re-opened | <D<n>/the change made · U<n> · S<n> · verify/R1.md> |
+    | R1 | applied · applied (upholds S<n>) · declined · re-opened | <D<n>/the change made · U<n> · S<n> · verify/R1.md> |
 
 A declined finding's basis is a user ruling, a SETTLED row, or a claim-only verifier's REFUTED
 verdict (`prompts.md` §1f) — never "known limitation" or "default" (F86); re-opening a SETTLED row
-moves it out of SETTLED. At M and L the same table closes the arbiter, for the seam review's
-findings. `decision_check.py` checks all of it, and the hook holds `exec-` dispatches until it passes. The briefs' reading lists name files S omits (arbiter,
+moves it out of SETTLED. A fix that enforces a SETTLED row unchanged is `applied (upholds S<n>)`,
+never "declined" (F98). At M and L the same table closes the arbiter, for the seam review's
+findings; a later review round in its own directory (`decisions/phase<P>/<round>/`) with no
+arbiter closes its own index. `decision_check.py` checks all of it, and the hook holds `exec-`
+dispatches until it passes, for each round's index too. The briefs' reading lists name files S omits (arbiter,
 decision files, plan index): read this document in their place.
 
 **Before dispatch, check the index against this list** — each item was a real framing error

@@ -28,9 +28,11 @@ run `criteria_check.py` on the one spec file.)
   never fired (`failure-modes` F74).
 
 ## A lane
-- `git worktree add ../<repo>-<plan-id> -b <plan-id> <main-sha>`; symlink in whatever gitignored
-  directories the agents need (planning dir, agent config, local instructions) and run the project's
-  install/codegen sequence **inside** the worktree.
+- `git worktree add ../<repo>-<plan-id> -b <plan-id> <main-sha>`; symlink in the gitignored agent
+  config and local instructions the agents need, and run the project's install/codegen sequence
+  **inside** the worktree. **Never link the planning dir in**: every path to it in a dispatch is
+  absolute, in the main checkout. **Why:** a planning dir under a tracked `docs/` was linked as
+  `docs/docs` in a lane worktree, and agents wrote through it into the main checkout.
 - Dispatch the lane's execution agents **one task group at a time**, sequentially in the lane's
   worktree: a group is about 100 turns — **size it by what its tasks run, not by their count**: up to
   ~5 consecutive tasks that stay on one side of the stack, **2** when a task's steps run an
@@ -138,7 +140,8 @@ you check first-hand, with no gate output in your context**: the route-state hoo
 (or one `route_state.py <planning-dir> --phase <P> --repo <repo>` run) shows every lane's checkpoint SHA merged —
 by ancestry, by patch, or by its `Merged` line in the integration file when the lane was squashed
 or rebased — no lane moved past its merged SHA, and every gate log's last `exit=` line; one `git rev-parse` of the main branch confirms the SHA it reported. On
-red, grep the failing tests' names from the log, never read it whole. Then **delete each merged lane's branch and worktree** — leave no scaffolding
+red, grep the failing tests' names from the log, never read it whole. Then **delete each merged lane's branch and worktree** with `git worktree remove` (never `prune`
+alone, which left the directory behind once) and check the directory is gone — leave no scaffolding
 behind — and branch the next wave from the new SHA. **Why:** in two runs the lead ran tests and gates
 (14–15% of its cost) and polled CI (3–11%) itself, at a ~530k mean context (`failure-modes` F56).
 

@@ -43,7 +43,7 @@
         ]
       },
       {
-        "matcher": "Agent|Bash",
+        "matcher": "Agent|Bash|Write|Edit|MultiEdit|NotebookEdit",
         "hooks": [
           {
             "type": "command",

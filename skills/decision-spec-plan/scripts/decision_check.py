@@ -17,10 +17,12 @@ missed a state rule no dimension named (failure-modes F94).
 
 Dispositions — once `00-seams.md` exists (the seam review at M and L, the §1e review at S), every
 finding `R<n>` in it has a row in the Dispositions table (the index's at S, the arbiter's at M and
-L): applied, declined or re-opened. A declined finding's basis is a user ruling `U<n>`, a SETTLED
-row `S<n>`, or `verify/R<n>.md` whose first line is `Verdict: REFUTED` — "known limitation" or
-"default" is no basis; a finding with `Verdict: UPHELD` is never declined. A finding applied or
-re-opened that cites a SETTLED row takes that row out of SETTLED.
+L, the index's in a round with no arbiter): applied, `applied (upholds S<n>)`, declined or
+re-opened. A declined finding's basis is a user ruling `U<n>`, a SETTLED row `S<n>`, or
+`verify/R<n>.md` whose first line is `Verdict: REFUTED` — "known limitation" or "default" is no
+basis; a finding with `Verdict: UPHELD` is never declined. A finding applied or re-opened that cites
+a SETTLED row takes that row out of SETTLED, unless the fix upholds it: findings that upheld a row
+were relabelled "declined" to pass, and the record lied (F98).
 
 With `--verifier R<n> --sha <commit>` it writes `verify/R<n>.prompt.md`: the claim-only verifier's
 whole prompt — the finding's text, the commit, the instruction to decide it with a test — and
@@ -162,12 +164,12 @@ def dispositions(d, index, rung, ids):
     if not seams.exists():
         return []
     found = findings(seams.read_text(errors="replace"))
-    holder = d / ("00-index.md" if rung == "S" else "00-arbiter.md")
-    text = (
-        index
-        if rung == "S"
-        else (holder.read_text(errors="replace") if holder.exists() else "")
-    )
+    # a round with no arbiter — a review round run S-shaped under an M route — keeps them in
+    # its index (live: two such rounds)
+    holder = d / "00-arbiter.md"
+    if rung == "S" or not holder.exists():
+        holder = d / "00-index.md"
+    text = index if holder.name == "00-index.md" else holder.read_text(errors="replace")
     body = section(text, "Dispositions")
     if body is None:
         return [
@@ -176,17 +178,31 @@ def dispositions(d, index, rung, ids):
     table = {}
     for cells in rows(body):
         if re.fullmatch(r"\**R\d+\**", cells[0]) and len(cells) >= 3:
-            table[cells[0].strip("*")] = (cells[1].strip("* ").lower(), cells[2])
+            table[cells[0].strip("*")] = (cells[1].strip("* "), cells[2])
     fails = [
         f"{r} has no disposition in {holder.name}" for r in found if r not in table
     ]
-    for r, (how, basis) in table.items():
+    for r, (given, basis) in table.items():
         v = verdict(d, r)
-        if how not in ("applied", "declined", "re-opened"):
+        # `applied (upholds S<n>, …)`: the fix holds those rows, which stay in SETTLED
+        m = re.fullmatch(
+            r"(applied|declined|re-opened)"
+            r"(?:\s*\(upholds\s+(S\d+(?:\s*,\s*S\d+)*)\))?",
+            given,
+            re.IGNORECASE,
+        )
+        how = m and m[1].lower()
+        upheld = set(re.findall(r"S\d+", m[2].upper())) if m and m[2] else set()
+        if not m or (upheld and how != "applied"):
             fails.append(
-                f"{r}: disposition '{how}' is not applied, declined or re-opened"
+                f"{r}: disposition '{given}' is not applied, applied (upholds S<n>), "
+                "declined or re-opened"
             )
-        elif how == "declined":
+            continue
+        fails += [
+            f"{r} upholds {s}, which is not in SETTLED" for s in upheld - ids.keys()
+        ]
+        if how == "declined":
             if v == "UPHELD":
                 fails.append(
                     f"{r} is declined, but verify/{r}.md upheld it with a test"
@@ -199,7 +215,7 @@ def dispositions(d, index, rung, ids):
                 )
         else:
             for sid in re.findall(r"\bS\d+\b", found.get(r, "") + " " + basis):
-                if sid in ids:
+                if sid in ids and sid not in upheld:
                     fails.append(
                         f"{r} is {how} against {sid}, which is still in SETTLED"
                     )
