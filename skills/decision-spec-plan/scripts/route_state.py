@@ -115,22 +115,66 @@ GH_ACTIONS = {
 }
 
 
-def bash_commands(command):
+def bash_commands(command, cwd=None, depth=0):
     """Each `git` and `gh` command the Bash command runs, from that word on (`sudo git commit`),
     read as bash reads it (shell_cmd.py): regexes over the text missed wrapped and quoted forms and
-    backtracked for 36 s on a long line. None when a part cannot be read — a script or stdin fed
-    to a shell, a computed `bash -c` or `eval`, a computed command name or git subcommand — or
-    the reader fails on it (nesting too deep): the caller then reads the bare text."""
+    backtracked for 36 s on a long line. A script file it runs is read in turn, three deep. None
+    when a part cannot be read — stdin or an unreadable script fed to a shell, a computed `bash -c`
+    or `eval`, a computed command name or git subcommand — or the reader fails on it (nesting too
+    deep): the caller then reads the words (text_commands)."""
     try:
         found = shell_cmd.events(command)
+        named = [os.path.basename(w.text) for w in shell_cmd.words(command)]
     except Exception:  # noqa: BLE001 — unreadable text falls back to the text check
         return None
     out = []
+    # each shell's directory, where a script path is read from: None after a `cd` to a computed path
+    dirs = [cwd]
     for kind, c in found:
-        if kind == "opaque" or (kind == "cmd" and c.words and not c.words[0].static):
+        if kind == "open":
+            dirs.append(dirs[-1])
+            continue
+        if kind == "close":
+            dirs = dirs[:-1] or dirs
+            continue
+        here = dirs[-1]
+        if kind == "opaque":
+            script = c.script
+            text = shell_cmd.read_script(script, here) if depth < 3 else None
+        else:
+            script = c.words[0] if c.words and depth < 3 else None
+            text = shell_cmd.run_script(script, here)
+        if kind == "opaque" or text is not None:
+            inner = None if text is None else bash_commands(text, here, depth + 1)
+            if inner is None:
+                return None
+            out += inner
+            if named.count(os.path.basename(script.text)) > 1:
+                # written by the command before it runs: the words it writes count too
+                out += text_commands(command)
+            continue
+        if c.words and not c.words[0].static:
             return None
-        for i, w in enumerate(c.argv if kind == "cmd" else []):
-            if os.path.basename(w) in ("gh", "git"):
+        if c.name == "cd":
+            to = next(
+                (w for w in c.words[1:] if w.text not in ("-L", "-P", "--")), None
+            )
+            path = os.path.expanduser(to.text if to else "~")
+            if (
+                to
+                and (not to.static or to.text == "-")
+                or not (here or os.path.isabs(path))
+            ):
+                dirs[-1] = None
+            else:
+                dirs[-1] = os.path.normpath(os.path.join(here or "", path))
+        elif c.name in ("pushd", "popd"):
+            dirs[-1] = None
+        names = [os.path.basename(w) for w in c.argv]
+        for i, name in enumerate(names):
+            # every `git` word (`sudo -u git git push`); only the first `gh`, whose check reads all
+            # the words after it (each later one took the line to quadratic time)
+            if name == "git" or (name == "gh" and "gh" not in names[:i]):
                 cmd = shell_cmd.Cmd([], c.words[i:])
                 if (g := shell_cmd.git_args(cmd)) and g[1] is None:
                     return None
@@ -138,22 +182,59 @@ def bash_commands(command):
     return out
 
 
-def makes_commit(command):
-    cmds = bash_commands(command)
+def text_commands(command):
+    """Each `git` and `gh` command in text the reader cannot follow, read word by word: from that
+    word to the next `git` or `gh` word, at most 40 words. A regex over the text for `gh` or
+    `push` held a stub `gh` on PATH, a JS `.push(` and a plain push (2026-10-31). The blank-split
+    words, ends trimmed, count too: a heredoc's body is text to the reader but commands to a shell
+    fed it (`bash <<EOF`), and the reader fails on nesting too deep."""
+    texts = [re.sub(r"^[$(`'\"]+|[)`'\";&|]+$", "", t) for t in command.split()]
+    try:
+        read = [w.text for w in shell_cmd.words(command)]
+    except Exception:  # noqa: BLE001 — the blank-split words alone
+        read = []
+    texts = read + texts
+    # a NAME=value word is read as its value (`X='gh pr close 5'`)
+    names = [os.path.basename(re.sub(r"^[A-Za-z_]\w*=", "", t)) for t in texts]
+    out = []
+    for i, name in enumerate(names):
+        if name in ("git", "gh"):
+            end = min(len(names), i + 41)
+            end = next((k for k in range(i + 1, end) if names[k] in ("git", "gh")), end)
+            out.append(
+                shell_cmd.Cmd(
+                    [], [shell_cmd.literal(t) for t in [name, *texts[i + 1 : end]]]
+                )
+            )
+    return out
+
+
+def makes_commit(command, cwd=None):
+    """Whether the command makes a commit of its own: a fast-forward-only merge makes none (the
+    last of --ff, --no-ff and --ff-only is the one git uses)."""
+    cmds = bash_commands(command, cwd)
     if cmds is None:
-        return bool(re.search(rf"\b({'|'.join(COMMITTING)})\b", command))
-    return any((g := shell_cmd.git_args(c)) and g[1] in COMMITTING for c in cmds)
+        cmds = text_commands(command)
+
+    def ff_only(args):
+        modes = [a.text for a in args if a.text in ("--ff", "--no-ff", "--ff-only")]
+        return modes[-1:] == ["--ff-only"]
+
+    return any(
+        (g := shell_cmd.git_args(c))
+        and g[1] in COMMITTING
+        and not (g[1] == "merge" and ff_only(g[2]))
+        for c in cmds
+    )
 
 
 def outward_cmd(cmd):
     """Whether cmd, a command from a `gh` or `git` word on, is an outward action."""
-    argv = cmd.argv
-    if "--delete-branch" in argv:
-        return True
     if cmd.name == "gh":
-        rest = argv[1:]
-        if any(
-            w in GH_ACTIONS and GH_ACTIONS[w] & set(rest[i + 1 :])
+        rest = cmd.argv[1:]
+        last = {w: i for i, w in enumerate(rest)}
+        if "--delete-branch" in last or any(
+            w in GH_ACTIONS and any(last.get(v, -1) > i for v in GH_ACTIONS[w])
             for i, w in enumerate(rest)
         ):
             return True
@@ -182,10 +263,10 @@ def outward_cmd(cmd):
     )
 
 
-def outward_in(command):
-    cmds = bash_commands(command)
+def outward_in(command, cwd=None):
+    cmds = bash_commands(command, cwd)
     if cmds is None:
-        return bool(re.search(r"\b(gh|push)\b", command))
+        cmds = text_commands(command)
     return any(outward_cmd(c) for c in cmds)
 
 
@@ -676,7 +757,8 @@ def outward(event, entry):
     ):
         return None
     command = str((event.get("tool_input") or {}).get("command") or "")
-    return " ".join(command.split())[:120] if outward_in(command) else None
+    found = outward_in(command, event.get("cwd"))
+    return " ".join(command.split())[:120] if found else None
 
 
 def unrouted(event, entry_path):
@@ -1079,12 +1161,13 @@ def agent_pre(event, session, entry):
     if not name.startswith(EXEC):
         return 0
     command = str((event.get("tool_input") or {}).get("command") or "")
-    if event.get("tool_name") == "Bash" and makes_commit(command):
+    if event.get("tool_name") == "Bash" and makes_commit(command, event.get("cwd")):
         stale = unread_rulings(transcript, pathlib.Path(entry["planning_dir"]), name)
         if stale:
             return deny(
                 f"re-read {', '.join(str(f) for f in stale)} before you commit: the lead "
-                "added a ruling after your last read. Apply each entry you have not applied "
+                "added a ruling after your last read of it, or you have not read it yet. "
+                "Apply each entry you have not applied "
                 "and name its id in your checkpoint, then commit (execution.md, F59)."
             )
     size = context(transcript)

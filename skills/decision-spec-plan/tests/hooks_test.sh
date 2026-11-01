@@ -137,6 +137,23 @@ guard 2 "$R" "git push origin main feature"
 guard 2 "$T/wt" "git push origin feature"
 guard 2 "$R" "git push origin main && git -C $T/wt push origin feature"
 guard 0 "$R" "git push origin main; git push origin HEAD:main"
+# a sha= line with more fields after dirty=0 (a lane's worktree) passes: its rejection made a lead
+# edit the log to fit; a hold names each log of the commit and why it fails
+gmsg() { jq -n --arg c "$2" --arg d "$1" '{tool_input: {command: $c}, cwd: $d}' | python3 "$SCRIPTS/push_guard.py" 2>&1; }
+GL=$(git -C "$R" "${G[@]}" commit-tree -m gl "$(git -C "$R" rev-parse 'main^{tree}')" -p main)
+git -C "$R" branch gl "$GL"
+printf 'sha=%s dirty=0 wt=lane-a\nok\nexit=0\n' "$GL" >"$P/lanes/gl-gate.log"
+guard 0 "$R" "git push origin gl"
+printf 'sha=%s dirty=2 wt=lane-b\nok\nexit=0\n' "$GL" >"$P/lanes/gl-gate.log"
+grep -q 'gl-gate.log: .*dirty=2' <<<"$(gmsg "$R" "git push origin gl")" &&
+	ok "the hold names a dirty log of the commit" || bad "dirty log not named: $(gmsg "$R" "git push origin gl")"
+printf 'sha=%s dirty=0\nok\n' "$GL" >"$P/lanes/gl-gate.log"
+grep -q 'gl-gate.log: no exit= line' <<<"$(gmsg "$R" "git push origin gl")" &&
+	ok "the hold names a log with no exit= line" || bad "unfinished log not named: $(gmsg "$R" "git push origin gl")"
+grep -q 'no gate log under .* names' <<<"$(gmsg "$T/wt" "git push origin feature")" &&
+	ok "the hold says when no log names the commit" || bad "no-log reason missing: $(gmsg "$T/wt" "git push origin feature")"
+rm "$P/lanes/gl-gate.log"
+git -C "$R" branch -q -D gl
 # a directory named like a gate log is no log; a guard that crashes holds the push (an exit 1 lets
 # it through)
 mkdir "$P/lanes/odd-gate.log"
@@ -258,6 +275,28 @@ guard 2 "$R" "git sp origin main"
 guard 0 "$R" "git log -1 --oneline && git status --short"
 git -C "$R" config --unset alias.pu
 git -C "$R" config --unset alias.sp
+# any shell alias runs anything; a config the command line or the command's variables point at may
+# define an alias the guard cannot read
+git -C "$R" config alias.st '!true'
+guard 2 "$R" "git st"
+git -C "$R" config --unset alias.st
+mkdir -p "$T/h" && printf '[alias]\n\tp = push\n' >"$T/h/.gitconfig"
+guard 2 "$T/wt" "git -c include.path=$T/h/.gitconfig p origin feature"
+guard 2 "$T/wt" "HOME=$T/h git p origin feature"
+guard 2 "$T/wt" "export XDG_CONFIG_HOME=$T/h; git p origin feature"
+# another repository's config (`--git-dir`), or one the command writes first, may define it too
+git -C "$R" config alias.p2 push
+guard 2 "/tmp" "git --git-dir=$R/.git p2 origin feature"
+git -C "$R" config --unset alias.p2
+guard 2 "$T/wt" "git config alias.p3 push && git p3 origin feature"
+guard 2 "$T/wt" "printf '[alias]\\n\\tp3 = push\\n' >>.git/config; git p3 origin feature"
+guard 2 "$T/wt" "printf '[alias]\\n\\tp3 = push\\n' >>.git/co\\nfig; git p3 origin feature"
+guard 2 "$T/wt" "bash -c \"printf '[alias]\\\\n\\\\tp3 = push\\\\n' >>.git/co\\\\nfig\"; git p3 origin feature"
+guard 2 "$T/wt" "bash -c '\$(echo git) p\\ush origin feature'"
+# however deep the `bash -c` strings nest
+deep="\$(echo git) p\\ush origin feature"
+for _ in 1 2 3 4 5 6; do printf -v deep 'bash -c %q' "$deep"; done
+guard 2 "$T/wt" "$deep"
 # ref moves the `--` rule missed
 guard 2 "$R" "git checkout -B main feature -- && git push origin main"
 guard 2 "$R" "git worktree add -B main $T/wb feature && git push origin main"
@@ -270,6 +309,11 @@ guard 2 "$T/wt" "git \$UNSET_DSP_X origin feature"
 guard 2 "$T/wt" "git \$'push' origin feature"
 guard 2 "$T/wt" "git \$'\\x70ush' origin feature"
 guard 2 "$T/wt" "git \$\"push\" origin feature"
+# a value bash splits into words, or an empty one bash drops, is no single word: held
+guard 2 "$T/wt" "X='push origin feature'; git \$X"
+guard 2 "$T/wt" "X=; git \$X push origin feature"
+# escapes that hide `git` and `push` from the raw text are read too
+guard 2 "$T/wt" "g\\it p\\ush origin feature"
 # text a shell runs that the guard cannot read is held when it may push
 guard 2 "$T/wt" "X='git push origin feature'; bash -c \"\$X\""
 guard 2 "$T/wt" "X='git push origin feature'; eval \"\$X\""
@@ -279,6 +323,69 @@ git push origin feature
 EOF"
 guard 2 "$T/wt" "source ./push.sh"
 guard 0 "$T/wt" "bash -c 'git log -1' && echo pushed"
+# text that only names push is no push: the live false holds of 2026-10-31 (a heredoc's event list,
+# a loop word, a JS `.push(`) beside a sourced script or a computed string
+mkdir -p "$T/scripts"
+printf 'export NVM_DIR=x\nnvm_ls() { git -C "$NVM_DIR" fetch; }\n' >"$T/scripts/env.sh"
+guard 0 "$T/wt" "cat > $T/wf.yml <<EOF
+on: {events: push,schedule}
+EOF
+source $T/scripts/env.sh && ls"
+guard 0 "$T/wt" "for ev in push:none pull_request:none; do . $T/scripts/env.sh; echo \$ev; done"
+guard 0 "$T/wt" "node -e 'const a=[]; a.push(1)' & X=\$(echo ls); bash -c \"\$X\""
+# a script file the command runs is read as the command is: a push in it is held, none passes
+# (an agent moved a held command into a script file, which the guard never read)
+printf 'cd %s\ngit push origin feature\n' "$T/wt" >"$T/scripts/ship.sh"
+guard 2 "$R" "bash $T/scripts/ship.sh"
+guard 2 "$T/wt" "S=$T/scripts; bash \$S/ship.sh"
+guard 2 "$T/wt" ". $T/scripts/ship.sh"
+printf 'bash %s\n' "$T/scripts/ship.sh" >"$T/scripts/outer.sh"
+guard 2 "$R" "sh $T/scripts/outer.sh"
+guard 0 "$T/wt" "bash $T/scripts/env.sh && echo push"
+# a script run by its path is read too; one in another language is not shell text
+chmod +x "$T/scripts/ship.sh" "$T/scripts/env.sh"
+guard 2 "$R" "$T/scripts/ship.sh"
+guard 0 "$T/wt" "chmod +x $T/scripts/env.sh && $T/scripts/env.sh"
+printf '#!/usr/bin/env python3\nprint("git push origin feature")\n' >"$T/scripts/py.sh"
+chmod +x "$T/scripts/py.sh"
+guard 0 "$T/wt" "$T/scripts/py.sh"
+# a script the command writes before it runs it is held when the command may push: the file read
+# now is not the one that runs
+echo ls >"$T/scripts/w.sh"
+guard 2 "$T/wt" "printf 'git push origin feature\\n' >$T/scripts/w.sh; bash $T/scripts/w.sh"
+guard 0 "$T/wt" "printf 'ls\\n' >$T/scripts/w.sh; bash $T/scripts/w.sh"
+# the command's own state reaches the script it runs, and a sourced script's state comes back
+printf 'git push origin main\n' >"$T/scripts/main.sh"
+guard 0 "$R" "bash $T/scripts/main.sh"
+guard 2 "$R" "export GIT_DIR=$R/.git; bash $T/scripts/main.sh"
+printf 'git branch -f main feature\n' >"$T/scripts/moves.sh"
+guard 2 "$R" "bash $T/scripts/moves.sh; git push origin main"
+# a script's own text naming push does not make its computed names pushes (this suite was held)
+printf 'X=$(ls); $X; echo push\n' >"$T/scripts/noisy.sh"
+guard 0 "$T/wt" "bash $T/scripts/noisy.sh"
+# ...but a computed name or eval in it whose own words or values name push is held
+printf '$(echo git) push origin feature\n' >"$T/scripts/hid1.sh"
+printf 'X="git push origin feature"; $X\n' >"$T/scripts/hid2.sh"
+printf 'X="git push origin feature"; eval "$X"\n' >"$T/scripts/hid3.sh"
+for s in hid1 hid2 hid3; do guard 2 "$T/wt" "bash $T/scripts/$s.sh"; done
+# a child shell gets only exported variables: an unexported ref is empty there
+printf 'git push origin $DSP_REF\n' >"$T/scripts/ref.sh"
+guard 2 "$R" "DSP_REF=main; bash $T/scripts/ref.sh"
+guard 0 "$R" "export DSP_REF=main; bash $T/scripts/ref.sh"
+guard 0 "$R" "DSP_REF=main; source $T/scripts/ref.sh"
+# a probe shown then run from a review directory named for the push (a live false hold)
+mkdir -p "$T/scripts/p1-push7" && echo ls >"$T/scripts/p1-push7/probe.sh"
+guard 0 "$T/wt" "cat $T/scripts/p1-push7/probe.sh; bash $T/scripts/p1-push7/probe.sh"
+printf 'export GIT_DIR=%s/.git\n' "$R" >"$T/scripts/genv.sh"
+guard 2 "$R" "source $T/scripts/genv.sh; git push origin main"
+printf 'cd %s\n' "$T/wt" >"$T/scripts/towt.sh"
+guard 2 /tmp ". $T/scripts/towt.sh; git push origin feature"
+guard 0 /tmp "bash $T/scripts/towt.sh; git push origin feature"
+# every command is read now, so a long line of git commands stays fast: one alias lookup per name
+start=$SECONDS
+guard 0 "$T/wt" "$(printf 'git x; %.0s' {1..3000})"
+[ $((SECONDS - start)) -lt 2 ] && ok "3,000 git commands in one line are read in $((SECONDS - start)) s" ||
+	bad "3,000 git commands: $((SECONDS - start)) s"
 # a CI harness's log is no full gate; a marker that names no planning dir holds the push
 printf 'sha=%s dirty=0\nharness=it\nok\nexit=0\n' "$(git -C "$R" rev-parse feature)" >"$P/lanes/f-it-gate.log"
 guard 2 "$T/wt" "git push origin feature"
@@ -942,6 +1049,9 @@ hook silent "$(inagent y1 'ls')"              # not an exec- agent
 hook silent "$(inagent x1 'git commit -m x')" # no rulings file yet
 echo "R1 use the old API" >"$P/lanes/p1-01-rulings.md"
 hook 'deny:re-read .*p1-01-rulings.md before you commit' "$(inagent x1 'git -C /w commit -m x')"
+# the text holds for a file the agent never read; a fast-forward makes no commit of the agent's
+hook 'deny:or you have not read it yet' "$(inagent x1 'git commit -m x')"
+hook silent "$(inagent x1 'git merge --ff-only exec-p1-01-a')"
 hook silent "$(inagent x1 'git status')"
 hook silent "$(inagent y1 'git commit -m x')"
 jq -nc --arg t "$(ts 30)" --arg f "$P/lanes/p1-01-rulings.md" '{type:"assistant",timestamp:$t,message:{id:"r1",content:[{type:"tool_use",id:"r1",name:"Read",input:{file_path:$f}}]}}' >>"$SUB/agent-x1.jsonl"
@@ -960,6 +1070,16 @@ hook silent "$(inagent x1 "git log --grep 'commit'")"
 hook 'deny:re-read .*p1-01-rulings.md' "$(inagent x1 'sudo git commit -m x')"
 hook 'deny:re-read .*p1-01-rulings.md' "$(inagent x1 "git \$'commit' -m x")"
 hook 'deny:re-read .*p1-01-rulings.md' "$(inagent x1 "X='git commit -m x'; bash -c \$X")"
+hook 'deny:re-read .*p1-01-rulings.md' "$(inagent x1 'bash <<EOF\ngit commit -m x\nEOF')"
+hook 'deny:re-read .*p1-01-rulings.md' "$(inagent x1 'git merge --ff-only --no-ff lane')"
+hook silent "$(inagent x1 'git merge --no-ff --ff-only lane')"
+# a script it runs is read where the command's `cd` left it, by path too, and as it will be written
+printf 'git commit -m x\n' >"$T/scripts/commit.sh"
+chmod +x "$T/scripts/commit.sh"
+hook 'deny:re-read .*p1-01-rulings.md' "$(inagent x1 "cd $T/scripts && bash commit.sh")"
+hook 'deny:re-read .*p1-01-rulings.md' "$(inagent x1 "$T/scripts/commit.sh")"
+echo ls >"$T/scripts/w.sh"
+hook 'deny:re-read .*p1-01-rulings.md' "$(inagent x1 "printf 'git commit -m x' >$T/scripts/w.sh; bash $T/scripts/w.sh")"
 # only the agent's own lane file holds its commit: a `lanes/` listing once named every lane's (F59)
 jq -nc --arg t "$(ts 200)" --arg f "$P/lanes/p1-01-rulings.md" '{type:"assistant",timestamp:$t,message:{id:"r2",content:[{type:"tool_use",id:"r2",name:"Bash",input:{command:("cat " + $f)}}]}}' >>"$SUB/agent-x1.jsonl"
 echo "R1 another lane's ruling" >"$P/lanes/p1-02-rulings.md"
@@ -1011,10 +1131,19 @@ hook 'ask:eval' "$(leadbash s1 "X='gh pr close 5'; eval \$X")"
 hook 'ask:bash' "$(leadbash s1 "echo 'gh pr close 5' | bash")"
 deep="$(printf '$(%.0s' {1..1500})gh pr close 5$(printf ')%.0s' {1..1500})"
 hook 'ask:acts on the hosted repository' "$(leadbash s1 "$deep")"
+# ...and only then: an unreadable command that names gh or push for anything else passes (a stub gh,
+# a JS .push(, a plain push held 5 agents' local work on 2026-10-31)
+hook silent "$(leadbash s1 'X=$(ls); bash -c $X; node -e a.push(1); gh cache delete 5')"
+hook silent "$(leadbash s1 'source ./env.sh; git push origin main')"
+hook silent "$(leadbash s1 'eval $X; gh pr view 5; git log --grep merge')"
+# a script file the command runs is read: an outward action in it asks
+printf 'gh pr merge 7 --squash\n' >"$T/scripts/merge.sh"
+hook 'ask:acts on the hosted repository' "$(leadbash s1 "bash $T/scripts/merge.sh")"
+hook silent "$(leadbash s1 "bash $T/scripts/env.sh")"
 for long in "$(printf 'gh pr x %.0s' {1..1000})" "$(printf 'git x push y %.0s' {1..1000})"; do
 	start=$SECONDS
 	out=$(leadbash s1 "$long" | timeout 20 python3 "$RS" --hook 2>&1)
-	[ $? = 0 ] && [ -z "$out" ] && [ $((SECONDS - start)) -lt 5 ] &&
+	[ $? = 0 ] && [ -z "$out" ] && [ $((SECONDS - start)) -lt 2 ] &&
 		ok "a ${#long}-byte command line is read in $((SECONDS - start)) s" || bad "long line: $((SECONDS - start)) s, $out"
 done
 hook 'deny:a route agent never runs one' "$(inagent x1 'gh pr close 5')"

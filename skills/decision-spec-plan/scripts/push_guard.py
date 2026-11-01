@@ -26,11 +26,15 @@ send must be readable from the command, so these are held: a push with no refspe
 refspec `:`, git options before `push` other than `-C <dir>`, a GIT_* variable set before it, a
 `pushd`/`popd`, a directory the command computes (`cd "$(…)"`, a variable it does not set), a
 push run through `sudo`, `xargs` or the like, a command name or git subcommand the command
-computes, a shell alias that runs git, a script, stdin or computed string fed to a shell (when
-the command names `push`), and a ref-moving git command (`commit`, `fetch . a:b`, `checkout -B`,
-…) earlier in the command. A held form is held wherever it runs while any route on the account is
-active, since it can point at a route's repository from outside it. A `cd` to a fresh `mktemp`
-directory leaves the push in no route's repository.
+computes (or whose value bash would split or drop), a shell alias (`!…`), an alias after a git
+option other than `-C` or in a command that sets GIT_*, HOME or XDG_CONFIG_HOME or names
+`config` (it may define the alias first), stdin or a computed string fed to a shell when the
+command has `push` as a word or a line running git with push after it, and a ref-moving git command
+(`commit`, `fetch . a:b`, `checkout -B`, …) earlier in the command. A script file the command runs
+(`bash x.sh`, `source x`) is read and checked the same way, three files deep; one that cannot be
+read now (computed, missing) is held like a computed string. A held form is held wherever it runs
+while any route on the account is active, since it can point at a route's repository from outside
+it. A `cd` to a fresh `mktemp` directory leaves the push in no route's repository.
 
 Why: on 2026-10-07 a lead pushed main twice without a gate and both CI runs went red; CI confirms a
 state already proven green locally, it never discovers one (failure-modes F56). A finished lane
@@ -52,10 +56,22 @@ import shlex
 import subprocess
 import sys
 
-from shell_cmd import TEMP, Cmd, events, git_args, literal
+from shell_cmd import (
+    TEMP,
+    Cmd,
+    events,
+    git_args,
+    literal,
+    read_script,
+    run_script,
+    words,
+)
 
 REGISTRY = pathlib.Path.home() / ".claude" / "dsp-routes"
 SLICE_MAX = 30
+SCRIPT_DEPTH = 3
+# A line that runs git with a push word after it: a heredoc's text no word holds.
+GIT_PUSH_LINE = re.compile(r"\bgit\b[^\n]*?(?<![\w.$-])push(?![\w(-])")
 # Git commands that move a ref the push may name: read now, the ref is not what the push sends.
 MOVES = {
     "commit",
@@ -78,6 +94,8 @@ MOVES |= {
     "filter-branch",
     "bisect",
 }
+# Variables that point git at another config, which may define an alias.
+CONFIG_HOMES = {"HOME", "XDG_CONFIG_HOME"}
 # Frequent git commands, so an alias lookup runs only for a rare name: git runs no alias named
 # like a command of its own.
 COMMON = MOVES | {
@@ -141,19 +159,23 @@ def head_lines(path, n):
         return [ln.rstrip("\n").replace("\r", "") for _, ln in zip(range(n), f)]
 
 
-def gated(planning, sha, harness=None):
-    """A gate log for sha that passed; with harness, one that names it, else one that names none."""
+def gated(planning, sha, harness=None, why=None):
+    """A gate log for sha that passed; with harness, one that names it, else one that names none.
+    Its first sha= line may carry more fields after `dirty=0` (`wt=<lane>`). why, a list, gets
+    each log of sha that fails and the reason: a hold that named none made a lead edit a log to
+    fit (2026-10-31)."""
     for log in sorted(pathlib.Path(planning, "lanes").glob("*-gate*.log")):
         if not log.is_file():
             continue
         head = head_lines(log, 20)
-        if (
-            next((ln for ln in head if ln.startswith("sha=")), None)
-            != f"sha={sha} dirty=0"
-        ):
+        first = next((ln for ln in head if ln.startswith("sha=")), "")
+        if first.split(" ")[0] != f"sha={sha}":
             continue
         named = [ln for ln in head if ln.startswith("harness=")]
         if (f"harness={harness}" not in named) if harness else named:
+            continue
+        if not re.fullmatch(rf"sha={sha} dirty=0(\s.*)?", first):
+            why is not None and why.append(f"{log.name}: `{first[:80]}`, not dirty=0")
             continue
         last = None
         with open(log, errors="replace", newline="\n") as f:
@@ -162,6 +184,12 @@ def gated(planning, sha, harness=None):
                     last = ln.strip()
         if last == "exit=0":
             return True
+        if why is not None:
+            why.append(
+                f"{log.name}: last line `{last}`"
+                if last
+                else f"{log.name}: no exit= line (still running, or piped through tail/tee)"
+            )
     return False
 
 
@@ -338,57 +366,126 @@ def builtins():
     return set((git(os.path.expanduser("~"), "--list-cmds=main,others") or "").split())
 
 
-def unalias(repo, sub, args, opts, git_env):
-    """(subcommand, args, None) with an alias replaced by what it runs, from `-c alias.<name>=` or
-    the config; a held form in the third place when the alias cannot be read: a shell alias
-    (`!…`) that runs git, a config the command line or a GIT_* variable may set, a loop."""
+@functools.cache
+def alias(repo, sub):
+    """The config's `alias.<sub>` in repo, or in the home directory's config when repo is no
+    directory; once per name, so a long line of `git x` runs no lookup per command."""
+    real = repo not in (None, MISSING_DIR) and os.path.isdir(repo)
+    return git(
+        repo if real else os.path.expanduser("~"), "config", "--get", f"alias.{sub}"
+    )
+
+
+def unalias(repo, sub, args, opts, config_env):
+    """(subcommand, args, None) with an alias replaced by what it runs, from the config; a held
+    form in the third place when the alias cannot be read: a shell alias (`!…`, which runs
+    anything), a git option before it other than `-C` (`-c include.path=`, `--git-dir`), a
+    config the command may change (config_env), a loop."""
     for _ in range(10):
         if not sub or sub in COMMON or sub in builtins():
             return sub, args, None
-        value = None
-        for opt, w in opts:
-            if opt.startswith("--config-env") or (opt == "-c" and not (w and w.static)):
-                return sub, args, "git config set on the command line before an alias"
-            if opt == "-c" and w.text.lower().startswith(f"alias.{sub.lower()}="):
-                value = w.text.partition("=")[2]
-        if value is None:
-            if git_env:
-                return sub, args, "a GIT_* variable set before a git alias"
-            real = repo not in (None, MISSING_DIR) and os.path.isdir(repo)
-            value = git(
-                repo if real else os.path.expanduser("~"),
-                "config",
-                "--get",
-                f"alias.{sub}",
-            )
-        if not value:
-            return sub, args, None
-        if value.startswith("!"):
-            runs_git = re.search(r"\bgit\b|\bpush\b", value)
+        if any(o != "-C" for o, _ in opts):
             return (
                 sub,
                 args,
-                f"a shell alias `git {sub}` = `{value}`" if runs_git else None,
+                "git options before an alias (another config or repository)",
             )
+        if config_env:
+            return sub, args, "a git alias the command's config change may define"
+        value = alias(repo, sub)
+        if not value:
+            return sub, args, None
+        if value.startswith("!"):
+            return sub, args, f"a shell alias `git {sub}` = `{value}`"
         words = shlex.split(value)
         sub, args = (words[0] if words else ""), words[1:] + args
     return sub, args, "a git alias loop"
 
 
+def may_push(cmd, repo, config_env):
+    """Whether cmd, a git command run through another (`sudo git …`), pushes or may push: a
+    subcommand that is push, computed, or an alias the guard cannot read."""
+    g = git_args(cmd)
+    if not g:
+        return False
+    sub, _, form = unalias(repo, g[1], [], g[0], config_env)
+    return sub in ("push", None) or bool(form)
+
+
 def resolved(word, env):
     """word as a static word of its value when the command sets each variable in it."""
     value = None if word.static else word.expand(env)
-    return literal(value) if value is not None and TEMP not in value else word
+    # an unquoted value with blanks or glob characters is split or globbed, an empty one dropped
+    if not value or TEMP in value or re.search(r"[\s*?\[]", value):
+        return word
+    return literal(value)
 
 
-def walk(command, cwd):
-    """Each push the command runs, as a dict of what the check needs."""
+PUSH_WORD = re.compile(r"(?<![\w.$-])push(?![\w(-])")
+
+
+def names_push(ws, env):
+    """Whether a computed command's own words, or the values they expand to, name push
+    (`$(echo git) push`, `X="git push …"; $X`)."""
+    return any(PUSH_WORD.search(w.expand(env) or w.text) for w in ws)
+
+
+def walk(command, cwd, depth=0, state=None):
+    """Each push the command runs, as a dict of what the check needs. A script file it runs is
+    walked in turn, SCRIPT_DEPTH deep, from the command's variables and flags (state); a sourced
+    one shares them, and the directory it ends in (state["dir"]) is the command's after it."""
     pushes = []
+    found = events(command)
+    decoded = [w.text for w in words(command)]
+    if state is None:
+        # `push` as a word once its quotes and escapes are read (`p\ush`, a `bash -c` string's
+        # words), or a line that runs git with push after it (a heredoc fed to a shell): a word
+        # holding push (`events=push`, `push:none`, `a.push(`) held five agents' local work on
+        # 2026-10-31. A script's whole text does not count, only each computed command's own
+        # words (names_push): this test suite's held every computed name in it.
+        pushing = "push" in decoded or bool(GIT_PUSH_LINE.search(command))
+        seen = {"git_env": False, "config_env": False, "pushd": False, "moved": False}
+        state = {
+            "env": dict(os.environ),
+            "exported": set(os.environ),
+            "seen": {**seen, "tags": []},
+            "pushing": pushing,
+        }
+    seen, pushing = state["seen"], state["pushing"]
+    # a GIT_*, HOME or XDG_CONFIG_HOME variable, or `config` anywhere (`git config alias.p push`,
+    # `>> .git/config`): an alias read now may not be the one the command runs
+    seen["config_env"] |= "config" in " ".join([command, *decoded])
+    # a word's file name: a script named twice may be written before it runs
+    named = [os.path.basename(t) for t in decoded]
     # each shell's directory, its variables, and (dir,) where a `cd` that failed left it
-    stack = [(cwd, dict(os.environ), None)]
-    seen = {"git_env": False, "pushd": False, "moved": False, "tags": []}
-    pushing = "push" in command
-    for kind, c in events(command):
+    stack = [(cwd, state["env"], None)]
+
+    def run(script, text, here, env, sourced):
+        """Walk a script file the command runs; the directory a sourced one ends in."""
+        if sourced:
+            inner = {**state, "env": env}
+        else:
+            # a child shell: it gets only exported variables, and what it changes stays in it
+            exported = state["exported"]
+            inner = {
+                **state,
+                "env": {k: v for k, v in env.items() if k in exported},
+                "exported": set(exported),
+                "seen": {**seen, "tags": list(seen["tags"])},
+            }
+        if text is not None:
+            pushes.extend(walk(text, here, depth + 1, inner))
+            # a tag or ref it moves is the repository's, not the shell's
+            seen["moved"] |= inner["seen"]["moved"]
+            seen["tags"][:] = inner["seen"]["tags"]
+        # a file named for push (`push.sh`); a directory so named holds a route's review probes
+        name = os.path.basename(script.text)
+        if (pushing or "push" in name) and (text is None or named.count(name) > 1):
+            # unreadable, or written by the command before it runs: not the file read now
+            pushes.append({"form": f"a push run through {script.text}", "dir": here})
+        return inner.get("dir", here) if sourced else here
+
+    for kind, c in found:
         if kind == "open":
             here, env, failed = stack[-1]
             stack.append((here, dict(env), failed))
@@ -399,7 +496,11 @@ def walk(command, cwd):
             continue
         here, env, failed = stack[-1]
         if kind == "opaque":
-            if pushing:
+            script = c.script and resolved(c.script, env)
+            text = read_script(script, here) if depth < SCRIPT_DEPTH else None
+            if script:
+                stack[-1] = (run(script, text, here, env, c.sourced), env, failed)
+            elif pushing or names_push(c.words, env):
                 pushes.append({"form": f"a push run through {c}", "dir": here})
             continue
         if failed and c.after == "||" and c.name in ("exit", "return"):
@@ -412,26 +513,34 @@ def walk(command, cwd):
             stack[-1] = (here, env, None)
         c = Cmd(c.assigns, [resolved(w, env) for w in c.words], c.after)
         if c.words and not c.words[0].static:
-            if pushing:
+            if pushing or names_push(c.words, env):
                 pushes.append(
                     {"form": "a command name the command computes", "dir": here}
                 )
             continue
         argv = c.argv
         git_env = seen["git_env"] or any(n.startswith("GIT_") for n, _ in c.assigns)
+        config_env = seen["config_env"] or any(n in CONFIG_HOMES for n, _ in c.assigns)
         if not argv:
             for name, value in c.assigns:
                 env[name] = value.expand(env)
-            seen["git_env"] = git_env
+            seen["git_env"], seen["config_env"] = git_env, config_env
             continue
         if c.name in ("export", "declare", "typeset", "local", "readonly"):
+            exports = c.name == "export" or any(
+                re.fullmatch(r"-\w*x\w*", t) for t in argv[1:]
+            )
             for w in c.words[1:]:
                 name, eq, _ = w.text.partition("=")
+                if exports and re.fullmatch(r"[A-Za-z_]\w*", name):
+                    state["exported"].add(name)
                 git_env |= bool(eq) and name.startswith("GIT_")
+                config_env |= bool(eq) and name in CONFIG_HOMES
                 if eq and re.fullmatch(r"[A-Za-z_]\w*", name):
                     value = w.expand(env)
                     env[name] = value.partition("=")[2] if value is not None else None
-        seen["git_env"] = git_env
+        seen["git_env"], seen["config_env"] = git_env, config_env
+        config_env |= git_env
         if c.name in ("pushd", "popd"):
             seen["pushd"] = True
         elif c.name == "cd":
@@ -452,8 +561,7 @@ def walk(command, cwd):
             rest = " ".join(argv[1:])
             git_at = re.search(r"\bgit\b", rest)
             aliased = any(
-                (g := git_args(Cmd([], c.words[i:])))
-                and unalias(here, g[1], [], g[0], git_env)[0] in ("push", None)
+                may_push(Cmd([], c.words[i:]), here, config_env)
                 for i in range(1, len(c.words))
             )
             if aliased or (git_at and re.search(r"\bpush\b", rest[git_at.end() :])):
@@ -464,7 +572,9 @@ def walk(command, cwd):
             for opt, value in opts:
                 if opt == "-C":
                     repo = cd(repo, value.expand(env))
-            sub, texts, form = unalias(repo, sub, [w.text for w in args], opts, git_env)
+            sub, texts, form = unalias(
+                repo, sub, [w.text for w in args], opts, config_env
+            )
             if form or sub is None:
                 form = form or "a git subcommand the command computes"
                 pushes.append({"form": form, "dir": repo})
@@ -483,6 +593,11 @@ def walk(command, cwd):
                 seen["tags"].append(([o for o, _ in opts], texts))
             elif moves(sub, texts):
                 seen["moved"] = True
+        elif (
+            depth < SCRIPT_DEPTH and (text := run_script(c.words[0], here)) is not None
+        ):
+            run(c.words[0], text, here, env, sourced=False)
+    state["dir"] = stack[0][0]
     return pushes
 
 
@@ -586,8 +701,13 @@ class Guard:
             if not shas:
                 self.missing.append(f"{src} (does not resolve to a commit in {repo})")
             for sha in sorted(shas):
-                if not gated(planning, sha):
-                    self.missing.append(f"{src} = {sha[:12]}")
+                why = []
+                if not gated(planning, sha, why=why):
+                    reason = (
+                        "; ".join(why)
+                        or f"no gate log under {planning}/lanes/ names it"
+                    )
+                    self.missing.append(f"{src} = {sha[:12]} — {reason}")
                 elif harness and not gated(planning, sha, harness):
                     self.no_harness.append(f"{src} = {sha[:12]}")
                 elif review:
@@ -666,15 +786,15 @@ def main():
     except ValueError:
         return 0
     command = str((event.get("tool_input") or {}).get("command") or "")
-    # an alias may push with no `push` in the text
-    if not re.search("push|git", command) or "DSP_SKIP_PUSH_GUARD=1" in command:
+    # every command is read: an alias pushes with no `push` in the text, escapes hide `git` in it
+    if "DSP_SKIP_PUSH_GUARD=1" in command:
         return 0
     guard = Guard(str(event.get("session_id") or ""), "DSP_SKIP_REVIEW=1" in command)
     try:
         for p in walk(command, event.get("cwd") or os.getcwd()):
             guard.check(p)
     except Exception as e:  # noqa: BLE001 — a hook that exits 1 lets the push through
-        if not active_route():
+        if not active_route() or not re.search(r"push|git|\\", command):
             return 0
         print(
             f"[push_guard] the guard failed on this command ({type(e).__name__}: {e}) while a "

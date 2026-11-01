@@ -9,8 +9,9 @@ expands only to a literal value. Regexes over the raw text missed `if …; then 
 
 events(text) returns ("open", None) and ("close", None) around a subshell — `( )`, `$( )`, `bash -c`,
 a pipeline's commands, a command run with `&` — ("cmd", Cmd) for each simple command, in the order
-bash starts them, and ("opaque", what) for text a shell runs that the reader cannot see: a script or
-stdin fed to a shell, `source`, a `bash -c` or `eval` of a computed string.
+bash starts them, and ("opaque", Opaque) for text a shell runs that the reader cannot see: a script or
+stdin fed to a shell, `source`, a `bash -c` or `eval` of a computed string. An Opaque's script is
+the word naming a script file, which read_script() reads for the caller to check in turn.
 """
 
 import os
@@ -71,6 +72,7 @@ TEMP = "\0temp"  # a `$(mktemp …)` value: a fresh directory, in no repository
 # A run of characters with no meaning to the scanner, read at once: one at a time was quadratic.
 LITERAL = re.compile(r"[^ \t\r\n\\'\"$`;&|()<>]+|.", re.DOTALL)
 DQ_LITERAL = re.compile(r'[^"\\$`]+|.', re.DOTALL)
+SYNTAX = re.compile(r"[ \t\r\n\\'\"$`;&|()<>]")
 ANSI_C = {"n": "\n", "t": "\t", "r": "\r", "a": "\a", "b": "\b", "f": "\f", "v": "\v"}
 ANSI_C |= {"e": "\x1b", "E": "\x1b"}
 
@@ -141,6 +143,61 @@ class Cmd:
     @property
     def name(self):
         return os.path.basename(self.words[0].text) if self.words else ""
+
+
+class Opaque(str):
+    """What an ("opaque", …) event runs, as text; script is the word naming the script file
+    (`source x`, `bash x`), None for a computed string or stdin; sourced, whether it runs in the
+    command's own shell (`source`, `.`), so its `cd` and variables hold after it; words, those of
+    a computed `eval` or `bash -c` string."""
+
+    def __new__(cls, what, script=None, sourced=False, words=()):
+        self = super().__new__(cls, what)
+        self.script = script
+        self.sourced = sourced
+        self.words = list(words)
+        return self
+
+
+SCRIPT_MAX = 1_000_000
+# A `#!` line that runs a shell: `#!/bin/bash`, `#!/usr/bin/env -S bash -e`.
+SHELL_SHEBANG = re.compile(r"#!\s*\S*/(?:env\s+(?:-\S*\s+)*)?(?:ba|da|k|z)?sh\b")
+
+
+def read_script(word, cwd, executable=False):
+    """The text of the script file a static word names (`~` and a path relative to cwd read as
+    bash reads them), or None when it cannot be read now: computed, missing, binary or huge, or
+    with executable, not executable. An agent moved a command the guard held into a script file
+    it then ran (2026-10-31)."""
+    if word is None or not word.static:
+        return None
+    path = os.path.expanduser(word.text)
+    if not os.path.isabs(path):
+        if not cwd or not os.path.isdir(cwd):
+            return None
+        path = os.path.join(cwd, path)
+    try:
+        if not os.path.isfile(path) or os.path.getsize(path) > SCRIPT_MAX:
+            return None
+        if executable and not os.access(path, os.X_OK):
+            return None
+        with open(path, "rb") as f:
+            data = f.read()
+    except OSError:
+        return None
+    return None if b"\0" in data[:4096] else data.decode(errors="replace")
+
+
+def run_script(word, cwd):
+    """The text of the shell script a command runs by its path (`./ship.sh`): an executable file
+    with a shell's `#!` line or none, which bash runs as a shell script. None for anything else
+    (a binary, a Python script, a name looked up on PATH)."""
+    if word is None or "/" not in word.text:
+        return None
+    text = read_script(word, cwd, executable=True)
+    if text is None or (text.startswith("#!") and not SHELL_SHEBANG.match(text)):
+        return None
+    return text
 
 
 def _dquote(text, i, word):
@@ -360,17 +417,27 @@ def _command(words):
                 yield "open", None
                 yield from _parse(_scan(words[i].text)[0])
                 yield "close", None
+            elif shell_c or i >= len(words) or words[i].text in ("-", "--"):
+                what = f"`{name}` running a computed string or stdin"
+                yield "opaque", Opaque(what, words=words[i:])
             else:
-                yield "opaque", f"`{name}` running a computed string, a script or stdin"
+                yield "opaque", Opaque(f"`{name}` running a script", words[i])
             return
         if name == "eval":
             if all(w.static for w in words[1:]):
                 yield from _parse(_scan(" ".join(w.text for w in words[1:]))[0])
             else:
-                yield "opaque", "`eval` of a computed string"
+                yield "opaque", Opaque("`eval` of a computed string", words=words[1:])
             return
         if name in ("source", "."):
-            yield "opaque", f"`{name}` of a script"
+            yield (
+                "opaque",
+                Opaque(
+                    f"`{name}` of a script",
+                    words[1] if len(words) > 1 else None,
+                    sourced=True,
+                ),
+            )
             return
         break
     yield "cmd", Cmd(assigns, words)
@@ -430,6 +497,27 @@ def events(text):
     """("open" | "close", None) around each subshell, ("cmd", Cmd) for each simple command and
     ("opaque", what) for text run that cannot be read."""
     return _parse(_scan(text)[0])
+
+
+def words(text):
+    """Every word of text with its quotes and escapes read, redirect targets and the words of
+    each `$( )` included: what a check for a name in the text should search. A static word that
+    still holds shell syntax (a `bash -c` or `eval` string) is read again, as deep as it nests:
+    reading a word only drops quotes and escapes, so each level is shorter until one reads as
+    itself."""
+    out = []
+
+    def collect(tokens, text):
+        for t in tokens:
+            if not isinstance(t, str):
+                out.append(t)
+                for sub in t.subs:
+                    collect(sub, text)
+                if t.static and t.text != text and SYNTAX.search(t.text):
+                    collect(_scan(t.text)[0], t.text)
+
+    collect(_scan(text)[0], text)
+    return out
 
 
 def git_args(cmd):
