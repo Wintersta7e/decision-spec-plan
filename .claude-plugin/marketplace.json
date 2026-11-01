@@ -1,0 +1,16 @@
+{
+  "name": "decision-spec-plan",
+  "description": "The decision-spec-plan plugin: a verified analysis → decisions → spec → plan → execution route for Claude Code.",
+  "owner": {
+    "name": "Wintersta7e",
+    "url": "https://github.com/Wintersta7e"
+  },
+  "plugins": [
+    {
+      "name": "decision-spec-plan",
+      "source": "./skills/decision-spec-plan",
+      "description": "Decision → spec → plan route for any task, from a bug to a phase: verified decisions, seam review, spec and plan authors, wave execution under hooks that hold pushes, budgets and test edits.",
+      "category": "development"
+    }
+  ]
+}

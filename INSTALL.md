@@ -1,5 +1,10 @@
 # decision-spec-plan — install
 
+**From the marketplace** (the README's two commands) the plugin installs as
+`decision-spec-plan@decision-spec-plan`; skip to the settings below (agent teams, auto-compact
+window, headless). Install one copy only: a marketplace copy beside a skills-directory copy loads
+the plugin and its hooks twice. The rest of this section is the manual install from a clone.
+
 `skills/decision-spec-plan/` is a Claude Code plugin that lives in the skills directory: the skill,
 its two agents (`decision-spec-plan:dsp-deep`, `decision-spec-plan:dsp-mechanical`) and its hooks
 (`hooks/hooks.json`) load together, as `decision-spec-plan@skills-dir`, in every session started

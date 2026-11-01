@@ -12,7 +12,7 @@ Strong — states the rule, the reason it reads as arbitrary without, and its so
 
 | Ruling | Source |
 |---|---|
-| **"Append-only" is shorthand, and it is wrong for half the ledger.** Two classes: **git-derived** kinds are a pure function of history and are **deleted and recomputed** on a merge or an identity change — production does this (`identity/confirm.rs:158-165`); **retained** kinds are reparented, never recomputed. **What never falls is the displayed level, not the row set.** Every new kind is classified into one class before it is priced | `01-data-model.md:442-468` |
+| **"Append-only" is shorthand, and it is wrong for half the ledger.** Two classes: **git-derived** kinds are a pure function of history and are **deleted and recomputed** on a merge or an identity change — production does this (`merge/apply.rs:158-165`); **retained** kinds are reparented, never recomputed. **What never falls is the displayed level, not the row set.** Every new kind is classified into one class before it is priced | `01-data-model.md:442-468` |
 
 The weak row was in the draft index; a framing review caught that it contradicted the owning spec
 section and would have made one decision agent design retention rules incompatible with merges.
@@ -95,7 +95,7 @@ second round-trip.
 ## A scope-section boundary
 
 > **Boundary 1 — git. WIDENED, and this stops a claim the product makes today.** The intent set is
-> `{Clone, VerifyRead, CloneBundle, TagArchived, BundleCreate}` … **The claims that stop**: `README.md:77-79`
+> `{Clone, ObjectsRead, BundleWrite, TagWrite}` … **The claims that stop**: `README.md:77-79`
 > (*"its only writes are clone and fetch"*) — already false for a user whose config prunes (measured),
 > and replaced in Lane 0. **The claim that survives**: the read module stays read-only by the
 > subcommand allow-list — it changes; it does not write.

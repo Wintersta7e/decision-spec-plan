@@ -3,5 +3,13 @@
   "name": "decision-spec-plan",
   "version": "1.0.0",
   "description": "Decision → spec → plan route for any task, from a bug to a phase: verified decisions, seam review, spec and plan authors, wave execution under hooks that hold pushes, budgets and test edits.",
+  "author": {
+    "name": "Wintersta7e",
+    "url": "https://github.com/Wintersta7e"
+  },
+  "homepage": "https://github.com/Wintersta7e/decision-spec-plan",
+  "repository": "https://github.com/Wintersta7e/decision-spec-plan",
+  "license": "MIT",
+  "keywords": ["planning", "spec", "multi-agent", "code-review", "hooks", "workflow"],
   "skills": ["./"]
 }
