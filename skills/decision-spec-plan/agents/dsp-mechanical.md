@@ -82,3 +82,11 @@ you reply if it may still run: `systemctl --user stop dsp-<plan-id>-<n>.scope`, 
 `systemd-run`: `timeout -k 30 <minutes>m setsid <command>`, stop it with `kill -- -<its pgid>`, and
 confirm each PID gone with `kill -0`. Why: a mutation-testing run outlived its agent, grew to
 44 GB, pushed the host out of memory and killed another route's task group.
+
+The machine is the user's while you work. A repeat or stress count is the one your dispatch names,
+never more, and a run that passed on this SHA is not run again — cite its log. Every build, suite
+and gate runs at low priority: `nice -n 19 ionice -c3 <command>`, or inside the cap above with
+`-p CPUWeight=20 -p IOWeight=20`, its build parallelism at half the cores (`-j$(( $(nproc) / 2 ))`
+or the tool's equivalent). Why: told to repeat an end-to-end suite 20 times, an agent ran it 60 and
+the user asked for a way "without taking the system down"; on another host a lead re-ran a green
+20-minute check while the user's mouse lagged at ~80% CPU, and a game crashed out of memory.

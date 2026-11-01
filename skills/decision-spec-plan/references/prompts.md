@@ -262,7 +262,9 @@ It commits merges and runs gates, so it does not end with the closing lines. Its
 > (`<planning-dir>/lanes/<plan-id>-gate.log`) opens `sha=<that SHA> dirty=0` and ends `exit=0` — a
 > lane SHA without one: stop and record it — and that
 > `<skill-dir>/scripts/scope_check.py <planning-dir>/plans --glob '<plan-id>-*.md' --diff <wave base>..<SHA> --repo <repo>`
-> exits 0 — a file outside the lane's plan: stop and record it — then merge exactly that SHA, never
+> exits 0 — a file outside the lane's plan: stop and record it — and that `test_check.py` with the
+> same arguments exits 0 — a test deleted or removed that the plan does not name, a skip added or
+> assertions dropped: stop and record each line it printed — then merge exactly that SHA, never
 > the branch name. 2. Resolve conflicts; regenerate every derived file and count (<codegen, locks>),
 > never hand-merge them. 3. Run the full gate with its whole output to
 > `<planning-dir>/lanes/wave<w>-<plan-id>-gate.log` — never piped through `tail` or `head` — exactly

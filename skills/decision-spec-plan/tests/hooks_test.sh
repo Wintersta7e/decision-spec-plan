@@ -550,6 +550,19 @@ guard 2 "$R" "git push origin main"
 activate_ci --ci-harness none >/dev/null
 guard 0 "$R" "git push origin main"
 grep -q ci_harness "$(MK "$R")" && bad "--ci-harness none kept the harness" || ok "--ci-harness none clears it"
+# CI on a runner this host is not: activation says so until the route names a harness or none
+# (live: Windows CI was "the only test" and no harness was ever set; 2 of 4 pushes went red)
+mkdir -p "$R/.github/workflows"
+printf 'jobs:\n  t:\n    runs-on: ${{ matrix.os }}\n    strategy:\n      matrix:\n        os: [ubuntu-latest, windows-latest]\n' >"$R/.github/workflows/ci.yml"
+jq 'del(.ci_none)' "$(MK "$R")" >"$T/m.json" && mv "$T/m.json" "$(MK "$R")"
+out=$(activate_ci 2>&1)
+[ $? = 1 ] && grep -q 'CI runs on windows-latest' <<<"$out" && grep -q -- '--ci-harness none' <<<"$out" &&
+	ok "activate: CI on another OS asks for a harness" || bad "activate, foreign CI: $out"
+activate_ci --ci-harness none >/dev/null
+out=$(activate_ci 2>&1)
+[ $? = 0 ] && ! grep -q 'CI runs on' <<<"$out" && ok "--ci-harness none is remembered as the answer" ||
+	bad "--ci-harness none not remembered: $out"
+rm -r "$R/.github"
 
 # --- the state hook: who it speaks to
 hook report "$(ev PostToolUse s1 '"tool_name":"Agent"')"
@@ -1623,7 +1636,7 @@ rm "$HOME/.claude/dsp-routes/lead2.json"
 
 # --- a script's --help is its whole interface: shown only its docstring's first line, a lead read
 # ~20k characters of the scripts' source to learn their options (F84)
-for s in route_state.py criteria_check.py plan_lint.py scope_check.py usage_report.py apply_markers.py decision_check.py; do
+for s in route_state.py criteria_check.py plan_lint.py scope_check.py test_check.py usage_report.py apply_markers.py decision_check.py; do
 	last=$(python3 -c 'import ast, sys; print(ast.get_docstring(ast.parse(open(sys.argv[1]).read())).strip().splitlines()[-1].strip())' "$SCRIPTS/$s")
 	python3 "$SCRIPTS/$s" --help 2>&1 | grep -qF -- "$last" && ok "$s --help prints its whole docstring" ||
 		bad "$s --help lacks its docstring's last line: $last"
@@ -1790,6 +1803,76 @@ hook '/^ETA exec-p1-04-a/' "$(hdispatch exec-p1-04-a r9)"
 mkdir -p "$H/.plan/reviews/s1/verify"
 printf 'You decide one claim \x96 R1.\n' >"$H/.plan/reviews/s1/verify/R1.prompt.md"
 hook 'deny:a verifier.s prompt is the file' "$(ev PreToolUse h1 "\"tool_name\":\"Agent\",\"tool_input\":{\"name\":\"verify-R1\",\"prompt\":\"edited\"},\"transcript_path\":\"$HL\"")"
+
+# --- test_check.py: a lane that deletes a test file, drops a test or adds a skip turns its gate
+# green by testing less; the plan must name each deletion, and every skip goes to the lead
+TC=$T/tcheck
+mkdir -p "$TC/plans" "$TC/repo/tests" "$TC/repo/src"
+printf '# p1-01-x\n## File structure\n| `src/list.ts` | list |\n## Task 1\n' >"$TC/plans/p1-01-x.md"
+git init -q -b main "$TC/repo"
+printf 'def test_merge():\n    assert 1\n    assert 11\n\n\ndef test_split():\n    assert 2\n\n\ndef test_shift():\n    assert 4\n' >"$TC/repo/tests/test_names.py"
+printf "it('sorts', () => {});\n" >"$TC/repo/src/list.test.ts"
+printf 'def test_gone():\n    assert 3\n' >"$TC/repo/tests/test_old.py"
+printf 'def test_moves():\n    assert 5\n' >"$TC/repo/tests/test_moved.py"
+printf 'def test_loose():\n    assert x == 1\n' >"$TC/repo/tests/test_loose.py"
+printf '#[test]\nfn reads() {\n    let v = load().expect("loads");\n    // assert_eq!(v, 1) by construction\n    check(v);\n}\n' >"$TC/repo/tests/seam.rs"
+printf 'fn one() -> u8 { 1 }\n\n#[test]\nfn adds() {\n    assert_eq!(one(), 1);\n}\n' >"$TC/repo/src/lib.rs"
+git -C "$TC/repo" add . && git -C "$TC/repo" "${G[@]}" commit -q -m base
+printf 'def test_merge():\n    assert 1\n' >"$TC/repo/tests/test_names.py"
+printf 'def test_shift():\n    assert 4\n' >"$TC/repo/tests/test_other.py"
+printf 'def test_loose():\n    assert x\n' >"$TC/repo/tests/test_loose.py"
+printf '#[test]\nfn reads() {\n    check(load_ok());\n}\n' >"$TC/repo/tests/seam.rs"
+printf "it.skip('sorts', () => {});\n" >"$TC/repo/src/list.test.ts"
+printf 'fn one() -> u8 { [0, 1].iter().skip(1).sum() }\n' >"$TC/repo/src/lib.rs"
+mkdir -p "$TC/repo/tests/unit"
+git -C "$TC/repo" mv tests/test_moved.py tests/unit/test_moved.py
+git -C "$TC/repo" rm -q tests/test_old.py
+git -C "$TC/repo" add . && git -C "$TC/repo" "${G[@]}" commit -q -m lane
+out=$(python3 "$SCRIPTS/test_check.py" "$TC/plans" --diff HEAD~1..HEAD --repo "$TC/repo")
+code=$?
+[ $code = 1 ] && grep -qx 'DELETED  tests/test_old.py' <<<"$out" &&
+	grep -qx 'REMOVED  test_split  tests/test_names.py' <<<"$out" && grep -qx 'REMOVED  adds  src/lib.rs' <<<"$out" &&
+	grep -q '^SKIP     src/list.test.ts:1 ' <<<"$out" && grep -qx 'FEWER    tests/test_names.py  1 fewer assertions' <<<"$out" &&
+	! grep -q 'test_merge\|test_shift\|test_gone\|test_moves\|lib.rs:\|^REMOVED  sorts\|test_other\|test_loose\|seam.rs' <<<"$out" &&
+	ok "test_check: a deleted test file, two dropped tests, a dropped assertion and an added skip; moves, iter().skip and an assertion rewritten in place are not" ||
+	bad "test_check (exit $code): $out"
+printf 'Task 1 deletes `tests/test_old.py`, drops test_split and the `adds` test.\n' >>"$TC/plans/p1-01-x.md"
+out=$(python3 "$SCRIPTS/test_check.py" "$TC/plans" --diff HEAD~1..HEAD --repo "$TC/repo")
+code=$?
+[ $code = 1 ] && grep -q '^SKIP     src/list.test.ts:1 ' <<<"$out" && grep -q '^FEWER    tests/test_names.py' <<<"$out" &&
+	! grep -q '^DELETED\|^REMOVED' <<<"$out" &&
+	ok "test_check: deletions the plan names pass, a skip and a dropped assertion still go to the lead" ||
+	bad "test_check, named (exit $code): $out"
+printf "it('sorts', () => {});\n" >"$TC/repo/src/list.test.ts"
+printf 'def test_merge():\n    assert 1\n    assert 11\n' >"$TC/repo/tests/test_names.py"
+git -C "$TC/repo" add . && git -C "$TC/repo" "${G[@]}" commit -q -m unskip
+out=$(python3 "$SCRIPTS/test_check.py" "$TC/plans" --diff HEAD~2..HEAD --repo "$TC/repo")
+[ $? = 0 ] && ok "test_check: exit 0 when every change is named and nothing is skipped" || bad "test_check, clean: $out"
+out=$(python3 "$SCRIPTS/test_check.py" "$TC/plans" --diff HEAD..HEAD --repo "$TC/repo")
+[ $? = 2 ] && ok "test_check: an empty range fails" || bad "test_check, empty range: $out"
+# a test file renamed out of the test paths stops running as surely as one deleted; a path git
+# quotes (a `"` in it) keeps its own lines, never the previous file's
+TQ=$T/tcheck2
+mkdir -p "$TQ/plans" "$TQ/repo/tests"
+printf '# p1-01-x\n' >"$TQ/plans/p1-01-x.md"
+git init -q -b main "$TQ/repo"
+printf 'def test_hidden():\n    assert 1\n' >"$TQ/repo/tests/test_hide.py"
+printf 'def test_kept():\n    assert 1\n\n\ndef test_quoted():\n    assert 2\n' >"$TQ/repo/tests/test_q\"x.py"
+printf 'def test_a():\n    assert 1\n' >"$TQ/repo/tests/test_a.py"
+printf 'def test_spaced():\n    assert 1\n\n\ndef test_other():\n    assert 2\n' >"$TQ/repo/tests/test sp.py"
+git -C "$TQ/repo" add . && git -C "$TQ/repo" "${G[@]}" commit -q -m base
+mkdir -p "$TQ/repo/notes"
+git -C "$TQ/repo" mv tests/test_hide.py notes/hide.txt
+printf 'def test_kept():\n    assert 1\n' >"$TQ/repo/tests/test_q\"x.py"
+printf 'def test_a():\n    assert 1\n    assert 3\n' >"$TQ/repo/tests/test_a.py"
+printf 'def test_other():\n    assert 2\n' >"$TQ/repo/tests/test sp.py"
+git -C "$TQ/repo" add . && git -C "$TQ/repo" "${G[@]}" commit -q -m lane
+out=$(python3 "$SCRIPTS/test_check.py" "$TQ/plans" --diff HEAD~1..HEAD --repo "$TQ/repo")
+code=$?
+[ $code = 1 ] && grep -qx 'DELETED  tests/test_hide.py' <<<"$out" &&
+	grep -qx 'REMOVED  test_quoted  tests/test_q"x.py' <<<"$out" && grep -qx 'REMOVED  test_spaced  tests/test sp.py' <<<"$out" && ! grep -q 'test_a.py\|hide.txt' <<<"$out" &&
+	ok "test_check: a test file renamed out of the test paths, and a quoted path" ||
+	bad "test_check, rename out and quoted path (exit $code): $out"
 
 [ "$FAIL" = 0 ] && echo "ALL PASS" || echo "FAILURES"
 exit "$FAIL"

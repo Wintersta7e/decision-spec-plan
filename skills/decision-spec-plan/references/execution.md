@@ -106,6 +106,14 @@ run `criteria_check.py` on the one spec file.)
   read-only — commit on its behalf and re-run any red it reports yourself.
 - **Two lanes never share a worktree.** Before editing a worktree yourself, confirm its agent is
   idle and has no message pending — quiet is not idle.
+- **The lanes run on the user's machine.** Each dispatch states the repeat counts it allows, and
+  that builds and suites run at low priority (`dsp-deep`); a run that passed on a SHA is never
+  re-run on it — yours included — its log is the evidence. Lanes of one project build into one
+  shared output dir where the toolchain allows it (`CARGO_TARGET_DIR`), and a lane's worktree
+  leaves with its build output and scratch clones. **Why:** an agent ran an end-to-end suite 60
+  times where its brief said 20; a lead re-ran a green 20-minute check while the user's machine
+  lagged and a game crashed out of memory; lane builds and scratch clones held 18 GB on a disk 89%
+  full (`failure-modes` F100).
 - **A group that stops on no progress** (`dsp-deep`: the same failing tests after two fix attempts)
   returns a checkpoint naming the failing tests and the hypotheses it ruled out. You rule: a fresh
   agent told what is already ruled out, a plan fix, or a question to the user (`failure-modes` F58).
@@ -124,7 +132,10 @@ Once every lane of a wave has reported, dispatch one fresh `dsp-deep` **wave int
 1. **Merge the exact SHA the lane reported**, never the branch name — after
    `scope_check.py <plans-dir> --glob '<plan-id>-*.md' --diff <wave base>..<SHA> --repo <repo>`
    exits 0: a file outside the lane's plan stops that lane's merge and is recorded; **you** revert it
-   or ask the user (F89).
+   or ask the user (F89). `test_check.py` with the same arguments must exit 0 too: a test file
+   deleted or a test removed that the plan does not name, a skip added or assertions dropped stops
+   the merge, and **you** rule each line — restore the test, or record why the plan's intent covers
+   it (F99). The lane's green gate cannot show what it stopped testing.
 2. Resolve conflicts; **regenerate** every derived file and count (codegen, locks) — never
    hand-merge them.
 3. **Run the full gate after every cross-lane merge**, its whole output to
@@ -153,7 +164,13 @@ its own full gate first:
 `{ echo "sha=$(git rev-parse HEAD) dirty=$(git status --porcelain --untracked-files=no | grep -c .)"; <full gate>; echo "exit=$?"; } > <planning-dir>/lanes/<name>-gate.log 2>&1`.
 On a route activated with `--ci-harness <label>` the commit also needs a log of the CI's own suite,
 `echo "harness=<label>"` after the `sha=` line — never a local stand-in for it (a stub in place of
-the CI's database harness passed four times locally and failed four CI runs; F90).
+the CI's database harness passed four times locally and failed four CI runs; F90). CI on a runner
+this host is not (Windows, macOS) is such a suite: `--activate` names it until the route answers
+`--ci-harness <label>` or `--ci-harness none`; run it where it can run (a Windows shell from WSL, a
+scratch branch's CI run before main), never assume it. **A CI red that turns green on a rerun is a
+defect until reproduced**: reproduce it (the test looped, under load) before the next push, and the
+push ask names it — two such reds closed as "cause unknown" were real races, and main stayed red
+for eight hours.
 Push as `git [-C <dir>] push <remote> <ref>…`: a push with no refspec, other git options before
 `push`, a `GIT_*` variable, a `pushd`, `sudo`/`xargs`, a script, stdin or computed string fed to a
 shell, a computed command name, or a `cd` to a directory the command computes (`cd "$(…)"`, a

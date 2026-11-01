@@ -85,8 +85,9 @@ session or a compaction must lose nothing.
 --activate --rung <S|M|L>`** — again at each new phase, in every new lead session (a `--resume`d one
 stays registered), and with `--sections <first>-` once the first section number is known. **Read the
 CI config before the first push**: a suite CI runs that the local full gate does not (another
-database, container tests) is named once with `--ci-harness <label>`, and each push then needs its
-log too (F90). Its hook
+database, container tests, another OS — `--activate` names that one) is named once with
+`--ci-harness <label>` (or `none` when the local gate covers it), and each push then needs its log
+too (F90). Its hook
 then injects what changed in place of a probe per turn — you write the next action (F57, F62); after a compaction or a resume, the whole state
 and what to re-read; after this skill changed, its changed files. Read them before the next action
 (F61, F78). **Tell the user in a line or two whenever an agent returns**: what came back, what it
@@ -187,8 +188,9 @@ exits 0 — every criterion maps to a task and a test file — and you read ever
 ### Stage 5 — Execution
 
 `references/execution.md`: lanes of fresh task-group agents, one integrator per wave, you check
-its SHAs first-hand; no lane merges a file outside its plan (`scope_check.py --diff`; at S, you run
-it before the push). Every outward action (push, PR, release) is asked for when it happens (F81), and a
+its SHAs first-hand; no lane merges a file outside its plan (`scope_check.py --diff`) or a test it
+dropped, skipped or weakened unruled (`test_check.py`; at S, you run
+both before the push). Every outward action (push, PR, release) is asked for when it happens (F81), and a
 push sends only commits a full gate passed (`push_guard.py`). The seven sins review only really
 large work: at L, the phase's last push; at any rung, a push the user asks a review of — `--sins on`
 before it, `off` after; past 30 commits, slice by slice (`sins/lead.md`, code mode; F70, F95).

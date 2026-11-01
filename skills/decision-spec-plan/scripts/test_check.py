@@ -1,0 +1,221 @@
+#!/usr/bin/env python3
+"""List the tests a commit range takes away: what a lane gave up to turn its gate green.
+
+A lane's gate passes as easily by testing less as by fixing the code, and the review of its diff
+reads the code it changed, not the tests it no longer runs. On impossible tasks, Claude-family
+agents that cheated did it mostly by editing the tests. This lists four kinds of change in
+`<base>..<head>` (in `--repo`, default `.`):
+
+    DELETED  <file>              a test file the range deletes or renames out of the test paths
+    REMOVED  <test>  <file>      a test whose defining line the range removes and adds nowhere
+    SKIP     <file>:<line> <text>  a skip, only or ignore marker the range adds
+    FEWER    <file>  <n> fewer assertions   a test file of the range that ends with fewer
+
+A test file is a path under `test/`, `tests/`, `__tests__/` or `spec/`, or named `test_*.py`,
+`*_test.py`, `*_test.go`, `*.test.js`/`*.spec.ts` (and the jsx/tsx/mjs/cjs kin), `*Test.java`,
+`*Tests.cs`, `*Test.kt` or `*_spec.rb`. A test is a Python `def test*`, a Go `func Test*`, a JS/TS
+`it('...')` or `test('...')`, or the function after a `#[test]`, `@Test`, `[Fact]`, `[Test]` or
+`[TestMethod]` line. The tests of a deleted file are its DELETED line, not REMOVED lines. An
+assertion is a line of a test file opening with `assert` or calling `assert*(`, `assert*!(`,
+`expect(`, `Assert.*(`, `t.Error(`, `t.Fatal(` or `require.*(`; one the range adds back anywhere
+moved, one rewritten in place offsets the line it replaced, and a removed test's own are its
+REMOVED line.
+
+A DELETED or REMOVED line passes when a plan matching `--glob` names it: the path, or the test's
+name standing alone. A SKIP or FEWER line never passes: the lead rules each one, since a plan that
+names a skip does not say the test it hides was meant to fail. Not caught: an assertion loosened in
+place, a test body emptied, assertions dropped from a test inside a source file (a Rust `mod
+tests`), a test excluded by the runner's configuration.
+
+Usage:
+    test_check.py <plans-dir> --diff <base>..<head> [--repo <repo>] [--glob 'p1-03-*.md']
+
+Exit 0 when nothing is unnamed and nothing went to the lead, 1 otherwise, 2 when the range changed
+nothing or git failed.
+"""
+
+import argparse
+import codecs
+import pathlib
+import re
+import subprocess
+import sys
+
+
+def header_path(rest):
+    """The path of a diff's `--- ` or `+++ ` line, None for /dev/null. Git C-quotes a path with a
+    `"`, a backslash or a control character, and ends one holding a space with a tab."""
+    rest = rest.rstrip("\t")
+    if rest == "/dev/null":
+        return None
+    if rest.startswith('"'):
+        rest = codecs.escape_decode(rest[1:-1].encode())[0].decode(errors="replace")
+    return rest[2:]
+
+
+TEST_PATH = re.compile(
+    r"(?:^|/)(?:tests?|__tests__|spec)/|(?:^|/)test_[^/]*\.py$|_test\.(?:py|go)$"
+    r"|\.(?:test|spec)\.[cm]?[jt]sx?$|Tests?\.(?:java|kt|cs)$|_spec\.rb$"
+)
+NAME = re.compile(
+    r"^\s*(?:async\s+)?def\s+(test\w*)|^func\s+(Test\w+)\s*\("
+    r"|^\s*(?:it|test)(?:\.\w+)*\s*\(\s*(['\"`])(.+?)\3"
+)
+ATTR = re.compile(
+    r"^\s*(?:#\[(?:\w+::)?test\]|@Test\b|\[(?:Fact|Theory|Test|TestMethod)\])"
+)
+AFTER_ATTR = re.compile(r"\bfn\s+(\w+)|\b(\w+)\s*\(")
+SKIP = re.compile(
+    r"\b(?:it|test|describe|context|suite)\.(?:skip|only|todo|fixme)\b|\bx(?:it|describe|test)\s*\("
+    r"|@pytest\.mark\.(?:skip|skipif|xfail)\b|@unittest\.(?:skip\w*|expectedFailure)\b"
+    r"|\bpytest\.(?:skip|xfail)\s*\(|#\[ignore\b|\bt\.Skip(?:Now|f)?\s*\(|@Disabled\b|@Ignore\b"
+    r"|\[Ignore\]|\bSkip\s*=\s*\""
+)
+ASSERT = re.compile(
+    r"^\s*assert\b|\b(?:assert\w*!?|assert\.\w+|(?<![.\w])expect|Assert\.\w+|t\.(?:Error|Fatal)f?"
+    r"|require\.\w+)\s*\("
+)
+HUNK = re.compile(r"^@@ -\d+(?:,\d+)? \+(\d+)")
+
+
+def git(repo, *args):
+    out = subprocess.run(
+        ["git", "-C", repo, "-c", "core.quotePath=false", *args],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    if out.returncode:
+        print(out.stderr.strip())
+        sys.exit(2)
+    return out.stdout
+
+
+def scan(diff):
+    """(names on removed lines, names on added lines, added skip lines, {test file: assertion
+    lines removed minus added}) of a -U0 diff; a name is (test, file), a skip (file, line, text).
+    An assertion removed after a removed test's defining line in one hunk is that test's, which
+    its REMOVED line (or its move) already covers."""
+    names = {"-": set(), "+": set()}
+    added, asserts, gone, came = [], [], set(), set()
+    old = new = path = None
+    line, header, armed, inside = 0, False, {"-": False, "+": False}, False
+    for raw in diff.splitlines():
+        if raw.startswith("diff --git "):
+            header, old, new = True, None, None
+            continue
+        if header:
+            # a deleted file's lines belong to its old path, every other file's to its new one
+            if raw.startswith("--- "):
+                old = header_path(raw[4:])
+            elif raw.startswith("+++ "):
+                new = header_path(raw[4:])
+                path = new or old
+            elif m := HUNK.match(raw):
+                line, header, armed = int(m[1]), False, {"-": False, "+": False}
+                inside = False
+            continue
+        if m := HUNK.match(raw):
+            line, armed, inside = int(m[1]), {"-": False, "+": False}, False
+            continue
+        sign, text = raw[:1], raw[1:]
+        if sign not in ("+", "-"):
+            continue
+        if ATTR.match(text):
+            armed[sign] = True
+        elif m := NAME.match(text):
+            names[sign].add((m[1] or m[2] or m[4], path))
+            inside = inside or sign == "-"
+        elif armed[sign] and text.lstrip().startswith(("@", "#[", "[")):
+            pass  # another attribute between the test marker and its function
+        elif armed[sign] and (m := AFTER_ATTR.search(text)):
+            names[sign].add((m[1] or m[2], path))
+            armed[sign] = False
+            inside = inside or sign == "-"
+        if (
+            TEST_PATH.search(path)
+            and ASSERT.search(text)
+            and not text.lstrip().startswith(("//", "#", "*", "/*"))
+            and not (sign == "-" and inside)
+        ):
+            asserts.append((sign, path, text.strip()))
+        if sign == "+":
+            if SKIP.search(text):
+                added.append((path, line, text.strip()))
+            came.add(text.strip())
+            line += 1
+        else:
+            gone.add(text.strip())
+    # an assertion whose line the range adds back anywhere moved; one rewritten in place offsets
+    # the line it replaced
+    fewer = {}
+    for sign, p, t in asserts:
+        if t not in (came if sign == "-" else gone):
+            fewer[p] = fewer.get(p, 0) + (1 if sign == "-" else -1)
+    skips = [s for s in added if s[2] not in gone]
+    return names["-"], names["+"], skips, fewer
+
+
+def named(text, word):
+    return re.search(rf"(?<![\w./-]){re.escape(word)}(?![\w/-]|\.\w)", text)
+
+
+def main():
+    ap = argparse.ArgumentParser(
+        description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter
+    )
+    ap.add_argument("plans_dir")
+    ap.add_argument("--diff", metavar="RANGE", required=True)
+    ap.add_argument("--repo", default=".")
+    ap.add_argument("--glob", default="*.md")
+    args = ap.parse_args()
+    plans = "\n".join(
+        f.read_text(errors="replace")
+        for f in sorted(pathlib.Path(args.plans_dir).glob(args.glob))
+    )
+
+    status = git(args.repo, "diff", "--name-status", "-M", "-z", args.diff).split("\0")
+    if not [s for s in status if s]:
+        print(f"{args.diff} changed nothing")
+        return 2
+    # a test file renamed out of the test paths no longer runs: it is deleted, and its new path's
+    # lines are its DELETED line's, like a deleted file's
+    deleted, retired, i = set(), set(), 0
+    while i < len(status) - 1:
+        kind = status[i]
+        if kind == "D":
+            deleted.add(status[i + 1])
+        elif kind[:1] == "R" and not TEST_PATH.search(status[i + 2]):
+            deleted.add(status[i + 1])
+            retired.add(status[i + 2])
+        i += 3 if kind[:1] in "RC" else 2
+    removed, added, skips, fewer = scan(git(args.repo, "diff", "-U0", "-M", args.diff))
+    added_names = {n for n, _ in added}
+    gone = deleted | retired
+
+    bad = [
+        f"DELETED  {f}"
+        for f in sorted(deleted)
+        if TEST_PATH.search(f) and not named(plans, f)
+    ]
+    bad += [
+        f"REMOVED  {n}  {f}"
+        for n, f in sorted(removed)
+        if f not in gone and n not in added_names and not named(plans, n)
+    ]
+    bad += [f"SKIP     {f}:{n} {t}" for f, n, t in skips]
+    bad += [
+        f"FEWER    {f}  {n} fewer assertions"
+        for f, n in sorted(fewer.items())
+        if n > 0 and f not in gone
+    ]
+    for b in bad:
+        print(b)
+    print(
+        f"{len(bad)} deleted test files, removed tests, added skips or dropped assertions need a ruling"
+    )
+    return 1 if bad else 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

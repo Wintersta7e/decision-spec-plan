@@ -448,6 +448,19 @@ def load_json(path):
         return {}
 
 
+RUNNER = re.compile(r"\b(?:windows|macos)-(?:latest|\d[\w.-]*)\b")
+
+
+def foreign_runners(repo):
+    """The CI runners on an OS other than this host's, named in the repo's workflows: the local
+    full gate never runs what they test (F90)."""
+    host = {"win32": "windows", "darwin": "macos"}.get(sys.platform, "linux")
+    found = set()
+    for f in pathlib.Path(repo).glob(".github/workflows/*.y*ml"):
+        found |= {m[0] for m in RUNNER.finditer(f.read_text(errors="replace"))}
+    return sorted(r for r in found if not r.startswith(host))
+
+
 def activate(a, main):
     """Record this round's arguments where the hooks and push_guard.py find them."""
     # Absolute paths, so the hook resolves them from any working directory.
@@ -482,6 +495,8 @@ def activate(a, main):
     harness = a.ci_harness or old.get("ci_harness")
     if harness and harness != "none":
         marker["ci_harness"] = harness
+    elif a.ci_harness == "none" or (not a.ci_harness and old.get("ci_none")):
+        marker["ci_none"] = True  # the answer: the local gate covers what CI runs
     if (a.sins or old.get("sins")) == "on":
         marker["sins"] = "on"
     # The decision ledger (decision_check.py) binds a phase whose index did not exist when the
@@ -515,6 +530,14 @@ def activate(a, main):
         print(
             "sins on: push_guard.py also holds every push until a seven-sins verdict covers it "
             "(references/sins/lead.md; `--sins off` clears it)"
+        )
+    unanswered = "ci_harness" not in marker and "ci_none" not in marker
+    if foreign := unanswered and a.repo and foreign_runners(a.repo):
+        print(
+            f"CI runs on {', '.join(foreign)}, which this host is not: the local full gate "
+            "never runs what it tests. Activate again with --ci-harness <label> (each push then "
+            "needs that suite's gate log, run where it can run: execution.md) or --ci-harness "
+            "none when the local gate covers it (F90)"
         )
     session = os.environ.get("CLAUDE_CODE_SESSION_ID")
     if not session:
@@ -550,7 +573,7 @@ def activate(a, main):
             f"other route on this account: {planning_dir} (lead last active "
             f"{ago(time.time() - t)} ago) — it shares the weekly and second-model quota"
         )
-    return 0
+    return 1 if foreign else 0
 
 
 def budget(argv):
