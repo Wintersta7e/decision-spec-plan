@@ -1,6 +1,6 @@
 ---
 name: decision-spec-plan
-description: "Run the decision → spec → plan route for a large phase, milestone or multi-subsystem feature: harvest what exists, rule each open decision with one agent per decision, cross-model and seam review, ask the user the few calls that matter, write an arbiter, then write the spec one author per file, reconcile by seam, and write executable plans one per lane for wave execution. Use this whenever the user asks to spec, specify, design or plan a phase, milestone, version or roadmap item that has several open design questions or will be built by parallel agents — 'spec the next phase', 'write the decision brief', 'plan v2', 'do it the way we did the last phase', 'let's plan the next milestone properly' — even if they don't name the route. Not for a single feature with one obvious design (use brainstorming + test-driven-development) or for a bug. Load it first for a seven-sins review too ('summon the sins team', 'run the seven sins on this'): the sins run inside this route."
+description: "Run any task the user hands over through analysis, decisions, spec, plan, execution and testing, verified at every gate: harvest what exists, rule each open decision (one agent per decision above rung S), cross-model and seam review, ask the user the few calls that matter, then spec, plan and execute in waves with gated merges. Use it for any task the user hands over with 'dsp' ('use dsp', 'with dsp', 'dsp this') — a bug, a bug hunt, an investigation, a feature, a review — and, unprompted, whenever the user asks to spec, specify, design or plan a phase, milestone, version or roadmap item that has several open design questions or will be built by parallel agents ('spec the next phase', 'write the decision brief', 'plan v2', 'do it the way we did the last phase'). Without 'dsp', not for a single feature with one obvious design or a bug. Load it first for a seven-sins review too ('summon the sins team', 'run the seven sins on this'): the sins run inside this route."
 ---
 
 # Decision → Spec → Plan
@@ -26,6 +26,8 @@ verification** (a ruling on an unverified claim propagates into every plan).
 | **S** | 1–3 open decisions, one plan — **and always** a PR/MR review, a review-fix round or a proposal-only ticket, whatever its count (`failure-modes` F50; an S build: `costs.md`) | **You write the decision document (`templates.md` §1), the one spec file and the one plan**, each to its brief, uncopied; harvest inline; fresh groups execute the plan (`execution.md`), never you. One second-model review after the plan (`prompts.md` §1e; unavailable: Lead mechanics) replaces both reviews; its findings' dispositions close the decision document. No dispatch file, arbiter, markers, register fold or plan index; the scope tables open the spec file |
 | **M** | 4–7 decisions, or fewer needing several plans | Harvest inline or by one agent; 2–4 spec authors; reconciliation per Stage 3. Every other step as at L |
 | **L** | 8+ decisions, several subsystems | The full route |
+
+**Any task fits** (a bug, a bug hunt, a question): `tasks.md` gives each its shape. Route the task the user named, never the nearest stage.
 
 **Say which, why, the headcount, the models and the cost** — agents per stage, summed; the model
 and effort you picked for each role, with a one-line reason (`prompts.md` header: the session's model
@@ -114,7 +116,8 @@ data-loss or safety defect goes to the user immediately, with a proposed fix —
 
 1. **Write the brief** (`briefs/decision-brief.md`) **and the index** (`templates.md` §1) — its
    **asks** first: every sentence the requester wrote asking for a change, verbatim, and a Do not
-   touch list; every change the round makes cites one or a user ruling (F89); every requirement
+   touch list; every change the round makes cites one or a user ruling (F89), every decision the
+   ask it serves or `backlog`, past six the user's triage (F101); every requirement
    dimension owned or N/A — and check the index against §1's pre-dispatch list (each item a real
    framing error) and `decision_check.py`.
 2. **Framing review before dispatch** by the second model, read-only (`prompts.md` §1a); apply its
@@ -126,8 +129,8 @@ data-loss or safety defect goes to the user immediately, with a proposed fix —
 5. **Ask the user the calls that change what gets built**, collected as they surface — at most four
    per `AskUserQuestion`, the four that most change the architecture, recommended option first,
    **each option stating its consequence** so the fallout needs no second round-trip. A fifth
-   becomes a default in the arbiter that the user may overturn (the same limit in
-   `user-questions.md`). Tell the user anything an agent did that they should know (e.g. read their
+   becomes a default in the arbiter that the user may overturn. Every ask follows
+   `user-questions.md`: the case against, `backlog`, the answer tally; "pause" means hand off now. Tell the user anything an agent did that they should know (e.g. read their
    personal data).
 6. **Write the arbiter** (`templates.md` §2): U-rulings first, then A-rulings by topic, each citing
    the seam item, which side won and why, what each losing ruling must now say — **and the code

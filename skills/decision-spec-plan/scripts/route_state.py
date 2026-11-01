@@ -20,7 +20,7 @@ ref that moved or merged into the base, a ref gone (F91).
 Usage:
     route_state.py <planning-dir> --phase P [--repo DIR] [--main BRANCH] [--sections 38-48 | 38-]
         [--spec-dir DIR] [--all] [--activate [--rung S|M|L] [--ci-harness LABEL] [--sins on|off]]
-    route_state.py --budget LABEL --estimate M --groups N
+    route_state.py --budget LABEL --estimate M --groups N [--tasks T]
 
 --main defaults to the repository's default branch. --sections `38-` counts every section from
 §38 on (a phase whose last section is not known yet). --all lists every file with its size, age
@@ -98,6 +98,14 @@ EXEC = "exec-"
 # The agent types only the route dispatches (agents/dsp-*.md), bare or plugin-qualified.
 ROUTE_AGENTS = ("dsp-deep", "dsp-mechanical")
 SLACK = 1.25
+# the decision_check version a phase is bound under; 2 added the decisions table's Serves column
+LEDGER_CHECKS = 2
+# answers taking the recommended option: past 9 of the last 10 the asks stopped informing (F101)
+TAKE_WINDOW, TAKE_RATE = 10, 9
+# --budget sizes groups by the project's task groups of this many days back
+FIT_DAYS = 14
+# the route named in a prompt; "DSP" in capitals is signal processing, `dsp-deep` an agent type
+NAMED = re.compile(r"\bdsp\b(?!-)|\bdecision-spec-plan\b")
 JOB_WAITS = 2
 CONTEXT_STOP = 200_000
 HANDOFF_MAX = 40_000
@@ -517,6 +525,9 @@ def activate(a, main):
         # later is bound, absent from the ledger
         for r in sorted(index.parent.glob("*/00-index.md")):
             ledger[f"{a.phase}/{r.parent.name}"] = False
+        # the checks the phase is bound under: one added later never holds an index written
+        # before it
+        ledger[f"{a.phase}#checks"] = LEDGER_CHECKS
     ledger.setdefault(a.phase, not index.exists())
     marker["ledger"] = ledger
     path.write_text(json.dumps(marker) + "\n")
@@ -576,6 +587,26 @@ def activate(a, main):
     return 1 if foreign else 0
 
 
+def measured_fit(session):
+    """usage_report's group line over this project's task groups of the last FIT_DAYS, and the
+    commits it says fit a group: (None, None) with no measured group."""
+    import usage_report
+
+    projects = pathlib.Path.home() / ".claude" / "projects"
+    lead = next(projects.glob(f"*/{session}.jsonl"), None)
+    if lead is None:
+        return None, None
+    floor = datetime.datetime.now(datetime.UTC) - datetime.timedelta(days=FIT_DAYS)
+    since = floor.isoformat(timespec="milliseconds").replace("+00:00", "Z")
+    agents = []
+    for path in lead.parent.glob("*.jsonl"):
+        if path.stat().st_mtime >= floor.timestamp():
+            agents += usage_report.route_cost(path, since)[1]
+    lines = usage_report.group_lines(agents, since)
+    m = lines and re.search(r"about (\d+) commits? fits? under", lines[-1])
+    return (lines[-1], int(m[1])) if m else (None, None)
+
+
 def budget(argv):
     """--budget: append a wave's estimate to the marker of this session's route."""
     ap = argparse.ArgumentParser(
@@ -591,6 +622,12 @@ def budget(argv):
         type=int,
         required=True,
         help="the exec- agents it covers: task groups, fix groups, the integrator",
+    )
+    ap.add_argument(
+        "--tasks",
+        type=int,
+        help="optional: the plan tasks the wave's task groups carry, checked against the "
+        "project's measured group fit",
     )
     ap.add_argument(
         "planning_dir", nargs="?", help="optional: this session's route's planning dir"
@@ -627,6 +664,16 @@ def budget(argv):
         f"budget recorded: {a.budget} — {a.estimate:g}M, {a.groups} exec- agents, phase "
         f"{phase}, at {record['at']}"
     )
+    # sized by count, one route's groups ran 5 -> 11 where its own measure fit two commits (F60)
+    line, fit = checked(measured_fit, session) or (None, None)
+    if line:
+        print(f"measured on this project: {line.partition('; ')[2] or line}")
+        need = -(-a.tasks // max(fit, 1)) if a.tasks else 0
+        if need > a.groups:
+            print(
+                f"{a.tasks} tasks need at least {need} task groups, not {a.groups}: size each "
+                f"group to {max(fit, 1)} tasks, re-price, and record the wave again (execution.md)."
+            )
     then = (
         f"again past {a.estimate * SLACK:.3g}M spent or {int(a.groups * SLACK)} exec- "
         "dispatches from now."
@@ -641,6 +688,12 @@ def budget(argv):
         print(
             "Tell the user this figure and wait for their answer: the hook holds every exec- "
             "dispatch until they answer, and " + then
+        )
+        # the figure asked is the figure recorded: an ask of 0.5M against a record of 0.8M
+        # was no answer to it, and cost a second ask (F93)
+        print(
+            f'Ask exactly: "Wave {a.budget}: {a.estimate:g}M for {a.groups} exec- agents — '
+            'go ahead?", with the strongest reason against it and an option to run less.'
         )
     return 0
 
@@ -753,13 +806,15 @@ def since_budget(paths, since, current, own):
 
 
 def spend(paths, since):
-    """Units these leads, their agents and the hook sessions beside them spent from `since` on."""
+    """Units these leads, their agents and the hook sessions beside them spent from `since` on —
+    but a lead's prompt written again after it sat idle past the cache's life: that is the wait
+    for the user's answer, and one such rewrite after a 3 h wait tipped a wave over (F93)."""
     import usage_report
 
     total, projects = 0.0, set()
     for path in paths:
         lead, agents, sdk = usage_report.route_cost(path, since)
-        total += lead["units"] + sum(a["units"] for a in agents)
+        total += lead["units"] - lead["idle"] + sum(a["units"] for a in agents)
         if path.parent not in projects:
             projects.add(path.parent)
             total += sum(s["units"] for s in sdk)
@@ -965,7 +1020,12 @@ def ledger_hold(event, entry):
             continue
         out = io.StringIO()
         with contextlib.redirect_stdout(out):
-            code = decision_check.main([str(r), "--rung", marker.get("rung") or "M"])
+            legacy = (
+                [] if ledger.get(f"{phase}#checks") == LEDGER_CHECKS else ["--legacy"]
+            )
+            code = decision_check.main(
+                [str(r), "--rung", marker.get("rung") or "M", *legacy]
+            )
         if code == 1:
             held.append(
                 f"the decision ledger fails `{script} {r}` — fix each line, then dispatch:\n"
@@ -1393,6 +1453,61 @@ def emit(name, text):
     )
 
 
+def unloaded(event):
+    """The line for a prompt naming the route in a session whose transcript never loaded it."""
+    if not NAMED.search(event.get("prompt") or ""):
+        return None
+    try:
+        text = pathlib.Path(event.get("transcript_path") or "").read_text(
+            errors="replace"
+        )
+    except OSError:
+        text = ""
+    # every load, by the Skill tool or a slash command, injects the skill's base directory
+    if re.search(
+        r'"skill":\s*"(?:[\w-]+:)?decision-spec-plan"'
+        r"|Base directory for this skill: \S*decision-spec-plan",
+        text,
+    ):
+        return None
+    return (
+        "The user named the decision-spec-plan route: load it with the Skill tool before any "
+        "other work — the rung announcement, its cost and `--activate` come first (one lead did "
+        "43 minutes of work before loading it). Route the task the user named, never the "
+        "skill's nearest stage (`references/tasks.md`)."
+    )
+
+
+def took(event, entry):
+    """Tally into the marker whether each answer that had a recommended option took it; past
+    TAKE_RATE of the last TAKE_WINDOW, the line telling the lead its asks stopped informing."""
+    asked = event.get("tool_input") or {}
+    answers = (event.get("tool_response") or {}).get("answers") or {}
+    path = pathlib.Path(entry["marker"])
+    marker = json.loads(path.read_text())
+    tally = marker.setdefault("asks", [])
+    before = len(tally)
+    for q in asked.get("questions") or []:
+        best = [
+            o.get("label")
+            for o in q.get("options") or []
+            if "(Recommended)" in str(o.get("label"))
+        ]
+        if best and q.get("question") in answers:
+            tally.append(answers[q["question"]] in best)
+    path.write_text(json.dumps(marker) + "\n")
+    last = tally[-TAKE_WINDOW:]
+    if len(tally) == before or len(last) < TAKE_WINDOW or sum(last) < TAKE_RATE:
+        return None
+    return (
+        f"The user took your recommendation in {sum(last)} of their last {TAKE_WINDOW} "
+        "answers: an ask answered that way no longer tells you what they want. Ask only the "
+        "calls you are unsure of, each with the strongest case against your recommendation "
+        "and a `backlog` option where it adds scope; rule the rest as defaults they may "
+        "overturn (F101)."
+    )
+
+
 def hook():
     """The hooks, for a session `--activate` registered.
 
@@ -1404,7 +1519,8 @@ def hook():
     most every THROTTLE_S and, like an agent's return as a prompt, injects only the lines that
     changed since the last injection — nothing when none did. SessionStart (compact, resume)
     injects the whole report and what to re-read. Each names the skill's files changed since the
-    session read them.
+    session read them. After an AskUserQuestion, unthrottled, PostToolUse tallies whether each
+    answer took the recommended option, and says so past TAKE_RATE of the last TAKE_WINDOW.
     """
     try:
         event = json.load(sys.stdin)
@@ -1422,6 +1538,14 @@ def hook():
             f"`python3 {pathlib.Path(__file__).resolve()} <planning-dir> --phase <P> --repo "
             "<repo> --activate --rung <S|M|L>` — before you dispatch (F79)."
         )
+    if (
+        name == "UserPromptSubmit"
+        and not event.get("agent_id")
+        and not entry_path.exists()
+        and (line := checked(unloaded, event))
+    ):
+        emit(name, line)
+        return 0
     if not session or not entry_path.exists():
         return 0
     entry = load_json(entry_path)
@@ -1481,6 +1605,13 @@ def hook():
         head = (event.get("prompt") or "").strip()[:500]
         if not any(t in head for t in RETURNS):
             return 0
+    if (
+        name == "PostToolUse"
+        and event.get("tool_name") == "AskUserQuestion"
+        and (line := checked(took, event, entry))
+    ):
+        emit(name, line)
+        return 0
     if name == "PostToolUse":
         stamp = REGISTRY / f"{session}.checked"
         if stamp.exists() and time.time() - stamp.stat().st_mtime < THROTTLE_S:

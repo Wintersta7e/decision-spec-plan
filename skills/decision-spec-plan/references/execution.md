@@ -17,9 +17,11 @@ run `criteria_check.py` on the one spec file.)
   same four UI files; of the seam defects that left, the integrator fixed four and three stayed open
   (`failure-modes` F82).
 - **Price each wave before its first dispatch** (`costs.md`, Stage 5) and record it:
-  `python3 <skill-dir>/scripts/route_state.py --budget "<wave>" --estimate <M> --groups <n>`, `<n>`
-  the `exec-` agents it covers (task groups, fix groups, the integrator). Tell the user the figure
-  and wait for their answer — one question: an AskUserQuestion answered earlier in the turn that
+  `python3 <skill-dir>/scripts/route_state.py --budget "<wave>" --estimate <M> --groups <n>
+  --tasks <t>`, `<n>` the `exec-` agents it covers (task groups, fix groups, the integrator), `<t>`
+  the plan tasks its groups carry. It prints the commits that fit a group on this project's
+  measured groups, and the groups `<t>` needs when `<n>` is short of them. Ask the user in the
+  sentence it prints (`user-questions.md`) and wait for their answer — one question: an AskUserQuestion answered earlier in the turn that
   records the figure counts (F93). The hook holds every `exec-` dispatch until the user has answered
   after the record in the session that made it — a new lead session records its own — and again once the dispatches since pass 125% of `<n>` or the spend 125% of
   the estimate: record the remaining work's figure, say what ran over and why, and wait again.
@@ -114,6 +116,20 @@ run `criteria_check.py` on the one spec file.)
   times where its brief said 20; a lead re-ran a green 20-minute check while the user's machine
   lagged and a game crashed out of memory; lane builds and scratch clones held 18 GB on a disk 89%
   full (`failure-modes` F100).
+- **Before a lane's first group, check its plan against today's tree** when commits since the
+  plan's base touched files its tasks name (`git log --oneline <base>..<main> -- <files>`). One
+  `dsp-deep` preflight group checks each claim the tasks make (a path, a symbol, a line, a
+  behaviour, a test name) against the lane's base, and writes the stale ones to
+  `<planning-dir>/lanes/<plan-id>-preflight.md`. You fix the plan before the first task group.
+  **Why:** a lead that did this unprompted found 30 of 44 claims stale in a plan 230 commits old;
+  published, a false premise is the commonest root cause of agent failure (30.7%, F91).
+- **Offer every unblocked lane at once.** When a lane ends, and when you prepare a wave's budget
+  ask, list each lane whose dependencies are merged and that shares no file with a running one
+  (`scope_check.py --waves`). Offer them to run in parallel, with one combined figure. Only
+  independent lanes: splitting one coupled task across agents does worse. **Why:** on two routes
+  the lanes ran one after another until each user wrote, in the same hour, "you can use more
+  lanes in parallel"; published, subagent fan-out inside one task fell from 71.7% to 50.0% at
+  1.65× the cost (F102).
 - **A group that stops on no progress** (`dsp-deep`: the same failing tests after two fix attempts)
   returns a checkpoint naming the failing tests and the hypotheses it ruled out. You rule: a fresh
   agent told what is already ruled out, a plan fix, or a question to the user (`failure-modes` F58).
@@ -133,9 +149,9 @@ Once every lane of a wave has reported, dispatch one fresh `dsp-deep` **wave int
    `scope_check.py <plans-dir> --glob '<plan-id>-*.md' --diff <wave base>..<SHA> --repo <repo>`
    exits 0: a file outside the lane's plan stops that lane's merge and is recorded; **you** revert it
    or ask the user (F89). `test_check.py` with the same arguments must exit 0 too: a test file
-   deleted or a test removed that the plan does not name, a skip added or assertions dropped stops
-   the merge, and **you** rule each line — restore the test, or record why the plan's intent covers
-   it (F99). The lane's green gate cannot show what it stopped testing.
+   deleted or a test removed that the plan does not name, a skip added, assertions dropped, or an
+   acceptance test's assertion changed after it was written stops the merge, and **you** rule each
+   line — restore the test, or record why the plan's intent covers it (F99). The lane's green gate cannot show what it stopped testing.
 2. Resolve conflicts; **regenerate** every derived file and count (codegen, locks) — never
    hand-merge them.
 3. **Run the full gate after every cross-lane merge**, its whole output to

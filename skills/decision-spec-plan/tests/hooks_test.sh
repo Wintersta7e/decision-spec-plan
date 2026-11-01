@@ -78,6 +78,18 @@ hook 'deny:no active decision-spec-plan route.*Skill tool.*--activate --rung' "$
 hook 'deny:no active decision-spec-plan route' "$(route_agent s1 decision-spec-plan:dsp-mechanical)"
 hook silent "$(route_agent s1 general-purpose)"
 hook silent "$(ev PreToolUse s1 '"agent_id":"a1","tool_name":"Agent","tool_input":{"subagent_type":"dsp-deep"}')"
+# a prompt naming the route in a session that has not loaded it: the skill first, before any work
+# (one lead did 43 minutes of work after "use dsp" before loading it)
+printf '%s\n' '{"type":"user","message":{"role":"user","content":"hi"}}' >"$T/no-skill.jsonl"
+printf '%s\n' '{"type":"assistant","message":{"content":[{"type":"tool_use","id":"k1","name":"Skill","input":{"skill":"decision-spec-plan"}}]}}' >"$T/skill.jsonl"
+asks() { ev UserPromptSubmit s1 "\"prompt\":$(jq -Rs . <<<"$1"),\"transcript_path\":\"$T/$2\""; }
+hook '/decision-spec-plan[^.]*Skill tool[^.]*before any other/' "$(asks 'use dsp to find why the export drops rows' no-skill.jsonl)"
+hook '/Skill tool/' "$(asks 'run this through decision-spec-plan' no-skill.jsonl)"
+hook silent "$(asks 'use dsp to find why the export drops rows' skill.jsonl)" # loaded already
+printf '%s\n' '{"type":"user","message":{"role":"user","content":[{"type":"text","text":"Base directory for this skill: /x/.claude/skills/decision-spec-plan\n\n# Decision"}]}}' >"$T/slash.jsonl"
+hook silent "$(asks 'now use dsp for the export bug' slash.jsonl)"           # loaded by its slash command
+hook silent "$(asks 'tune the DSP filter in the audio path' no-skill.jsonl)" # signal processing
+hook silent "$(asks 'how many dsp-deep agents ran?' no-skill.jsonl)"
 
 out=$(cd "$R" && env -u CLAUDE_CODE_SESSION_ID python3 "$SCRIPTS/route_state.py" "$P" --phase 1 --repo "$R" --activate)
 [ $? = 1 ] && [ -f "$(MK "$R")" ] && grep -q "CLAUDE_CODE_SESSION_ID is unset" <<<"$out" &&
@@ -87,7 +99,7 @@ hook silent "$(ev PostToolUse s1 '"tool_name":"Read"')"
 out=$(CLAUDE_CODE_SESSION_ID=s1 python3 "$SCRIPTS/route_state.py" "$P" --phase 1 --repo "$R" --sections 1- --activate)
 [ -f "$HOME/.claude/dsp-routes/s1.json" ] && grep -q '"--main", "main"' "$(MK "$R")" &&
 	ok "activate registered s1, --main resolved to main" || bad "activate s1: $out"
-jq -e '.ledger["1"] == true' "$(MK "$R")" >/dev/null && ok "a phase with no index yet is bound by the decision ledger" ||
+jq -e '.ledger["1"] == true and .ledger["1#checks"] == 2' "$(MK "$R")" >/dev/null && ok "a phase with no index yet is bound by the decision ledger, under today's checks" ||
 	bad "a fresh phase's marker lacks ledger: $(cat "$(MK "$R")")"
 hook silent "$(route_agent s1 dsp-deep)"
 hook 'deny:no active decision-spec-plan route' "$(route_agent s2 dsp-deep)" # another session
@@ -574,6 +586,22 @@ hook silent "$(ev PostToolUse s2 '"tool_name":"Read"')" # a session that never a
 hook silent "$(ev UserPromptSubmit s1 '"prompt":"what is left on the todo?"')"
 hook silent "$(ev UserPromptSubmit s1 '"prompt":"<task-notification>\n<task-id>x</task-id>"')"
 
+# --- the user's answers: nine in ten taking the recommendation stop telling the lead anything
+# (F101: 34 of 37 asks taken on one route, 27 of 29 on another, once 3 s after the ask)
+askq() { # answer [recommended-label]
+	ev PostToolUse s1 "$(jq -nc --arg a "$1" --arg r "${2:-Keep it (Recommended)}" \
+		'{tool_name:"AskUserQuestion",tool_input:{questions:[{question:"Q?",options:[{label:$r},{label:"Drop it"}]}]},tool_response:{answers:{"Q?":$a}}}' |
+		sed 's/^{//; s/}$//')"
+}
+out=$(askq 'Drop it' | python3 "$RS" --hook 2>&1)
+for _ in 1 2 3 4 5 6 7 8; do out+=$(askq 'Keep it (Recommended)' | python3 "$RS" --hook 2>&1); done
+[ -z "$out" ] && jq -e '.asks | length == 9' "$(MK "$R")" >/dev/null &&
+	ok "answers are tallied, and fewer than ten say nothing" || bad "answer tally, under ten: $out $(jq -c .asks "$(MK "$R")")"
+hook '/took your recommendation in 9 of their last 10 answers/' "$(askq 'Keep it (Recommended)')"
+hook silent "$(askq 'Keep it' 'Keep it')" # no option recommended: not tallied
+hook '/9 of their last 10/' "$(askq 'Drop it')"
+hook silent "$(askq 'Drop it')"
+
 # --- pending, not missing: index rows without files
 printf '| D1 | a |\n| D2 | b |\n' >"$P/decisions/phase1/00-index.md"
 echo "ruling" >"$P/decisions/phase1/D1-a.md"
@@ -756,7 +784,9 @@ out=$(CLAUDE_CODE_SESSION_ID=s1 python3 "$SCRIPTS/route_state.py" --budget w1 "$
 	ok "--budget naming another planning dir records nothing" || bad "--budget other dir: $out"
 out=$(CLAUDE_CODE_SESSION_ID=s1 python3 "$SCRIPTS/route_state.py" --budget w1 "$P" --estimate 10 --groups 4)
 [ $? = 0 ] && jq -e '.budgets[-1] | .label == "w1" and .groups == 4 and .phase == "1"' "$(MK "$R")" >/dev/null &&
-	grep -q "past 12.5M spent or 5 exec- dispatches" <<<"$out" && ok "--budget records the wave in the marker" || bad "--budget: $out"
+	grep -q "past 12.5M spent or 5 exec- dispatches" <<<"$out" &&
+	grep -qF 'Ask exactly: "Wave w1: 10M for 4 exec- agents' <<<"$out" &&
+	ok "--budget records the wave in the marker and prints the question to ask" || bad "--budget: $out"
 hook 'deny:has not answered' "$(dispatch exec-p1-01-a t1)"
 peer 1 >>"$LEAD"
 hook 'deny:has not answered' "$(dispatch exec-p1-01-a t1)"
@@ -779,6 +809,36 @@ used 2 u1 11000 >>"$LEAD"
 hook '/^ETA exec-p1-06-a/' "$(dispatch exec-p1-06-a t6)"
 used 2 u2 2000 >>"$LEAD"
 hook 'deny:budget .w2. .*0.0M spent since — more than 25% over' "$(dispatch exec-p1-06-a t6)" # the spend
+# a lead's prompt rewritten after it sat idle past the cache's life is the wait's cost, not the
+# wave's: one such rewrite after a 3 h wait tipped a wave over and cost a third ask (F93)
+creq() { # offset id fresh write read
+	jq -nc --arg t "$(ts "$1")" --arg id "$2" --argjson f "$3" --argjson w "$4" --argjson r "$5" \
+		'{type:"assistant",timestamp:$t,requestId:$id,message:{id:$id,model:"claude-opus-5-5",content:[],usage:{input_tokens:$f,cache_creation_input_tokens:$w,cache_read_input_tokens:$r,output_tokens:0}}}'
+}
+IW=$T/idle
+mkdir -p "$IW"
+{
+	creq -9000 i1 1000 0 0
+	creq -8940 i2 0 1000 100000
+	creq -4000 i3 0 100000 0
+	creq -3990 i4 0 500 100000
+} >"$IW/gap.jsonl"
+{
+	creq -9000 i1 1000 0 0
+	creq -8940 i2 0 1000 100000
+	creq -3990 i4 0 500 100000
+} >"$IW/none.jsonl"
+{
+	creq -9000 i1 1000 0 0
+	creq -8940 i2 0 1000 100000
+	creq -8900 i3 0 100000 0
+	creq -3990 i4 0 500 100000
+} >"$IW/busy.jsonl"
+out=$(python3 -c 'import pathlib, sys; sys.path.insert(0, sys.argv[1]); import route_state as r
+s = lambda f: r.spend([pathlib.Path(sys.argv[2], f)], sys.argv[3])
+print(s("gap.jsonl") == s("none.jsonl") < s("busy.jsonl"))' "$SCRIPTS" "$IW" "$(ts -10000)" 2>&1)
+[ "$out" = True ] && ok "budget spend: a lead's rewrite after an idle gap is not the wave's; one without a gap is" ||
+	bad "budget spend, idle rewrite: $out"
 # a budget another lead session recorded, answered there, is not this session's (F74)
 CLAUDE_CODE_SESSION_ID=s9 python3 "$SCRIPTS/route_state.py" --budget w3 --estimate 50 --groups 9 >/dev/null
 human 2 >>"$HOME/.claude/projects/p/s9.jsonl"
@@ -934,6 +994,17 @@ grep -Eq '^group  exec-p1-01-a .*first-edit=  80k  peak= 190k  commits= 2  per-c
 	grep -q '^groups 1: median 6 min, 0.0M; first edit at 80k, +55k context per commit: about 2 commits fit under 200k' <<<"$out" &&
 	! grep -q 'exec-wave1' <<<"$out" &&
 	ok "usage_report --groups" || bad "usage_report --groups: $(grep -v '^agent' <<<"$out")"
+# --budget prints that measure where the lead prices the wave: groups planned at five tasks where
+# two fit ran 5 -> 11 groups (F60, F75)
+jq '.budgets = []' "$(MK "$R")" >"$T/gm.json"
+jq -nc --arg m "$T/gm.json" --arg p "$P" '{marker:$m, planning_dir:$p}' >"$HOME/.claude/dsp-routes/g1.json"
+out=$(CLAUDE_CODE_SESSION_ID=g1 python3 "$SCRIPTS/route_state.py" --budget wg --estimate 5 --groups 3 --tasks 9 2>&1)
+grep -q 'about 2 commits fit under 200k' <<<"$out" && grep -q '9 tasks need at least 5 task groups, not 3' <<<"$out" &&
+	ok "--budget prints the project's measured group fit and the groups the tasks need" || bad "--budget fit: $out"
+out=$(CLAUDE_CODE_SESSION_ID=g1 python3 "$SCRIPTS/route_state.py" --budget wg2 --estimate 5 --groups 6 --tasks 9 2>&1)
+grep -q 'about 2 commits fit' <<<"$out" && ! grep -q 'need at least' <<<"$out" &&
+	ok "--budget with enough groups only prints the fit" || bad "--budget fit, enough: $out"
+rm "$HOME/.claude/dsp-routes/g1.json"
 
 # --- scope_check.py --waves: a file two plans of one wave change at once, unless one waits for the
 # other (three lanes of one wave edited the same UI files and left seven seam defects)
@@ -1361,7 +1432,7 @@ index() { # settled-row [security-owner] [extra]
 	printf '# Phase 1\n## SETTLED — do not re-open\n### Import\n| # | Ruling | Source |\n|---|---|---|\n%s\n' "$1"
 	printf '### Measured numbers that bind any ruling\n| Figure | Source |\n|---|---|\n| 3 s | `src/a.ts:4` |\n\n'
 	dims "${2:-}"
-	printf '\n## The decisions\n| # | Decision |\n|---|---|\n| D1 | x |\n%s\n' "${3:-}"
+	printf '\n## The decisions\n| # | Decision | Serves |\n|---|---|---|\n| D1 | x | Ask1 |\n%s\n' "${3:-}"
 }
 dcheck() { # expected-exit regex [args]
 	local out code want=$1 re=$2
@@ -1388,6 +1459,21 @@ index '| S1 | **x** | U2 |' 'N/A:' >"$DC/00-index.md"
 dcheck 1 "dimension 'security' has no owner"
 index '| S1 | **x** | U2 |' | grep -v 'Background jobs' >"$DC/00-index.md"
 dcheck 1 "dimension 'background jobs' has no row"
+# a decision serves an ask or a user ruling, or waits in the backlog; past six, the user triages
+# first: a review round grew to 14 mostly-infra decisions priced 20M, approved, and a minute later
+# the user disliked the direction (F101)
+index '| S1 | **x** | U2 |' | sed 's/| # | Decision | Serves |/| # | Decision | Why |/' >"$DC/00-index.md"
+dcheck 1 'decisions table has no Serves column'
+index '| S1 | **x** | U2 |' | sed 's/| D1 | x | Ask1 |/| D1 | x | tidier infra |/' >"$DC/00-index.md"
+dcheck 1 'D1 serves no ask'
+seven=$(for i in 2 3 4 5 6 7; do echo "| D$i | x | Ask1 |"; done)
+index '| S1 | **x** | U2 |' '' "$seven" >"$DC/00-index.md"
+dcheck 1 '7 decisions to rule.*Triage'
+index '| S1 | **x** | U2 |' '' "$seven
+> **Triage**: U3 — the user kept all seven" >"$DC/00-index.md"
+dcheck 0 '0 failure'
+index '| S1 | **x** | U2 |' '' "$(sed '1,2s/Ask1/backlog/' <<<"$seven")" >"$DC/00-index.md"
+dcheck 0 '0 failure'
 # dispositions, once the review exists: at S in the index, at M and L in the arbiter
 printf '# Seams\n## A. BLOCKERS\n**R1** — `src/a.ts:9` merges two people with one name; contradicts S1.\n**R2** — the cache is never cleared.\n## E. SAFETY\n- R3 — a crash loses the draft.\n' >"$DC/00-seams.md"
 index '| S1 | **x** | U2 |' >"$DC/00-index.md"
@@ -1410,7 +1496,18 @@ p=$DC/verify/R1.prompt.md
 [ "$out" = "$p" ] && grep -qF 'merges two people with one name' "$p" && grep -qF 'abc123' "$p" &&
 	! grep -qE 'cache|known limitation|Ruling' "$p" && ok "decision_check --verifier writes the claim and commit, nothing else" ||
 	bad "decision_check --verifier: $out"
+grep -qF 'Mutant run:' "$p" && grep -qF 'Claim:' "$p" && ok "the verifier prompt asks for the claim quoted and a mutant run" ||
+	bad "verifier prompt lacks Claim/Mutant run: $(cat "$p")"
+# a REFUTED from a test that cannot see the defect refutes nothing: it must fail on a mutant that
+# makes the claim true, and quote the claim it checks (published: generated tests are jointly
+# valid on 9.21% of tasks)
 echo 'Verdict: REFUTED' >"$DC/verify/R1.md"
+dcheck 1 "R1's REFUTED in verify/R1.md quotes no line of the claim" --rung S
+printf 'Verdict: REFUTED\nClaim: "merges two people with one name"\nRun: npm test -- a → exit=0\nMutant: key by name alone\nMutant run: npm test -- a → exit=0\n' >"$DC/verify/R1.md"
+dcheck 1 "R1's REFUTED in verify/R1.md shows no mutant run that fails" --rung S
+printf 'Verdict: REFUTED\nClaim: "merges two dogs"\nMutant run: npm test -- a → exit=1\n' >"$DC/verify/R1.md"
+dcheck 1 "R1's REFUTED in verify/R1.md quotes no line of the claim" --rung S
+printf 'Verdict: REFUTED\nClaim: "merges two people with one   name"\nRun: npm test -- a → exit=0\nMutant: key by name alone\nMutant run: npm test -- a → exit=1\n' >"$DC/verify/R1.md"
 dcheck 0 '0 failure' --rung S
 echo 'Verdict: UPHELD' >"$DC/verify/R1.md"
 dcheck 1 'R1 is declined, but verify/R1.md upheld it' --rung S
@@ -1449,6 +1546,15 @@ index '| S1 | **x** | U2 |' >"$P/decisions/phase1/00-index.md"
 out=$(dispatch exec-p1-09-a go | python3 "$RS" --hook 2>&1)
 ! grep -q 'decision ledger' <<<"$out" && ok "a passing ledger releases the exec- dispatch to the budget gate" ||
 	bad "a passing ledger still holds: $out"
+# a check added after a phase was bound never holds that phase: its index was written without it
+index '| S1 | **x** | U2 |' | sed 's/| # | Decision | Serves |/| # | Decision | Why |/' >"$P/decisions/phase1/00-index.md"
+hook "deny:decision ledger fails(.|\n)*no Serves column" "$(dispatch exec-p1-09-a go)"
+jq 'del(.ledger["1#checks"])' "$(MK "$R")" >"$T/m.json" && mv "$T/m.json" "$(MK "$R")"
+out=$(dispatch exec-p1-09-a go | python3 "$RS" --hook 2>&1)
+! grep -q 'decision ledger' <<<"$out" && ok "a phase bound before the Serves check is not held by it" ||
+	bad "a phase bound before the Serves check is held: $out"
+jq '.ledger["1#checks"] = 2' "$(MK "$R")" >"$T/m.json" && mv "$T/m.json" "$(MK "$R")"
+index '| S1 | **x** | U2 |' >"$P/decisions/phase1/00-index.md"
 # a review round in its own directory is checked by its own index (live: two rounds never read)
 RND=$P/decisions/phase1/wave2-review
 mkdir -p "$RND"
@@ -1633,6 +1739,13 @@ out=$(CLAUDE_CODE_SESSION_ID=lead python3 "$SCRIPTS/usage_report.py" --project-d
 grep -q '^session lead ' <<<"$out" && ok "usage_report without a session id reports the running session" ||
 	bad "usage_report picked: $(head -1 <<<"$out")"
 rm "$HOME/.claude/dsp-routes/lead2.json"
+
+# --- every file SKILL.md sends the lead to exists: its pointer to the ask format named a file the
+# skill never shipped
+gone=$(grep -oE '`[A-Za-z0-9_./-]+\.md`' "$PLUGIN/SKILL.md" | tr -d '`' | sort -u | while read -r n; do
+	[ -n "$(find "$(dirname "$PLUGIN/SKILL.md")" -name "$(basename "$n")" -print -quit)" ] || echo "$n"
+done)
+[ -z "$gone" ] && ok "every file SKILL.md names exists" || bad "SKILL.md names missing files: $gone"
 
 # --- a script's --help is its whole interface: shown only its docstring's first line, a lead read
 # ~20k characters of the scripts' source to learn their options (F84)
@@ -1873,6 +1986,38 @@ code=$?
 	grep -qx 'REMOVED  test_quoted  tests/test_q"x.py' <<<"$out" && grep -qx 'REMOVED  test_spaced  tests/test sp.py' <<<"$out" && ! grep -q 'test_a.py\|hide.txt' <<<"$out" &&
 	ok "test_check: a test file renamed out of the test paths, and a quoted path" ||
 	bad "test_check, rename out and quoted path (exit $code): $out"
+# an acceptance test is read-only once written: a later commit that changes its lines — `== 3`
+# loosened to `> 0` — goes to the lead, which no count of tests or assertions shows (F99)
+TA=$T/tcheck3
+mkdir -p "$TA/plans" "$TA/repo/tests"
+# only the mapping table's rows, and only test files: a source file's inline tests change with it
+printf '# p1-01-x\n| AC | Gate | Run |\n|---|---|---|\n| AC-P1-3-1 | full | `tests/test_unit.py` |\n\n| Id | Task | Test file |\n|---|---|---|\n| AC-P1-3-1 | 1 | `tests/test_ac.py::test_rule` |\n| AC-P1-3-2, -3 | 2 | `tests/test_pre.py` |\n| AC-P1-3-4 | 2 | manual |\n| AC-P1-3-5 | 2 | `src/lib.rs::tests::adds` |\n' >"$TA/plans/p1-01-x.md"
+git init -q -b main "$TA/repo"
+mkdir -p "$TA/repo/src"
+printf 'fn one() -> u8 { 1 }\n' >"$TA/repo/src/lib.rs"
+printf 'def test_pre():\n    assert load() == []\n' >"$TA/repo/tests/test_pre.py"
+printf 'def test_unit():\n    assert 1\n' >"$TA/repo/tests/test_unit.py"
+git -C "$TA/repo" add . && git -C "$TA/repo" "${G[@]}" commit -q -m base
+printf 'from m import total\n\n\ndef test_rule():\n    assert total(x) == 3\n' >"$TA/repo/tests/test_ac.py"
+git -C "$TA/repo" add . && git -C "$TA/repo" "${G[@]}" commit -q -m 'task 1'
+# a test added beside it, its import widened: the import line changes, no assertion does
+sed -i 's/import total/import more, total/' "$TA/repo/tests/test_ac.py"
+printf '\n\ndef test_more():\n    assert more(y) == 4\n' >>"$TA/repo/tests/test_ac.py"
+printf 'def test_unit():\n    assert 2\n' >"$TA/repo/tests/test_unit.py"
+git -C "$TA/repo" add . && git -C "$TA/repo" "${G[@]}" commit -q -m 'task 2'
+sed -i 's/== 3/> 0/' "$TA/repo/tests/test_ac.py"
+sed -i 's/== \[\]/is not None/' "$TA/repo/tests/test_pre.py"
+printf 'fn one() -> u8 { 2 }\n' >"$TA/repo/src/lib.rs"
+git -C "$TA/repo" add . && git -C "$TA/repo" "${G[@]}" commit -q -m fix
+c3=$(git -C "$TA/repo" log -1 --format=%h)
+out=$(python3 "$SCRIPTS/test_check.py" "$TA/plans" --diff HEAD~3..HEAD --repo "$TA/repo")
+code=$?
+[ $code = 1 ] && grep -qx "EDITED   tests/test_ac.py  $c3" <<<"$out" && grep -qx "EDITED   tests/test_pre.py  $c3" <<<"$out" &&
+	! grep -q 'test_unit\|manual\|FEWER' <<<"$out" &&
+	ok "test_check: an acceptance test changed after it was written goes to the lead; its first commit and additions do not" ||
+	bad "test_check, read-only acceptance tests (exit $code): $out"
+out=$(python3 "$SCRIPTS/test_check.py" "$TA/plans" --diff HEAD~3..HEAD~1 --repo "$TA/repo")
+[ $? = 0 ] && ok "test_check: an acceptance test written and then added to passes" || bad "test_check, acceptance additions: $out"
 
 [ "$FAIL" = 0 ] && echo "ALL PASS" || echo "FAILURES"
 exit "$FAIL"

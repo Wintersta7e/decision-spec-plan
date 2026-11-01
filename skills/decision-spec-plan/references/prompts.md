@@ -212,7 +212,10 @@ Send that file unchanged: to the second model (it costs no Claude usage), or as 
 agent named `verify-R<n>` — the hook refuses any other prompt for that name. It writes a test in
 a fresh worktree of the commit and `verify/R<n>.md`: UPHELD (apply the finding), REFUTED (the
 only basis to decline it without a ruling), NO-TEST (at M and L ask the user; at S apply the
-reviewer's fix as a default and flag it in the handoff).
+reviewer's fix as a default and flag it in the handoff). A REFUTED counts only with the claim
+quoted and the test failing on a mutant that makes the claim true: `decision_check.py` reads both
+lines. **Why:** published, generated tests were jointly valid on 9.21% of tasks, and a test
+that cannot see the defect passes either way.
 
 ---
 
@@ -263,8 +266,8 @@ It commits merges and runs gates, so it does not end with the closing lines. Its
 > lane SHA without one: stop and record it — and that
 > `<skill-dir>/scripts/scope_check.py <planning-dir>/plans --glob '<plan-id>-*.md' --diff <wave base>..<SHA> --repo <repo>`
 > exits 0 — a file outside the lane's plan: stop and record it — and that `test_check.py` with the
-> same arguments exits 0 — a test deleted or removed that the plan does not name, a skip added or
-> assertions dropped: stop and record each line it printed — then merge exactly that SHA, never
+> same arguments exits 0 — a test deleted or removed that the plan does not name, a skip added,
+> assertions dropped or an acceptance test edited: stop and record each line it printed — then merge exactly that SHA, never
 > the branch name. 2. Resolve conflicts; regenerate every derived file and count (<codegen, locks>),
 > never hand-merge them. 3. Run the full gate with its whole output to
 > `<planning-dir>/lanes/wave<w>-<plan-id>-gate.log` — never piped through `tail` or `head` — exactly

@@ -95,9 +95,16 @@ What the code does now that a ruling might keep or change; a row binds nothing.
 | Defect | Evidence | Owner D<n> |
 
 ## The decisions
-| # | Decision | Why it is a decision and not a detail | Harvest |
-|---|---|---|---|
-| **D1** | **<title>** — <the questions it answers> | <the constraint or risk that makes it a decision> | `hd:… hs:… hc:…` |
+> **Triage**: U<n> — <which the user kept, which went to the backlog> (needed past six live decisions)
+
+| # | Decision | Why it is a decision and not a detail | Serves | Harvest |
+|---|---|---|---|---|
+| **D1** | **<title>** — <the questions it answers> | <the constraint or risk that makes it a decision> | <Ask<n> · U<n> · `backlog`> | `hd:… hs:… hc:…` |
+
+Serves names the ask or user ruling the decision exists for; one that serves neither — tidier
+infrastructure, a refactor the round noticed — is `backlog` and is not dispatched. Past six live
+decisions, ask the user to triage before dispatch: each decision with its cost, keep or backlog
+(`decision_check.py`, F101).
 
 ### What each decision may NOT decide
 - **D1** prices; it does not choose which things pay — D2… name their transitions.
@@ -119,7 +126,7 @@ before execution — no decision agent reads it. Close it with the review's disp
     | R1 | applied · applied (upholds S<n>) · declined · re-opened | <D<n>/the change made · U<n> · S<n> · verify/R1.md> |
 
 A declined finding's basis is a user ruling, a SETTLED row, or a claim-only verifier's REFUTED
-verdict (`prompts.md` §1f) — never "known limitation" or "default" (F86); re-opening a SETTLED row
+verdict with its claim quoted and a failing mutant run (`prompts.md` §1f) — never "known limitation" or "default" (F86); re-opening a SETTLED row
 moves it out of SETTLED. A fix that enforces a SETTLED row unchanged is `applied (upholds S<n>)`,
 never "declined" (F98). At M and L the same table closes the arbiter, for the seam review's
 findings; a later review round in its own directory (`decisions/phase<P>/<round>/`) with no

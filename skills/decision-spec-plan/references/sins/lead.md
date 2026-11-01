@@ -85,7 +85,8 @@ message once; still missing → the verdict marks the finding "not reproduced".
 **A disputed finding** — a FAILED or PARTIAL reproduction the owner did not amend, or a finding you
 would not act on — goes to a claim-only verifier: `decision_check.py <run dir> --verifier <ID> --sha
 <reviewed SHA> --from <run dir>/<sin>.md` writes the prompt (`prompts.md` §1f); send it unchanged.
-REFUTED withdraws the finding; UPHELD keeps it standing; NO-TEST stands too and goes to the user
+REFUTED withdraws the finding only with its `Claim:` quote and a failing `Mutant run:` (a test
+that passes on code made to match the claim refutes nothing); UPHELD keeps it standing; NO-TEST stands too and goes to the user
 with both sides' evidence when it would block. Nothing is withdrawn by count or by argument.
 
 ## 4. The verdict

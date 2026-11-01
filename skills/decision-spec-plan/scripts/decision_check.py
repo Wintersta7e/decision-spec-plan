@@ -19,8 +19,10 @@ Dispositions — once `00-seams.md` exists (the seam review at M and L, the §1e
 finding `R<n>` in it has a row in the Dispositions table (the index's at S, the arbiter's at M and
 L, the index's in a round with no arbiter): applied, `applied (upholds S<n>)`, declined or
 re-opened. A declined finding's basis is a user ruling `U<n>`, a SETTLED row `S<n>`, or
-`verify/R<n>.md` whose first line is `Verdict: REFUTED` — "known limitation" or "default" is no
-basis; a finding with `Verdict: UPHELD` is never declined. A finding applied or re-opened that cites
+`verify/R<n>.md` whose first line is `Verdict: REFUTED`, with a `Claim:` line quoting the finding
+and a `Mutant run:` line ending its test's run on code made to match the claim in a non-zero
+`exit=` — "known limitation" or "default" is no basis; a finding with `Verdict: UPHELD` is never
+declined. A finding applied or re-opened that cites
 a SETTLED row takes that row out of SETTLED, unless the fix upholds it: findings that upheld a row
 were relabelled "declined" to pass, and the record lied (F98).
 
@@ -32,8 +34,14 @@ agent named `verify-<id>` (the hook refuses an edited one) or to the second mode
 finding <id> (`GRE-1`): its place, text and evidence, without severity or owner — a disputed sins
 finding is settled this way, not by debate (sins/lead.md).
 
+Decisions — each row of the index's decisions table names, in its Serves column, the ask (`Ask<n>`)
+or user ruling (`U<n>`) it serves, or is marked `backlog`; past six live decisions the index records
+the user's triage as `> **Triage**: U<n>`. A review round grew to 14 mostly-infrastructure decisions
+priced 20M, was approved, and a minute later the user disliked its direction (F101). `--legacy`
+skips this check: the route's hook passes it for a phase bound before the check existed.
+
 Usage:
-    decision_check.py <decisions-dir> [--rung S|M|L]
+    decision_check.py <decisions-dir> [--rung S|M|L] [--legacy]
     decision_check.py <decisions-dir> --verifier R<n> --sha <commit>
     decision_check.py <run-dir> --verifier <finding id> --sha <commit> --from <run-dir>/<sin>.md
 
@@ -59,6 +67,7 @@ DIMENSIONS = (
 RULING_ID = re.compile(r"\b(?:[UADS]\d+|Ask\d+)\b")
 OWNER = re.compile(r"\b(?:[UADS]\d+|Ask\d+)\b|N/A:\s*\S+\s+\S+")
 PATH = re.compile(r"`([^`\s]+?\.[A-Za-z0-9]+)(?::[\d,–-]+)?`")
+TRIAGE = 6  # live decisions a round rules before the user triages them
 # A finding opens a line with its id — `**R<n>`, or a bare `R<n>` and a dash, colon or bracket —
 # after a list marker, a numbered list's `1.` or a heading's `#`s. A wrapped line that begins
 # "R1's keying …" is no new finding.
@@ -137,6 +146,53 @@ def dimensions(index):
     return fails
 
 
+def decisions(index):
+    """Each decision names the ask or user ruling it serves, or waits in the backlog; past
+    TRIAGE live decisions the index records the user's triage."""
+    body = section(index, "The decisions")
+    if body is None:
+        return []
+    header = next(
+        (
+            [
+                c.strip().strip("*").lower()
+                for c in re.split(r"(?<!\\)\|", line.strip().strip("|"))
+            ]
+            for line in body.splitlines()
+            if line.startswith("|")
+        ),
+        [],
+    )
+    if "serves" not in header:
+        return [
+            (
+                "the decisions table has no Serves column: each decision names the Ask<n> or "
+                "U<n> it serves, or `backlog` (F101)"
+            )
+        ]
+    col = header.index("serves")
+    fails, live = [], 0
+    for cells in rows(body):
+        did = re.fullmatch(r"\**(D\d+)\**", cells[0])
+        if not did or col >= len(cells):
+            continue
+        if re.search(r"\bbacklog\b", cells[col], re.IGNORECASE):
+            continue
+        live += 1
+        if not re.search(r"\b(?:Ask|U)\d+\b", cells[col]):
+            fails.append(
+                f"{did[1]} serves no ask or user ruling ({cells[col][:60] or 'empty'}): cite "
+                "the Ask<n> or U<n> it serves, or mark it `backlog` (F101)"
+            )
+    if live > TRIAGE and not re.search(r"\*\*Triage\*\*:.*\bU\d+", index):
+        fails.append(
+            f"{live} decisions to rule: past {TRIAGE}, the user triages first — which to rule "
+            "now, which wait in the backlog, with each one's cost — recorded as "
+            "`> **Triage**: U<n>` (F101)"
+        )
+    return fails
+
+
 def findings(seams):
     """{R-number: its text} — each finding runs to the next finding or heading."""
     marks = list(FINDING.finditer(seams))
@@ -157,6 +213,31 @@ def verdict(d, rid):
     first = path.read_text(errors="replace").strip().partition("\n")[0]
     m = re.fullmatch(r"\W*Verdict:\W*(UPHELD|REFUTED|NO-TEST)\W*", first)
     return m.group(1) if m else None
+
+
+def refuted_gaps(d, rid, claim):
+    """What a REFUTED verdict lacks to decline a finding: a quote of the claim its test checks,
+    and that test failing on a mutant that makes the claim true — a test that cannot see the
+    defect refutes nothing."""
+    text = (d / "verify" / f"{rid}.md").read_text(errors="replace")
+
+    def flat(s):
+        return " ".join(s.split())
+
+    out = []
+    q = re.search(r"(?m)^\W*Claim:\W*(.+?)\W*$", text)
+    if not q or len(flat(q[1])) < 10 or flat(q[1]) not in flat(claim):
+        out.append(
+            f"{rid}'s REFUTED in verify/{rid}.md quotes no line of the claim "
+            '(`Claim: "<its words>"`)'
+        )
+    if not re.search(r"(?m)^\W*Mutant run:.*\bexit=[1-9]", text):
+        out.append(
+            f"{rid}'s REFUTED in verify/{rid}.md shows no mutant run that fails "
+            "(`Mutant run: <command> exit=<non-zero>`): a test that passes on code made to "
+            "match the claim cannot refute it"
+        )
+    return out
 
 
 def dispositions(d, index, rung, ids):
@@ -207,7 +288,11 @@ def dispositions(d, index, rung, ids):
                 fails.append(
                     f"{r} is declined, but verify/{r}.md upheld it with a test"
                 )
-            elif v != "REFUTED" and not re.search(r"\b(?:U\d+|S\d+)\b", basis):
+            elif re.search(r"\b(?:U\d+|S\d+)\b", basis):
+                pass
+            elif v == "REFUTED":
+                fails += refuted_gaps(d, r, found.get(r, ""))
+            else:
                 fails.append(
                     f"{r} is declined on '{basis[:60]}': the basis is a user ruling U<n>, a "
                     f"SETTLED row S<n>, or a REFUTED verdict — run "
@@ -249,11 +334,17 @@ def write_verifier(d, rid, sha, report=None):
         "the code, never a planning file.\n\nThe claim:\n\n"
         + claim.strip()
         + "\n\nWrite a test in the project's own framework that fails at this commit exactly "
-        "when the claim is true, and run it. Then write "
+        "when the claim is true, and run it. A test that passes proves nothing until it fails "
+        "where the claim holds: then change the code in the scratch worktree so the claim "
+        "becomes true (the mutant), run the test again, and expect it to fail. Then write "
         f"`{d.resolve()}/verify/{rid}.md`: first line `Verdict: UPHELD` (the test demonstrates "
-        "the claim), `Verdict: REFUTED` (it shows the claim false) or `Verdict: NO-TEST` (no "
-        "test can decide it — say why); then the test's path and text, the command and its "
-        "output. Judge the claim, not who made it. Reply with the verdict line and the path.\n"
+        "the claim), `Verdict: REFUTED` (it passes here and fails on the mutant) or "
+        "`Verdict: NO-TEST` (no test can decide it — say why); then, one per line, "
+        '`Claim: "<the claim\'s words your test checks, verbatim>"`, `Test: <path>` with its '
+        "text, `Run: <command> exit=<status>` with its output, and for REFUTED `Mutant: <the "
+        "change>` and `Mutant run: <command> exit=<status>`. A REFUTED without a failing "
+        "mutant run does not count. Judge the claim, not who made it. Reply with the verdict "
+        "line and the path.\n"
     )
     print(out)
     return 0
@@ -265,6 +356,7 @@ def main(argv=None):
     )
     ap.add_argument("decisions_dir")
     ap.add_argument("--rung", choices=("S", "M", "L"), default="M")
+    ap.add_argument("--legacy", action="store_true")
     ap.add_argument("--verifier", metavar="R<n>")
     ap.add_argument("--sha")
     ap.add_argument("--from", dest="report", metavar="SIN_REPORT", type=pathlib.Path)
@@ -281,6 +373,7 @@ def main(argv=None):
     index = index_path.read_text(errors="replace")
     ids, fails = settled(index)
     fails += dimensions(index)
+    fails += [] if a.legacy else decisions(index)
     fails += dispositions(d, index, a.rung, ids)
     for f in fails:
         print(f"FAIL  {f}")

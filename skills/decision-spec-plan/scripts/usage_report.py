@@ -42,6 +42,7 @@ WEIGHTS = {"input": 1.0, "write_5m": 1.25, "write_1h": 2.0, "output": 5.0}
 MODELS = (("haiku", 0.025, 0.1), ("sonnet", 0.5, 0.05))
 OPUS = (1.0, 0.05)
 HAIKU_LONG = 100_000
+CACHE_LIFE = 300  # seconds: the default prompt-cache lifetime
 LONG_TURNS = 150
 LONG_CONTEXT = 300_000
 ENTRYPOINT = re.compile(r'"entrypoint":"([^"]*)"')
@@ -67,11 +68,11 @@ def rates(model, prompt):
 def scan(path, since, until=None):
     """One transcript: weighted units, per-turn context sizes, model, first and last timestamp."""
     seen = set()
-    units = 0.0
+    units = idle = 0.0
     contexts = []
     model = None
     efforts = []
-    first = last = None
+    first = last = previous = None
     with open(path, encoding="utf-8", errors="replace") as fh:
         for line in fh:
             try:
@@ -79,8 +80,6 @@ def scan(path, since, until=None):
             except json.JSONDecodeError:
                 continue
             stamp = record.get("timestamp")
-            if stamp and ((since and stamp < since) or (until and stamp > until)):
-                continue
             message = record.get("message")
             if record.get("type") != "assistant" or not isinstance(message, dict):
                 continue
@@ -89,6 +88,11 @@ def scan(path, since, until=None):
             if not usage or key in seen or message.get("model") == "<synthetic>":
                 continue
             seen.add(key)
+            now, before = epoch(stamp), epoch(previous)
+            gap = now - before if now is not None and before is not None else 0
+            previous = stamp or previous
+            if stamp and ((since and stamp < since) or (until and stamp > until)):
+                continue
             model = message.get("model") or model
             if record.get("effort") and record["effort"] not in efforts:
                 efforts.append(record["effort"])
@@ -102,16 +106,20 @@ def scan(path, since, until=None):
             fresh = usage.get("input_tokens", 0) or 0
             out = usage.get("output_tokens", 0) or 0
             factor, read_weight = rates(model, fresh + write_all + read)
-            units += factor * (
-                WEIGHTS["input"] * fresh
-                + WEIGHTS["write_5m"] * (write_all - write_1h)
+            writes = factor * (
+                WEIGHTS["write_5m"] * (write_all - write_1h)
                 + WEIGHTS["write_1h"] * write_1h
-                + read_weight * read
-                + WEIGHTS["output"] * out
             )
+            units += writes + factor * (
+                WEIGHTS["input"] * fresh + read_weight * read + WEIGHTS["output"] * out
+            )
+            # past the cache's life the whole prompt is written again: that is the wait's cost
+            if gap >= CACHE_LIFE and write_all > read:
+                idle += writes
             contexts.append(fresh + write_all + read)
     return {
         "units": units,
+        "idle": idle,
         "contexts": contexts,
         "model": model,
         # every effort its requests ran at, in order: the lead may set it per dispatch

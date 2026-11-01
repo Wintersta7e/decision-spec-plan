@@ -3,13 +3,21 @@
 
 A lane's gate passes as easily by testing less as by fixing the code, and the review of its diff
 reads the code it changed, not the tests it no longer runs. On impossible tasks, Claude-family
-agents that cheated did it mostly by editing the tests. This lists four kinds of change in
+agents that cheated did it mostly by editing the tests. This lists five kinds of change in
 `<base>..<head>` (in `--repo`, default `.`):
 
     DELETED  <file>              a test file the range deletes or renames out of the test paths
     REMOVED  <test>  <file>      a test whose defining line the range removes and adds nowhere
     SKIP     <file>:<line> <text>  a skip, only or ignore marker the range adds
     FEWER    <file>  <n> fewer assertions   a test file of the range that ends with fewer
+    EDITED   <file>  <commit>…   an acceptance test file one of whose assertions or tests a
+                                 commit changes or removes after it was written
+
+An acceptance test file is a test file a row under a plan's `| Id | Task | Test file |` header
+maps an `AC-` id to (a source file holding the test changes with its code). Its assertions and
+tests are read-only once written — by the base, or by the range's first commit that touches it —
+and later commits may only add beside them: an assertion loosened in place keeps every count the
+same.
 
 A test file is a path under `test/`, `tests/`, `__tests__/` or `spec/`, or named `test_*.py`,
 `*_test.py`, `*_test.go`, `*.test.js`/`*.spec.ts` (and the jsx/tsx/mjs/cjs kin), `*Test.java`,
@@ -22,10 +30,11 @@ moved, one rewritten in place offsets the line it replaced, and a removed test's
 REMOVED line.
 
 A DELETED or REMOVED line passes when a plan matching `--glob` names it: the path, or the test's
-name standing alone. A SKIP or FEWER line never passes: the lead rules each one, since a plan that
-names a skip does not say the test it hides was meant to fail. Not caught: an assertion loosened in
-place, a test body emptied, assertions dropped from a test inside a source file (a Rust `mod
-tests`), a test excluded by the runner's configuration.
+name standing alone. A SKIP, FEWER or EDITED line never passes: the lead rules each one, since a
+plan that names a skip does not say the test it hides was meant to fail. Not caught: an assertion
+loosened in place outside an acceptance test file, a test body emptied there, assertions dropped
+from a test inside a source file (a Rust `mod tests`), a test excluded by the runner's
+configuration.
 
 Usage:
     test_check.py <plans-dir> --diff <base>..<head> [--repo <repo>] [--glob 'p1-03-*.md']
@@ -76,6 +85,7 @@ ASSERT = re.compile(
     r"|require\.\w+)\s*\("
 )
 HUNK = re.compile(r"^@@ -\d+(?:,\d+)? \+(\d+)")
+MAPPING = re.compile(r"^\|\s*Id\s*\|\s*Task\s*\|\s*Test file\s*\|", re.IGNORECASE)
 
 
 def git(repo, *args):
@@ -160,6 +170,47 @@ def named(text, word):
     return re.search(rf"(?<![\w./-]){re.escape(word)}(?![\w/-]|\.\w)", text)
 
 
+def acceptance_files(plans):
+    """The test files the rows under a `| Id | Task | Test file |` header map, `::test` cut off;
+    a source file holding the test changes with the code, so it is never one."""
+    files, mapping = set(), False
+    for line in plans.splitlines():
+        if MAPPING.match(line):
+            mapping = True
+        elif not line.startswith("|"):
+            mapping = False
+        elif mapping and len(cells := line.split("|")) > 3:
+            for f in re.findall(r"`([^`]+)`", cells[3]):
+                if TEST_PATH.search(path := f.split("::")[0]):
+                    files.add(path)
+    return files
+
+
+def edited(repo, rng, path):
+    """The commits of the range, oldest first, that change or remove an assertion or a test's
+    defining line of `path` after it was written: a file the base lacks is written by its first
+    commit, which is never one. An import widened for a test added beside it is not."""
+    base = rng.partition("..")[0]
+    commits = git(
+        repo, "log", "--reverse", "--no-merges", "--format=%h", rng, "--", path
+    )
+    commits = commits.split()
+    if not git(repo, "ls-tree", base, "--", path).strip():
+        commits = commits[1:]
+    out = []
+    for c in commits:
+        diff = git(repo, "diff", "-U0", f"{c}^", c, "--", path).splitlines()
+        if any(
+            ln.startswith("-")
+            and not ln.startswith("--- ")
+            and (ASSERT.search(ln[1:]) or NAME.match(ln[1:]) or ATTR.match(ln[1:]))
+            and not ln[1:].lstrip().startswith(("//", "#", "*", "/*"))
+            for ln in diff
+        ):
+            out.append(c)
+    return out
+
+
 def main():
     ap = argparse.ArgumentParser(
         description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter
@@ -209,10 +260,16 @@ def main():
         for f, n in sorted(fewer.items())
         if n > 0 and f not in gone
     ]
+    bad += [
+        f"EDITED   {f}  {' '.join(cs)}"
+        for f in sorted(acceptance_files(plans) - gone)
+        if (cs := edited(args.repo, args.diff, f))
+    ]
     for b in bad:
         print(b)
     print(
-        f"{len(bad)} deleted test files, removed tests, added skips or dropped assertions need a ruling"
+        f"{len(bad)} deleted test files, removed tests, added skips, dropped assertions or "
+        "edited acceptance tests need a ruling"
     )
     return 1 if bad else 0
 
