@@ -105,7 +105,8 @@ the text must satisfy>›`** — never a final string.
 ## The bar and the body move together
 
 **Do not edit earlier phases' acceptance files.** End your section with the acceptance criteria it
-requires, stated as prose requirements, numbered **`AC-P‹P›-<your section>-<n>`**. The register
+requires, under a heading whose text holds "Acceptance" (`### 45.9 Acceptance criteria` — the
+check reads no other), stated as prose requirements, numbered **`AC-P‹P›-<your section>-<n>`**. The register
 section folds them; you do not edit it. **Each criterion's own line opens with its full id in bold**
 (`**AC-P‹P›-<section>-7 — …**`, or a table row whose first cell is the id), numbered from 1 with no
 gap, letter suffix or range: `criteria_check.py` derives the register from those lines, and a list

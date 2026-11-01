@@ -151,7 +151,9 @@ Once every lane of a wave has reported, dispatch one fresh `dsp-deep` **wave int
    or ask the user (F89). `test_check.py` with the same arguments must exit 0 too: a test file
    deleted or a test removed that the plan does not name, a skip added, assertions dropped, or an
    acceptance test's assertion changed after it was written stops the merge, and **you** rule each
-   line — restore the test, or record why the plan's intent covers it (F99). The lane's green gate cannot show what it stopped testing.
+   line — restore the test, or record why the plan's intent covers it in the lane's rulings file
+   (`lanes/<plan-id>-rulings.md`, quoting the line), so a re-dispatched integrator merges past
+   the lines ruled there (F99). The lane's green gate cannot show what it stopped testing.
 2. Resolve conflicts; **regenerate** every derived file and count (codegen, locks) — never
    hand-merge them.
 3. **Run the full gate after every cross-lane merge**, its whole output to
@@ -199,7 +201,8 @@ red, unnoticed for hours (`failure-modes` F56) — CI confirms a state proven gr
 discovers one.
 
 **At L, review before the phase's last push; at any rung, before a push the user asks a review of**
-(`sins/lead.md`, code mode; `route_state.py --activate --sins on` first, `--sins off` once it is
+(`sins/lead.md`, code mode; `route_state.py <planning-dir> --phase <P> --activate --sins on` first
+— the route's other arguments are kept — `--sins off` once it is
 out): once the commit to push is gated, seven reviewers read what it sends against the remote's
 tip — over 30 commits, one review per slice of at most 30, cut at lane merges — and reproduce each
 other's highs; a claim a reproduction fails goes to a verifier that writes a test. Its verdict,

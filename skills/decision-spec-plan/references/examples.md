@@ -10,18 +10,18 @@ Weak: *"XP is append-only."*
 
 Strong — states the rule, the reason it reads as arbitrary without, and its source:
 
-| Ruling | Source |
-|---|---|
-| **"Append-only" is shorthand, and it is wrong for half the ledger.** Two classes: **git-derived** kinds are a pure function of history and are **deleted and recomputed** on a merge or an identity change — production does this (`merge/apply.rs:158-165`); **retained** kinds are reparented, never recomputed. **What never falls is the displayed level, not the row set.** Every new kind is classified into one class before it is priced | `01-data-model.md:442-468` |
+| # | Ruling | Source |
+|---|---|---|
+| **S4** | **"Append-only" is shorthand, and it is wrong for half the ledger.** Two classes: **git-derived** kinds are a pure function of history and are **deleted and recomputed** on a merge or an identity change — production does this (`merge/apply.rs:158-165`); **retained** kinds are reparented, never recomputed. **What never falls is the displayed level, not the row set.** Every new kind is classified into one class before it is priced | `01-data-model.md:442-468` |
 
 The weak row was in the draft index; a framing review caught that it contradicted the owning spec
 section and would have made one decision agent design retention rules incompatible with merges.
 
 ## A decision row
 
-| # | Decision | Why it is a decision and not a detail | Harvest |
-|---|---|---|---|
-| **D8** | **"Exists nowhere else" — the deletion invariant and the analyser that decides it** — what counts as elsewhere (a same-disk copy? a mirror?), how many escapes there are, whether any typed confirmation overrides the invariant, and making the shipped enabling half true | This is the rule that makes the tool not a shredder, and it is contradicted inside its own source document (which permits typing a name to delete an unbacked repository). The escapes are counted three ways. **And the analyser this phase would build on is wrong today** — the first three rows of the confirmed-defects table | `hd:C-12..C-15, U-16` · `hs:§10` · `hc:D2..D5` |
+| # | Decision | Why it is a decision and not a detail | Serves | Harvest |
+|---|---|---|---|---|
+| **D8** | **"Exists nowhere else" — the deletion invariant and the analyser that decides it** — what counts as elsewhere (a same-disk copy? a mirror?), how many escapes there are, whether any typed confirmation overrides the invariant, and making the shipped enabling half true | This is the rule that makes the tool not a shredder, and it is contradicted inside its own source document (which permits typing a name to delete an unbacked repository). The escapes are counted three ways. **And the analyser this phase would build on is wrong today** — the first three rows of the confirmed-defects table | Ask2 | `hd:C-12..C-15, U-16` · `hs:§10` · `hc:D2..D5` |
 
 Note the three parts of the middle column: the stake, the contradiction in the sources, and the live
 defect. That is what stops the agent treating it as a detail.

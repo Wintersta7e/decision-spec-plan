@@ -180,7 +180,8 @@ split across a boundary its dependency row cannot express.
 ## Output
 
 **Your plan file and your manifest.** Run `plan_lint.py`, `scope_check.py` and `scope_check.py
---asks` on your plan first; all must pass. Then a reply under 3 KB: 1. your plan-index row (plan, one-line contents, task count,
+--asks` on the plans dir with `--glob '<your file name>'` first (they take a directory; the other
+authors' plans may be half-written); all must pass. Then a reply under 3 KB: 1. your plan-index row (plan, one-line contents, task count,
 line count); 2. your contract delta and migration contents; 3. the criteria → task → test-file
 mapping as a count plus any id you could not place; 4. what you superseded, with the task number that
 applies it; 5. any disagreement, file:line both sides; 6. what you refused to specify and who owns

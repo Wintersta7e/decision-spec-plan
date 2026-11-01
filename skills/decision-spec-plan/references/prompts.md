@@ -248,7 +248,8 @@ re-derived — plus the earlier criteria that move and the gates that are wrong 
 > its anchors, not whole). YOUR PLAN: **p<P>-<nn>-<slug>** for §<n>, wave
 > <w>, depends on <plans>. Write `<planning-dir>/plans/p<P>-<nn>-<slug>.md` and
 > `<planning-dir>/manifests/p<P>-<nn>-<slug>.json`. Run `plan_lint.py`, `scope_check.py` and
-> `scope_check.py --asks <decision-index> <arbiter>` on your file before replying; all must pass. <closing lines> Reply per the brief's output list, <3 KB.
+> `scope_check.py --asks <decision-index> <arbiter>` on the plans dir with
+> `--glob 'p<P>-<nn>-<slug>.md'` (your file only) before replying; all must pass. <closing lines> Reply per the brief's output list, <3 KB.
 
 ---
 
@@ -267,7 +268,8 @@ It commits merges and runs gates, so it does not end with the closing lines. Its
 > `<skill-dir>/scripts/scope_check.py <planning-dir>/plans --glob '<plan-id>-*.md' --diff <wave base>..<SHA> --repo <repo>`
 > exits 0 — a file outside the lane's plan: stop and record it — and that `test_check.py` with the
 > same arguments exits 0 — a test deleted or removed that the plan does not name, a skip added,
-> assertions dropped or an acceptance test edited: stop and record each line it printed — then merge exactly that SHA, never
+> assertions dropped or an acceptance test edited: stop and record each line it printed that
+> `<planning-dir>/lanes/<plan-id>-rulings.md` does not already rule — then merge exactly that SHA, never
 > the branch name. 2. Resolve conflicts; regenerate every derived file and count (<codegen, locks>),
 > never hand-merge them. 3. Run the full gate with its whole output to
 > `<planning-dir>/lanes/wave<w>-<plan-id>-gate.log` — never piped through `tail` or `head` — exactly
