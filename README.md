@@ -2,7 +2,7 @@
 
 # decision-spec-plan
 
-**A Claude Code plugin that takes any task from analysis to tested code, with a check at every gate.**
+**Evidence-based gates for multi-agent Claude Code work.**
 
 [![CI](https://github.com/Wintersta7e/decision-spec-plan/actions/workflows/ci.yml/badge.svg)](https://github.com/Wintersta7e/decision-spec-plan/actions/workflows/ci.yml)
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
@@ -10,16 +10,36 @@
 [![Python 3](https://img.shields.io/badge/python-3.11%2B%20%C2%B7%20stdlib%20only-3776ab.svg?logo=python&logoColor=white)](skills/decision-spec-plan/scripts)
 [![Platform](https://img.shields.io/badge/platform-Linux%20%C2%B7%20WSL2-lightgrey.svg)](#requirements)
 
-[What it does](#what-it-does) · [How a route runs](#how-a-route-runs) · [Hooks](#hooks) · [Cost](#cost) · [Install](#install) · [Development](#development)
+[What it checks](#what-it-checks) · [Is it worth it](#is-it-worth-it) · [How a route runs](#how-a-route-runs) · [Hooks](#hooks) · [Cost](#cost) · [Install](#install) · [Development](#development)
 
 </div>
 
 ---
 
-## What it does
+## What it checks
 
-Hand Claude a bug, a bug hunt, an investigation, a feature, a review or a whole phase, and say
-**"dsp"** ("use dsp", "dsp this"). The session becomes the **lead**. It frames the work, verifies
+Agents report "tests pass" and "done". This plugin makes those claims checkable, from git and files
+rather than from the agent's word:
+
+- **No push without a passing gate.** Git's pre-push hook holds any commit that has no gate log
+  showing that exact commit, on a clean tree, passing the full gate. `gate.py` runs the gate and
+  writes that log itself, so it cannot lose its exit status to a pipe or be edited green.
+- **No green gate bought by deleting tests.** `test_check.py` lists the acceptance tests a lane
+  deleted, skipped, weakened or edited after they were written.
+- **No spend past what you agreed.** A wave of agents waits until its budget is recorded and you
+  have answered; past 125% of it, it asks again.
+- **No outward action without you.** Merges, releases and other writes to the hosted repository are
+  asked for each time, and agents may not run them.
+- **Stage checkers** for the documents in between: every decision's sources, every acceptance
+  criterion mapped to a task and a test file, every planned file traced to something you asked for.
+
+What each check proves, and what it does not, is in
+[`references/gates.md`](skills/decision-spec-plan/references/gates.md).
+
+The checks come with a reference workflow, the **route**, that uses all of them. Hand Claude a bug,
+a bug hunt, an investigation, a feature, a review or a whole phase, and say
+**"dsp"** ("use dsp", "dsp this"). The session becomes the **lead** (the route's other terms:
+[`references/glossary.md`](skills/decision-spec-plan/references/glossary.md)). It frames the work, verifies
 every code claim before ruling on it, dispatches agents and arbitrates where their work meets. It
 does not write the decisions, specs or plans itself.
 
@@ -37,6 +57,18 @@ flowchart LR
     R --> P["Plans<br/><i>one per lane</i>"]
     P --> E["Execution<br/><i>one per task group</i>"]
 ```
+
+## Is it worth it
+
+Not for a small, clear task. On one size-S build, run once each in the same container, plain
+Claude Code cost **0.65×** the route ($20.69 against $31.95) in **0.7×** the time (73 against 105
+minutes), and both passed the gates. A blind cross-model review still preferred the route's branch:
+plain Claude had merged two people who share a name, while the route's decision step had given each
+their own id. That is one task and one run each, an observation rather than a benchmark
+(`failure-modes.md` F85).
+
+Use plain Claude for one obvious fix. Use the route when there are open design decisions, when
+several agents will build in parallel, or when you want every push and every merged lane checked.
 
 ## How a route runs
 
@@ -108,7 +140,9 @@ sequenceDiagram
 | `push_guard.py` | PreToolUse:Bash | A push that would skip the git hook (`--no-verify`); every push, where the repository's hooks live elsewhere (`core.hooksPath`) |
 | `route_state.py --hook` | PreToolUse, PostToolUse, UserPromptSubmit, SessionStart, SubagentStop, TeammateIdle | Route state and wave spend; outward actions held for your answer; hand-written gate logs refused; an agent stopping while its own background jobs still run |
 
-The guards target careless agents, not adversaries. The stage checkers (`plan_lint.py`,
+The guards target careless agents, not adversaries:
+[`references/gates.md`](skills/decision-spec-plan/references/gates.md) says what each check
+establishes, what it does not, and what happens when a hook fails. The stage checkers (`plan_lint.py`,
 `scope_check.py`, `criteria_check.py`, `decision_check.py`, `test_check.py`) are not hooks. The lead
 runs them at each gate; `test_check.py`, for example, flags acceptance tests that were deleted,
 skipped or edited after they were written. Every gate runs through `gate.py`, which writes the log
@@ -118,7 +152,9 @@ status.
 ## Cost
 
 > [!WARNING]
-> Routes are expensive. These are measured on real routes, in tokens.
+> Routes are expensive. These are measured on real routes, in millions of Opus input-equivalent
+> tokens (M): 1M is about $4 at API prices (read 2026-10-17). On a subscription they count against
+> your usage limits, which routes running at once share.
 
 | Route | Typical |
 |---|---|

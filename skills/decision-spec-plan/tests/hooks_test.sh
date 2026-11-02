@@ -2147,6 +2147,12 @@ gone=$(grep -oE '`[A-Za-z0-9_./-]+\.md`' "$PLUGIN/SKILL.md" | tr -d '`' | sort -
 	[ -n "$(find "$(dirname "$PLUGIN/SKILL.md")" -name "$(basename "$n")" -print -quit)" ] || echo "$n"
 done)
 [ -z "$gone" ] && ok "every file SKILL.md names exists" || bad "SKILL.md names missing files: $gone"
+# ...and every failure-mode row a file cites as a rule's evidence exists
+rows=$(grep -oE '^\| F[0-9]+ ' "$PLUGIN/references/failure-modes.md" | grep -oE 'F[0-9]+' | sort -u)
+cited=$(grep -rhoE '\bF[0-9]+\b' "$PLUGIN/SKILL.md" "$PLUGIN/references" "$PLUGIN/agents" "$PLUGIN/scripts" \
+	--include='*.md' --include='*.py' --exclude=failure-modes.md | sort -u)
+gone=$(comm -13 <(echo "$rows") <(echo "$cited") | tr '\n' ' ')
+[ -n "$rows" ] && [ -z "$gone" ] && ok "every failure-mode row a file cites exists" || bad "cited failure-mode rows missing: $gone"
 
 # --- a script's --help is its whole interface: shown only its docstring's first line, a lead read
 # ~20k characters of the scripts' source to learn their options (F84)
