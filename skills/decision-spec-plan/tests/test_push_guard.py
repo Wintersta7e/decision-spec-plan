@@ -31,11 +31,15 @@ class GuardNoGateLog(support.Route):
         g(0, R, "git push origin --delete old")
         g(0, R, "git push origin :old")
         # the bypass is the user's word: the lead's use asks them, a route agent never bypasses,
-        # and a bypass spelled any other way is still checked
+        # and a bypass spelled any other way is asked as the same skip
         g("ask", R, "DSP_SKIP_PUSH_GUARD=1 git push origin main")
         g(2, R, "DSP_SKIP_PUSH_GUARD=1 git push origin main", "a1")
         g(2, R, "DSP_SKIP_REVIEW=1 git push origin main", "a1")
-        g(2, R, 'V=DSP_SKIP_PUSH_GUARD; env "$V=1" git push origin main')
+        r = g("ask", R, 'V=DSP_SKIP_PUSH_GUARD; env "$V=1" git push origin main')
+        self.ok(
+            "a computed spelling is asked as a guard skip", "the push guard" in r.out
+        )
+        g(2, R, 'V=DSP_SKIP_PUSH_GUARD; env "$V=1" git push origin main', "a1")
         # a computed word that resolves to NAME=value is an assignment `env` makes, not the
         # command's name
         g(2, R, 'V=FOO; env "$V=1" git push origin main')

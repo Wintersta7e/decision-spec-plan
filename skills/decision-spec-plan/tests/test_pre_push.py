@@ -153,11 +153,11 @@ class PrePushHook(support.Sandbox):
         # set by any command, not only NAME=value; naming one to a read-only command is not a
         # bypass
         self.guard("ask", R3, "printf -v DSP_SKIP_PUSH_GUARD 1; make release")
+        self.guard(2, R3, "printf -vDSP_SKIP_REVIEW 1; make release", "a1")
         self.guard(2, R3, "read DSP_SKIP_REVIEW <<<1; make release", "a1")
         self.guard(2, R3, 'bash -c "DSP_SKIP_REVIEW=1 make release"', "a1")
-        # NAME= next to the name is a set wherever it stands; one test decides both skipping and
-        # asking
-        self.guard("ask", R3, "grep -rn DSP_SKIP_PUSH_GUARD=1 .; git push origin side")
+        # a NAME=value word sets it for any command that passes it on (`make`, `env`) or writes
+        # it out (`echo … >env.sh`); one test decides both skipping and asking
         self.guard(
             2,
             R3,
@@ -166,6 +166,25 @@ class PrePushHook(support.Sandbox):
         )
         self.guard(2, R3, "DSP_SKIP_REVIEW=1 bash deploy.sh", "a1")
         self.guard(0, R3, "grep -rn DSP_SKIP_PUSH_GUARD .", "a1")
+        # the name in text the shell sets nothing from is no bypass: a search, a log query, a
+        # commit message, a comment
+        self.guard(0, R3, "grep -rn DSP_SKIP_PUSH_GUARD=1 .; git push origin side")
+        self.guard(0, R3, "git log --oneline --grep DSP_SKIP_REVIEW", "a1")
+        self.guard(0, R3, 'git commit -m "docs: DSP_SKIP_REVIEW=1 now asks"', "a1")
+        self.guard(0, R3, "git push origin side # DSP_SKIP_REVIEW=1", "a1")
+        # an alias's body runs in the shell that defines it
+        self.guard(2, R3, "alias gp='DSP_SKIP_REVIEW=1 git push'; gp origin side", "a1")
+        # any spelling that may set the guard's variable is asked as a guard skip, not a review
+        # skip: git's hook honours it whatever the text looked like
+        for cmd in (
+            "X=1; export DSP_SKIP_PUSH_GUARD=$X; git push origin side",
+            "DSP_SKIP_PUSH_GUARD=${FORCE:-1} git push origin side",
+        ):
+            r = self.guard("ask", R3, cmd)
+            self.ok(f"asked as a guard skip  {cmd}", "the push guard" in r.out, r.out)
+        # a command the walk cannot follow still has its bypass read (`~` after a computed HOME)
+        self.guard(2, R3, "HOME=$(pwd); cd ~; DSP_SKIP_REVIEW=1 make release", "a1")
+        self.guard("ask", R3, "HOME=$(pwd); cd ~; DSP_SKIP_REVIEW=1 make release")
         self.git("-C", R3, "config", "core.hooksPath", f"{T}/no-hooks")
         self.guard(2, R3, "git push origin side")
         self.git("-C", R3, "config", "--unset", "core.hooksPath")

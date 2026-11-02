@@ -582,29 +582,37 @@ def names_push(ws, env, here: str | None = "", written=()):
     return False
 
 
-def sets_skip(command, shown):
-    """Whether the command may set a bypass variable (DSP_SKIP_*). shown: the command and its
-    words with quotes removed. NAME= or =NAME anywhere in it counts, whatever the command (`echo
-    export DSP_SKIP_…=1 >env.sh`); so does the bare name in an assignment, in what a script or
-    `bash -c` runs with, or in a word of any command but a read-only one (`printf -v`, `read`,
-    `declare`), while `grep DSP_SKIP_ .` does not."""
-    if re.search(r"DSP_SKIP\w*=|=[\"']?DSP_SKIP", shown):
-        return True
+# Builtins that set a variable they name (`export NAME`, `read NAME`, `declare -n r=NAME`), and
+# `alias`, whose body runs in this shell.
+SETTERS = {"export", "declare", "typeset", "local", "readonly", "read", "mapfile"}
+SETTERS |= {"readarray", "getopts", "alias"}
+SKIP_NAMES = {"DSP_SKIP_PUSH_GUARD", "DSP_SKIP_REVIEW"}
+
+
+def skip_names(command):
+    """The bypass variables (DSP_SKIP_*) the command may set, "?" for one it names by a part
+    (`DSP_SKIP_$X`). A name sets one in an assignment (or its value: `V=DSP_SKIP_…; env "$V=1"`),
+    in a word of a setter builtin or of `printf -v`, as a NAME=value word of a command that
+    passes it on or writes it out (`make`, `env`, `echo … >env.sh`), in `${NAME:=}`, and anywhere
+    in text the reader cannot follow. Text the shell sets nothing from is no bypass: `grep`,
+    `git log --grep`, a commit message, a comment."""
+    texts = []
     for kind, c in events(command):
         if kind == "cmd":
-            texts = [f"{n}={v.text}" for n, v in c.assigns]
-            if (
-                c.name not in READ_ONLY or c.name == "printf"
-            ):  # `printf -v NAME` sets it
-                texts += [w.text for w in c.words]
+            argv = c.argv
+            texts += [f"{n}={v.text}" for n, v in c.assigns]
+            # `printf -v NAME` and `printf -vNAME` both set NAME
+            printf_v = c.name == "printf" and any(a.startswith("-v") for a in argv[1:])
+            if c.name in SETTERS or printf_v:
+                texts += argv
+            elif c.name not in READ_ONLY or c.name in ("echo", "printf"):
+                texts += [a for a in argv if re.fullmatch(r"DSP_SKIP\w*=\S*", a)]
+            texts += [a for a in argv if re.search(r"\$\{DSP_SKIP\w*:?=", a)]
         elif kind == "opaque":
-            texts = [str(c), *(f"{n}={v.text}" for n, v in c.assigns)]
+            texts += [str(c), *(f"{n}={v.text}" for n, v in c.assigns)]
             texts += [w.text for w in [*c.words, c.script] if w is not None]
-        else:
-            continue
-        if any("DSP_SKIP" in t for t in texts):
-            return True
-    return False
+    found = re.findall(r"DSP_SKIP\w*", " ".join(texts))
+    return {n if n in SKIP_NAMES else "?" for n in found}
 
 
 def walk(command, cwd, depth=0, state=None):
@@ -1140,39 +1148,41 @@ def main():
         return 0
     command = str((event.get("tool_input") or {}).get("command") or "")
     session = str(event.get("session_id") or "")
+    # the bypass variables reach git's hook from the environment, so the words that set them are
+    # read first, whatever the walk makes of the rest: a bypass is the user's to give, never a
+    # route agent's (copied from a hold message), whatever runs the push (a Makefile's reaches
+    # the hook with it set)
     try:
-        # a bypass as the shell sets it, its quotes and escapes removed (`DSP_SK""IP_…=1`)
-        shown = " ".join([command, *(w.text for w in words(command))])
-        bypass = "DSP_SKIP_PUSH_GUARD=1" in shown
-        guard = Guard(session, "DSP_SKIP_REVIEW=1" in shown, command)
-        # every command is read: an alias pushes with no `push` in the text, escapes hide `git`
-        for p in walk(command, event.get("cwd") or os.getcwd()) if not bypass else ():
-            guard.check(p)
-        # the bypass variables reach git's hook from the environment, so the word that sets
-        # them is checked here: it is the user's to give, never a route agent's (copied from a
-        # hold message), whatever runs the push (a Makefile's reaches the hook with it set)
-        skip = sets_skip(command, shown) and bool(active_route())
-    except Exception as e:  # noqa: BLE001 — a hook that exits 1 lets the push through
-        if not active_route() or not re.search(r"push|git|\\", command):
-            return 0
-        print(
-            f"[push_guard] the guard failed on this command ({type(e).__name__}: {e}) while a "
-            "decision-spec-plan route is active — BLOCKED. Push with plain "
-            "`git [-C <dir>] push <remote> <refs>` in a command of its own.",
-            file=sys.stderr,
-        )
-        return 2
-    if skip and event.get("agent_id"):
+        names = skip_names(command) if active_route() else set()
+    except Exception:  # noqa: BLE001 — text the reader cannot split may still set one
+        names = {"?"} if "DSP_SKIP" in command else set()
+    bypass = bool(names & {"DSP_SKIP_PUSH_GUARD", "?"})
+    if names and event.get("agent_id"):
         print(
             "[push_guard] a route agent never skips the push guard or its review (DSP_SKIP_*) — "
             "BLOCKED. Name the push and what holds it in your return; the lead asks the user.",
             file=sys.stderr,
         )
         return 2
-    if guard.blocked is not None:
+    guard = None
+    try:
+        guard = Guard(session, bool(names & {"DSP_SKIP_REVIEW", "?"}), command)
+        # every command is read: an alias pushes with no `push` in the text, escapes hide `git`
+        for p in walk(command, event.get("cwd") or os.getcwd()) if not bypass else ():
+            guard.check(p)
+    except Exception as e:  # noqa: BLE001 — a hook that exits 1 lets the push through
+        if active_route() and re.search(r"push|git|\\", command):
+            print(
+                f"[push_guard] the guard failed on this command ({type(e).__name__}: {e}) while "
+                "a decision-spec-plan route is active — BLOCKED. Push with plain "
+                "`git [-C <dir>] push <remote> <refs>` in a command of its own.",
+                file=sys.stderr,
+            )
+            return 2
+    if guard is not None and guard.blocked is not None:
         print(guard.report(), file=sys.stderr)
         return 2
-    if not skip:
+    if not names:
         return 0
     what = "the push guard" if bypass else "the pre-push review"
     print(

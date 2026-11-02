@@ -194,7 +194,10 @@ class Word:
                     return None
                 out.append(value)
             elif kind == "lit" and i == 0 and (s == "~" or s.startswith("~/")):
-                out.append(env.get("HOME", "~") + s[1:])
+                home = env.get("HOME", "~")
+                if home is None:  # HOME set to what the reader cannot compute
+                    return None
+                out.append(home + s[1:])
             else:
                 out.append(s)
         return "".join(out)
