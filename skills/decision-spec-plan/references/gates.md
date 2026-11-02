@@ -44,6 +44,7 @@ glob or a computed path. It reads what a command says, not why.
 |---|---|
 | A Stage 5 wave's dispatches wait for a recorded budget and the user's answer | Headless (`claude -p`) has no user, so it holds nothing: cap the run with `--max-budget-usd` |
 | `gh` writes (merge, close, release, repo, `gh api` writes) and remote branch deletes ask the user; agents may not run them | Only the commands it names |
+| A push that names a bypass (`DSP_SKIP_PUSH_GUARD`, `DSP_SKIP_REVIEW`) asks the user; an agent's is blocked | Reads the command's words, quotes removed: a bypass exported by a file the command sources, or a name assembled from pieces, reaches git's hook unseen |
 | An agent ending its turn while its own background job runs is sent back, twice per job at most | Reads the agent's transcript |
 | A task group past 200k context is told to finish and return | Reads the agent's transcript |
 | The lead's `exec-` dispatches wait while `decision_check.py` fails | Only for a phase whose index did not exist at its first `--activate` |

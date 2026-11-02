@@ -35,11 +35,15 @@ bad() {
 	FAIL=1
 }
 
-guard() { # expected-exit cwd command
+guard() { # expected(exit code | ask: exit 0 asking the user) cwd command [agent-id]
 	local out code
-	out=$(jq -n --arg c "$3" --arg d "$2" '{tool_input: {command: $c}, cwd: $d}' | python3 "$SCRIPTS/push_guard.py" 2>&1)
+	out=$(jq -n --arg c "$3" --arg d "$2" --arg a "${4:-}" '{tool_input: {command: $c}, cwd: $d} + if $a == "" then {} else {agent_id: $a} end' |
+		python3 "$SCRIPTS/push_guard.py" 2>&1)
 	code=$?
-	if [ "$code" = "$1" ]; then ok "guard $1  $3"; else
+	if [ "$1" = ask ]; then
+		[ "$code" = 0 ] && jq -e '.hookSpecificOutput.permissionDecision == "ask"' <<<"$out" >/dev/null && code=ask
+	elif [ "$code" = 0 ] && [ -n "$out" ]; then code="0 with output"; fi
+	if [ "$code" = "$1" ]; then ok "guard $1  $3${4:+  (agent $4)}"; else
 		bad "guard want $1 got $code  $3"
 		echo "$out" | sed -n '1,3p'
 	fi
@@ -75,6 +79,7 @@ ev() { # event session [extra json fields]
 # --- no route active: everything passes, the hook is silent
 guard 0 "$R" "git push origin main"
 guard 0 "$R" "git --no-pager push origin main"
+guard 0 "$R" "DSP_SKIP_PUSH_GUARD=1 git push origin main"
 hook silent "$(ev PostToolUse s1 '"tool_name":"Agent"')"
 # ...but a route agent dispatched with no route means the skill never loaded: every hook is off (F79)
 route_agent() { ev PreToolUse "$1" "\"tool_name\":\"Agent\",\"tool_input\":{\"subagent_type\":\"$2\",\"name\":\"pride-r1\"}"; }
@@ -131,7 +136,14 @@ guard 2 "$R" "git push --tags"
 guard 0 "$R" "git push --dry-run origin main"
 guard 0 "$R" "git push origin --delete old"
 guard 0 "$R" "git push origin :old"
-guard 0 "$R" "DSP_SKIP_PUSH_GUARD=1 git push origin main"
+# the bypass is the user's word: the lead's use asks them, a route agent never bypasses, and a
+# bypass spelled any other way is still checked
+guard ask "$R" "DSP_SKIP_PUSH_GUARD=1 git push origin main"
+guard 2 "$R" "DSP_SKIP_PUSH_GUARD=1 git push origin main" a1
+guard 2 "$R" "DSP_SKIP_REVIEW=1 git push origin main" a1
+guard 2 "$R" 'V=DSP_SKIP_PUSH_GUARD; env "$V=1" git push origin main'
+# a computed word that resolves to NAME=value is an assignment `env` makes, not the command's name
+guard 2 "$R" 'V=FOO; env "$V=1" git push origin main'
 # where the push runs: relative, chained and quoted `cd`s resolve from the cwd; an unresolvable
 # one is skipped, never replaced by the cwd (that blocked an agent's push in its throwaway repo)
 guard 2 "$T" "cd repo && git push origin main"
@@ -617,9 +629,9 @@ guard 0 "$R" "git push origin wide"
 git -C "$R" update-ref -d refs/heads/wide
 rm "$P/lanes/wide-gate.log"
 rm "$P/reviews/w2-verdict.md"
-guard 0 "$R" "DSP_SKIP_REVIEW=1 git push origin main"
+guard ask "$R" "DSP_SKIP_REVIEW=1 git push origin main"
 guard 2 "$R" "DSP_SKIP_REVIEW=1 git push origin ung"
-guard 0 "$R" "DSP_SKIP_PUSH_GUARD=1 git push origin ung"
+guard ask "$R" "DSP_SKIP_PUSH_GUARD=1 git push origin ung"
 CLAUDE_CODE_SESSION_ID=s1 python3 "$SCRIPTS/route_state.py" "$P" --phase 1 --repo "$R" --sections 1- --activate --rung S >/dev/null
 guard 2 "$R" "git push origin main" # --sins on is kept across re-activations
 CLAUDE_CODE_SESSION_ID=s1 python3 "$SCRIPTS/route_state.py" "$P" --phase 1 --repo "$R" --sections 1- --activate --rung S --sins off >/dev/null
@@ -777,6 +789,21 @@ guard 2 "$R3" "CLAUDECODE= git push origin side"
 # git reads an unambiguous abbreviation of a long option as the option
 guard 2 "$R3" "git push --no-verif origin main"
 guard 2 "$R3" "git push --no-veri origin main"
+# a bypass is read as the shell sets it, quotes removed: the hook would honour it unasked
+guard ask "$R3" 'DSP_SK""IP_PUSH_GUARD=1 git push origin side'
+guard 2 "$R3" 'DSP_SK""IP_PUSH_GUARD=1 git push origin side' a1
+# and whatever runs the push: a Makefile's push reaches the hook with the variable set
+guard ask "$R3" "DSP_SKIP_PUSH_GUARD=1 make release"
+guard 2 "$R3" "export DSP_SKIP_REVIEW=1; make release" a1
+# set by any command, not only NAME=value; naming one to a read-only command is not a bypass
+guard ask "$R3" "printf -v DSP_SKIP_PUSH_GUARD 1; make release"
+guard 2 "$R3" "read DSP_SKIP_REVIEW <<<1; make release" a1
+guard 2 "$R3" 'bash -c "DSP_SKIP_REVIEW=1 make release"' a1
+# NAME= next to the name is a set wherever it stands; one test decides both skipping and asking
+guard ask "$R3" "grep -rn DSP_SKIP_PUSH_GUARD=1 .; git push origin side"
+guard 2 "$R3" "echo export DSP_SKIP_PUSH_GUARD=1 >env.sh; . ./env.sh; make release" a1
+guard 2 "$R3" "DSP_SKIP_REVIEW=1 bash deploy.sh" a1
+guard 0 "$R3" "grep -rn DSP_SKIP_PUSH_GUARD ." a1
 git -C "$R3" config core.hooksPath "$T/no-hooks"
 guard 2 "$R3" "git push origin side"
 git -C "$R3" config --unset core.hooksPath

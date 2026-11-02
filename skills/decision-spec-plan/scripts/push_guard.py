@@ -54,7 +54,9 @@ from a terminal passes. While that hook is in place the command guard leaves a p
 holds only what would skip it: `--no-verify`, and a command that names CLAUDECODE or hooks.
 
 Bypass, only on the user's explicit word: DSP_SKIP_PUSH_GUARD=1 in the command skips both checks;
-DSP_SKIP_REVIEW=1 skips only the review. Both reach the hook as environment variables.
+DSP_SKIP_REVIEW=1 skips only the review. Both reach the hook as environment variables. While a
+route is active, the command guard asks the user to approve a push that names either one, and
+blocks it outright for a route agent.
 """
 
 import functools
@@ -580,6 +582,31 @@ def names_push(ws, env, here: str | None = "", written=()):
     return False
 
 
+def sets_skip(command, shown):
+    """Whether the command may set a bypass variable (DSP_SKIP_*). shown: the command and its
+    words with quotes removed. NAME= or =NAME anywhere in it counts, whatever the command (`echo
+    export DSP_SKIP_…=1 >env.sh`); so does the bare name in an assignment, in what a script or
+    `bash -c` runs with, or in a word of any command but a read-only one (`printf -v`, `read`,
+    `declare`), while `grep DSP_SKIP_ .` does not."""
+    if re.search(r"DSP_SKIP\w*=|=[\"']?DSP_SKIP", shown):
+        return True
+    for kind, c in events(command):
+        if kind == "cmd":
+            texts = [f"{n}={v.text}" for n, v in c.assigns]
+            if (
+                c.name not in READ_ONLY or c.name == "printf"
+            ):  # `printf -v NAME` sets it
+                texts += [w.text for w in c.words]
+        elif kind == "opaque":
+            texts = [str(c), *(f"{n}={v.text}" for n, v in c.assigns)]
+            texts += [w.text for w in [*c.words, c.script] if w is not None]
+        else:
+            continue
+        if any("DSP_SKIP" in t for t in texts):
+            return True
+    return False
+
+
 def walk(command, cwd, depth=0, state=None):
     """Each push the command runs, as a dict of what the check needs. A script file it runs is
     walked in turn, SCRIPT_DEPTH deep, from the command's variables and flags (state); a sourced
@@ -701,8 +728,17 @@ def walk(command, cwd, depth=0, state=None):
             # a `cd` that fails leaves the shell where it was; only its `&&` chain is skipped
             here, failed = failed[0], None
             stack[-1] = (here, env, None)
+        # a computed first word that resolves to NAME=value is an assignment `env` makes, which
+        # the reader left in place: the command's name is past it (`V=X; env "$V=1" git push`)
+        assigned = bool(
+            c.words
+            and not c.words[0].static
+            and re.fullmatch(
+                r"[A-Za-z_]\w*=.*", c.words[0].expand(env) or "", re.DOTALL
+            )
+        )
         c = Cmd(c.assigns, [resolved(w, env) for w in c.words], c.after)
-        if c.words and not c.words[0].static:
+        if c.words and (assigned or not c.words[0].static):
             if pushing or names_push(c.words, env, here, named):
                 pushes.append(
                     {"form": "a command name the command computes", "dir": here}
@@ -1103,15 +1139,19 @@ def main():
     except ValueError:
         return 0
     command = str((event.get("tool_input") or {}).get("command") or "")
-    # every command is read: an alias pushes with no `push` in the text, escapes hide `git` in it
-    if "DSP_SKIP_PUSH_GUARD=1" in command:
-        return 0
-    guard = Guard(
-        str(event.get("session_id") or ""), "DSP_SKIP_REVIEW=1" in command, command
-    )
+    session = str(event.get("session_id") or "")
     try:
-        for p in walk(command, event.get("cwd") or os.getcwd()):
+        # a bypass as the shell sets it, its quotes and escapes removed (`DSP_SK""IP_…=1`)
+        shown = " ".join([command, *(w.text for w in words(command))])
+        bypass = "DSP_SKIP_PUSH_GUARD=1" in shown
+        guard = Guard(session, "DSP_SKIP_REVIEW=1" in shown, command)
+        # every command is read: an alias pushes with no `push` in the text, escapes hide `git`
+        for p in walk(command, event.get("cwd") or os.getcwd()) if not bypass else ():
             guard.check(p)
+        # the bypass variables reach git's hook from the environment, so the word that sets
+        # them is checked here: it is the user's to give, never a route agent's (copied from a
+        # hold message), whatever runs the push (a Makefile's reaches the hook with it set)
+        skip = sets_skip(command, shown) and bool(active_route())
     except Exception as e:  # noqa: BLE001 — a hook that exits 1 lets the push through
         if not active_route() or not re.search(r"push|git|\\", command):
             return 0
@@ -1122,10 +1162,32 @@ def main():
             file=sys.stderr,
         )
         return 2
-    if guard.blocked is None:
+    if skip and event.get("agent_id"):
+        print(
+            "[push_guard] a route agent never skips the push guard or its review (DSP_SKIP_*) — "
+            "BLOCKED. Name the push and what holds it in your return; the lead asks the user.",
+            file=sys.stderr,
+        )
+        return 2
+    if guard.blocked is not None:
+        print(guard.report(), file=sys.stderr)
+        return 2
+    if not skip:
         return 0
-    print(guard.report(), file=sys.stderr)
-    return 2
+    what = "the push guard" if bypass else "the pre-push review"
+    print(
+        json.dumps(
+            {
+                "hookSpecificOutput": {
+                    "hookEventName": "PreToolUse",
+                    "permissionDecision": "ask",
+                    "permissionDecisionReason": f"push_guard.py: this push skips {what} of "
+                    "the active decision-spec-plan route. Approve only if you asked for that.",
+                }
+            }
+        )
+    )
+    return 0
 
 
 if __name__ == "__main__":

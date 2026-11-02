@@ -137,7 +137,7 @@ sequenceDiagram
 | Hook | Event | Holds or reports |
 |---|---|---|
 | `push_guard.py --pre-push` | git's `pre-push`, written into the repository by `--activate` | A push of any commit that no full gate passed, read from the exact refs git sends |
-| `push_guard.py` | PreToolUse:Bash | A push that would skip the git hook (`--no-verify`); every push, where the repository's hooks live elsewhere (`core.hooksPath`) |
+| `push_guard.py` | PreToolUse:Bash | A push that would skip the git hook (`--no-verify`); a bypass (`DSP_SKIP_*`), which you approve and agents may not use; every push, where the repository's hooks live elsewhere (`core.hooksPath`) |
 | `route_state.py --hook` | PreToolUse, PostToolUse, UserPromptSubmit, SessionStart, SubagentStop, TeammateIdle | Route state and wave spend; outward actions held for your answer; hand-written gate logs refused; an agent stopping while its own background jobs still run |
 
 The guards target careless agents, not adversaries:
