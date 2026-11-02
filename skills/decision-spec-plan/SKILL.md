@@ -56,7 +56,7 @@ checkers, read `references/bootstrap.md` first and build the minimum before stag
 | `scripts/plan_lint.py` · `scope_check.py` · `criteria_check.py` | Stage 2 and 4 gates |
 | `scripts/usage_report.py` | Every gate: the round's cost so far, per agent |
 | `scripts/route_state.py` | `--activate` (The route), `--budget` (Quota); its `--hook` is the in-flight block's state |
-| `scripts/push_guard.py` | A PreToolUse:Bash hook while the route is active: blocks a push of any commit no full gate passed |
+| `scripts/gate.py` · `push_guard.py` | Run every gate through `gate.py`; the guard (git's pre-push hook) blocks a push no full gate passed |
 | `scripts/apply_markers.py` | Stage 1 markers: inserts the markers agent's JSON list |
 | `scripts/decision_check.py` | Stage 1 and the §1e review: SETTLED sources, requirement dimensions, finding dispositions; `--verifier` (`prompts.md` §1f) |
 

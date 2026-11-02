@@ -162,8 +162,7 @@ Once every lane of a wave has reported, dispatch one fresh `dsp-deep` **wave int
 2. Resolve conflicts; **regenerate** every derived file and count (codegen, locks) — never
    hand-merge them.
 3. **Run the full gate after every cross-lane merge**, its whole output to
-   `<planning-dir>/lanes/<name>-gate.log`, opening with `sha=<HEAD> dirty=<tracked changes>` and
-   ending in `exit=<status>`, and hand-check any file both sides touched. A merge that compiles is
+   `<planning-dir>/lanes/<name>-gate.log` through `scripts/gate.py` (below), and hand-check any file both sides touched. A merge that compiles is
    not a merge that carries the values. Red: it stops and records; **you** rule the fix (a fresh
    agent on that lane, or a revert).
 4. Re-check `git merge-base --is-ancestor <sha> HEAD` (a lane can move past its reported SHA).
@@ -183,11 +182,12 @@ behind — and branch the next wave from the new SHA. **Why:** in two runs the l
 blocks a `git push` of any commit without a gate log in `<planning-dir>/lanes/` whose first `sha=`
 line (within its first 20 lines) is `sha=<that commit> dirty=0` and whose last `exit=` line is
 `exit=0` — the integrator's last log covers the main it returns; a commit you add after it needs
-its own full gate first:
-`{ echo "sha=$(git rev-parse HEAD) dirty=$(git status --porcelain --untracked-files=no | grep -c .)"; <full gate>; echo "exit=$?"; } > <planning-dir>/lanes/<name>-gate.log 2>&1`.
+its own full gate first, written by the gate runner, never by hand:
+`<skill-dir>/scripts/gate.py <planning-dir> <name> -- '<full gate>'` (it writes the `sha=`, `cmd=`
+and `exit=` lines itself, streams the output and exits with the gate's status).
 On a route activated with `--ci-harness <label>` a push also needs a log of the CI's own suite
 (only `<commit>:refs/heads/<branch>`, branch not main, the push that starts a CI run, needs just the full gate),
-`echo "harness=<label>"` after the `sha=` line — never a local stand-in for it (a stub in place of
+`gate.py <planning-dir> <name> --harness <label> -- '<the CI suite>'` — never a local stand-in for it (a stub in place of
 the CI's database harness passed four times locally and failed four CI runs; F90). CI on a runner
 this host is not (Windows, macOS) is such a suite: `--activate` names it until the route answers
 `--ci-harness <label>` or `--ci-harness none`; run it where it can run (a Windows shell from WSL, a
@@ -195,11 +195,15 @@ scratch branch's CI run before main), never assume it. **A CI red that turns gre
 defect until reproduced**: reproduce it (the test looped, under load) before the next push, and the
 push ask names it — two such reds closed as "cause unknown" were real races, and main stayed red
 for eight hours.
-Push as `git [-C <dir>] push <remote> <ref>…`: a push with no refspec, other git options before
-`push`, a `GIT_*` variable, a `pushd`, `sudo`/`xargs`, a script, stdin or computed string fed to a
-shell, a computed command name, or a `cd` to a directory the command computes (`cd "$(…)"`, a
-variable it does not set) is held, since what it would send cannot be read from it.
-**Every gate run — yours included — goes to such a log**, read by its last `exit=` line and a grep
+Push as `git [-C <dir>] push <remote> <ref>…`. The checks run in git's pre-push hook, which
+`--activate` installs and which reads the exact refs a push sends; `--no-verify` is held. Where the
+repository sets `core.hooksPath` no hook is installed, and the Bash guard reads the command
+instead: a push with no refspec, `--all`, a ref moved earlier in the command, other git options
+before `push`, a `GIT_*` variable, a `pushd`, `sudo`/`xargs`, a script, stdin or computed string
+fed to a shell, a computed command name, or a `cd` to a directory the command computes is held,
+since what it would send cannot be read from it. With the hook in place, only the forms that hide
+how git runs or in which repository stay held (all but the first three).
+**Every gate run — yours included — goes through `gate.py`**, its log read by its last `exit=` line and a grep
 for failing tests, never piped through `tail` or `head` (`failure-modes` F31): one lead piped 22
 gates through `tail`, and one hid the lint error of a red commit. A gate log is never edited — a
 log the guard refuses is rerun. **Why:** a lead pushed main twice ungated and both CI runs went

@@ -603,6 +603,9 @@ def activate(a, main):
     marker["ledger"] = ledger
     path.write_text(json.dumps(marker) + "\n")
     print(f"route active: {path}")
+    import push_guard  # only --activate needs it: the hook runs on every tool call
+
+    print(push_guard.install_hook(repo))
     if "ci_harness" in marker:
         print(
             f"CI harness {harness}: push_guard.py also holds every push until a gate log with "
@@ -1714,10 +1717,10 @@ def hook():
         if how := checked(gate_log_edit, event):
             return deny(
                 f"{how}: a gate log holds only what the gate printed — it is the evidence a "
-                "push and a lane return are judged on. Re-run the gate into it "
-                '(`{ echo "sha=$(git rev-parse HEAD) dirty=$(git status --porcelain '
-                '--untracked-files=no | grep -c .)"; <gate>; echo "exit=$?"; } '
-                "> <log> 2>&1`), or copy a real run's output in. A gate that cannot pass goes "
+                "push and a lane return are judged on. Re-run the gate through the runner, "
+                "which writes every line the push check reads (`<skill-dir>/scripts/gate.py "
+                "<planning-dir> <name> -- '<gate>'`), or copy a real run's output in. A gate "
+                "that cannot pass goes "
                 "back to the lead and the user: escalating is a success, an edited log is not "
                 "(F97)."
             )

@@ -274,8 +274,8 @@ It commits merges and runs gates, so it does not end with the closing lines. Its
 > the branch name. 2. Resolve conflicts; regenerate every derived file and count (<codegen, locks>),
 > never hand-merge them. 3. Run the full gate with its whole output to
 > `<planning-dir>/lanes/wave<w>-<plan-id>-gate.log` — never piped through `tail` or `head` — exactly
-> `{ echo "sha=$(git rev-parse HEAD) dirty=$(git status --porcelain --untracked-files=no | grep -c .)"; <command>; echo "exit=$?"; } > <log> 2>&1`
-> (the push guard accepts a commit only by that first and last line), and hand-check every file both sides touched: the values, not only that
+> `<skill-dir>/scripts/gate.py <planning-dir> wave<w>-<plan-id> -- '<command>'` (it writes the lines
+> the push guard reads; never write or edit a gate log by hand), and hand-check every file both sides touched: the values, not only that
 > it compiles. 4. `git merge-base --is-ancestor <sha> HEAD`. A red gate or a failed check: stop,
 > leave the merge as it is and record it — the lead rules the fix. Then clean <the build caches that
 > accumulate stale artefacts>. <Last feature wave: also run the unwired-producer audit (<command>).

@@ -104,13 +104,16 @@ sequenceDiagram
 
 | Hook | Event | Holds or reports |
 |---|---|---|
-| `push_guard.py` | PreToolUse:Bash | A push of any commit that no full gate passed |
+| `push_guard.py --pre-push` | git's `pre-push`, written into the repository by `--activate` | A push of any commit that no full gate passed, read from the exact refs git sends |
+| `push_guard.py` | PreToolUse:Bash | A push that would skip the git hook (`--no-verify`); every push, where the repository's hooks live elsewhere (`core.hooksPath`) |
 | `route_state.py --hook` | PreToolUse, PostToolUse, UserPromptSubmit, SessionStart, SubagentStop, TeammateIdle | Route state and wave spend; outward actions held for your answer; hand-written gate logs refused; an agent stopping while its own background jobs still run |
 
 The guards target careless agents, not adversaries. The stage checkers (`plan_lint.py`,
 `scope_check.py`, `criteria_check.py`, `decision_check.py`, `test_check.py`) are not hooks. The lead
 runs them at each gate; `test_check.py`, for example, flags acceptance tests that were deleted,
-skipped or edited after they were written.
+skipped or edited after they were written. Every gate runs through `gate.py`, which writes the log
+the push checks read: the commit, whether the tree was clean, the command, its output and its exit
+status.
 
 ## Cost
 

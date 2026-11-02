@@ -14,6 +14,10 @@ FAIL=0
 export HOME=$T/home
 mkdir -p "$HOME"
 G=(-c user.name=t -c user.email=t@t)
+# --activate installs git's pre-push hook, and the command guard then leaves the push checks to it:
+# the repositories here run with no hooks, so the command guard's own checks are what they test,
+# until the hook's section
+git config --global core.hooksPath "$T/no-hooks"
 
 R=$T/repo
 git init -q -b main "$R"
@@ -644,7 +648,7 @@ out=$(activate_ci --ci-harness it-3db)
 grep -q '"ci_harness": "it-3db"' "$(MK "$R")" && grep -q 'CI harness it-3db: push_guard.py' <<<"$out" &&
 	ok "activate --ci-harness: in the marker, announced" || bad "activate --ci-harness: $out"
 out=$(jq -n --arg c "git push origin main" --arg d "$R" '{tool_input: {command: $c}, cwd: $d}' | python3 "$SCRIPTS/push_guard.py" 2>&1)
-[ $? = 2 ] && grep -q '^  not passed by the CI harness: main = ' <<<"$out" && grep -q 'echo "harness=it-3db"' <<<"$out" &&
+[ $? = 2 ] && grep -q '^  not passed by the CI harness: main = ' <<<"$out" && grep -q 'gate.py .* --harness it-3db -- ' <<<"$out" &&
 	ok "guard: a commit gated locally only is held, with the harness log's command" || bad "guard, CI harness: $out"
 # the branch push that starts the CI run cannot carry its log: only `refs/heads/<x>`, x not main, skips it
 guard 0 "$R" "git push origin main:refs/heads/ci-run"
@@ -684,6 +688,118 @@ out=$(activate_ci 2>&1)
 [ $? = 0 ] && ! grep -q 'CI runs on' <<<"$out" && ok "--ci-harness none is remembered as the answer" ||
 	bad "--ci-harness none not remembered: $out"
 rm -r "$R/.github"
+
+# --- gate.py writes the log the push checks read: sha and dirty before the run, the status after it
+git config --global --unset core.hooksPath
+R3=$T/r3
+P3=$R3/.plan
+git init -q --bare "$T/r3.git"
+git init -q -b main "$R3"
+echo a >"$R3/f"
+git -C "$R3" add f && git -C "$R3" "${G[@]}" commit -q -m one
+git -C "$R3" remote add origin "$T/r3.git"
+out=$(python3 "$SCRIPTS/gate.py" "$P3" g1 --repo "$R3" -- 'echo out; echo err >&2; exit 3' 2>/dev/null)
+code=$?
+L=$P3/lanes/g1-gate.log
+[ "$code" = 3 ] && [ "$(sed -n 1p "$L")" = "sha=$(git -C "$R3" rev-parse HEAD) dirty=0" ] &&
+	[ "$(sed -n 2p "$L")" = 'cmd=echo out; echo err >&2; exit 3' ] && grep -qx err "$L" &&
+	[ "$(tail -1 "$L")" = exit=3 ] && grep -qx out <<<"$out" &&
+	ok "gate.py: exits with the gate's status; sha, cmd, merged output and exit= in the log; output still printed" ||
+	bad "gate.py: exit $code, log: $(cat "$L")"
+python3 "$SCRIPTS/gate.py" "$P3" g2 --repo "$R3" --harness e2e --wt p1-01 -- printf 'a b' >/dev/null 2>&1
+L=$P3/lanes/g2-e2e-gate.log
+[ "$(sed -n 1p "$L")" = "sha=$(git -C "$R3" rev-parse HEAD) dirty=0 wt=p1-01" ] && [ "$(sed -n 2p "$L")" = harness=e2e ] &&
+	[ "$(sed -n 3p "$L")" = "cmd=printf 'a b'" ] && [ "$(sed -n 4p "$L")" = "a b" ] && [ "$(sed -n 5p "$L")" = exit=0 ] &&
+	ok "gate.py --harness --wt: named log, harness line, argv command, exit= on its own line" || bad "gate.py --harness: $(cat "$L")"
+echo b >>"$R3/f"
+out=$(python3 "$SCRIPTS/gate.py" "$P3" g3 --repo "$R3" -- true 2>&1)
+grep -q '^sha=.* dirty=1$' "$P3/lanes/g3-gate.log" && grep -q 'gates no commit' <<<"$out" &&
+	ok "gate.py: a dirty tree is counted and warned about" || bad "gate.py dirty: $out"
+git -C "$R3" checkout -q f
+python3 "$SCRIPTS/gate.py" "$P3" g4 --repo "$R3" >/dev/null 2>&1
+[ $? != 0 ] && [ ! -e "$P3/lanes/g4-gate.log" ] && ok "gate.py with no command: refused, no log" || bad "gate.py ran with no command"
+rm "$P3"/lanes/*
+
+# --- git's own pre-push hook: --activate installs it, and it reads the exact refs and commits git
+# sends; the repository's own hook keeps running after it, a push outside Claude Code passes
+printf '#!/bin/sh\ncat >/dev/null\necho ran >>"%s"\n' "$T/orig-ran" >"$R3/.git/hooks/pre-push"
+chmod +x "$R3/.git/hooks/pre-push"
+out=$(CLAUDE_CODE_SESSION_ID=pp1 python3 "$RS" "$P3" --phase 1 --repo "$R3" --activate 2>&1)
+grep -q 'decision-spec-plan pre-push' "$R3/.git/hooks/pre-push" && [ -x "$R3/.git/hooks/pre-push" ] &&
+	grep -q 'echo ran' "$R3/.git/hooks/pre-push.dsp-orig" && grep -q 'pre-push hook installed' <<<"$out" &&
+	ok "activate installs the pre-push hook, the repository's own kept as pre-push.dsp-orig" || bad "pre-push install: $out"
+CLAUDE_CODE_SESSION_ID=pp1 python3 "$RS" "$P3" --phase 1 --repo "$R3" --activate >/dev/null 2>&1
+grep -q 'echo ran' "$R3/.git/hooks/pre-push.dsp-orig" && ok "a re-activation keeps the chained hook" ||
+	bad "a re-activation replaced pre-push.dsp-orig"
+push3() { # expected-exit regex|- push-args... — a real push from a Claude Code shell
+	local want=$1 re=$2 out code
+	shift 2
+	out=$(cd "$R3" && CLAUDECODE=1 CLAUDE_CODE_SESSION_ID=pp1 git push -q origin "$@" 2>&1)
+	code=$?
+	if [ "$code" = "$want" ] && { [ "$re" = - ] || grep -qE "$re" <<<"$out"; }; then ok "pre-push $want  $*"; else
+		bad "pre-push want $want got $code  $*"
+		echo "$out" | sed -n '1,4p'
+	fi
+}
+push3 1 'not gated: refs/heads/main = .*no gate log' main
+git -C "$T/r3.git" rev-parse -q --verify refs/heads/main >/dev/null && bad "a held push reached the remote" ||
+	ok "a held push left the remote untouched"
+[ -e "$T/orig-ran" ] && bad "the chained hook ran for a held push" || ok "the chained hook runs only after the guard passes"
+(cd "$R3" && env -u CLAUDECODE git push -q origin main:refs/heads/human 2>/dev/null) && ok "a push outside Claude Code passes" ||
+	bad "a push outside Claude Code was held"
+[ -s "$T/orig-ran" ] && ok "the repository's own pre-push hook still runs" || bad "the chained hook never ran"
+python3 "$SCRIPTS/gate.py" "$P3" w1 --repo "$R3" -- 'echo built' >/dev/null 2>&1
+push3 0 - main
+# every ref git sends is read, --all included: a branch no gate passed is named
+git -C "$R3" checkout -q -b side && git -C "$R3" "${G[@]}" commit -q --allow-empty -m side && git -C "$R3" checkout -q main
+push3 1 'not gated: refs/heads/side' --all
+push3 1 'not gated: refs/heads/side' 'HEAD~0:refs/heads/x' side
+out=$(cd "$R3" && CLAUDECODE=1 CLAUDE_CODE_SESSION_ID=pp1 DSP_SKIP_PUSH_GUARD=1 git push -q origin side 2>&1) &&
+	ok "pre-push: DSP_SKIP_PUSH_GUARD=1 skips it" || bad "pre-push bypass: $out"
+push3 0 - :side
+# the CI harness: the branch push that starts the CI run needs only the full gate
+CLAUDE_CODE_SESSION_ID=pp1 python3 "$RS" "$P3" --phase 1 --repo "$R3" --activate --ci-harness e2e >/dev/null 2>&1
+git -C "$R3" "${G[@]}" commit -q --allow-empty -m three
+python3 "$SCRIPTS/gate.py" "$P3" w2 --repo "$R3" -- true >/dev/null 2>&1
+push3 0 - main:refs/heads/ci-run
+push3 1 'not passed by the CI harness: refs/heads/main' main
+python3 "$SCRIPTS/gate.py" "$P3" w2 --repo "$R3" --harness e2e -- true >/dev/null 2>&1
+push3 0 - main
+CLAUDE_CODE_SESSION_ID=pp1 python3 "$RS" "$P3" --phase 1 --repo "$R3" --activate --ci-harness none >/dev/null 2>&1
+# with the hook in place the command guard leaves the push to it, holding only what skips it
+guard 0 "$R3" "git push origin side"
+guard 0 "$R3" "git push"
+guard 0 "$R3" "git fetch . side:main && git push origin main"
+guard 2 "$R3" "git push --no-verify origin main"
+guard 2 "$R3" "git config core.hooksPath /dev/null && git push origin side"
+guard 2 "$R3" "rm .git/hooks/pre-push; git push origin side"
+guard 2 "$R3" "CLAUDECODE= git push origin side"
+# git reads an unambiguous abbreviation of a long option as the option
+guard 2 "$R3" "git push --no-verif origin main"
+guard 2 "$R3" "git push --no-veri origin main"
+git -C "$R3" config core.hooksPath "$T/no-hooks"
+guard 2 "$R3" "git push origin side"
+git -C "$R3" config --unset core.hooksPath
+# a hook whose guard moved (a plugin upgrade, an uninstall) is no hook to defer to, and it holds a
+# route's pushes instead of letting them through
+sed -i "s|^guard=.*|guard=$T/gone/push_guard.py|" "$R3/.git/hooks/pre-push"
+guard 2 "$R3" "git push origin side"
+push3 1 'its guard .* is gone' side
+(cd "$R3" && env -u CLAUDECODE git push -q origin side:refs/heads/human2 2>/dev/null) &&
+	ok "a moved guard still lets a push outside Claude Code through" || bad "a moved guard held a terminal push"
+CLAUDE_CODE_SESSION_ID=pp1 python3 "$RS" "$P3" --phase 1 --repo "$R3" --activate >/dev/null 2>&1
+guard 0 "$R3" "git push origin side"
+# the route ended (its marker deleted): the hook lets every push through
+rm "$(MK "$R3")"
+push3 0 - side
+# a repository whose hooks live elsewhere (core.hooksPath) keeps the command guard alone
+R4=$T/r4
+git init -q -b main "$R4" && git -C "$R4" config core.hooksPath .husky && mkdir "$R4/.plan"
+out=$(CLAUDE_CODE_SESSION_ID=pp1 python3 "$RS" "$R4/.plan" --phase 1 --repo "$R4" --activate 2>&1)
+[ ! -e "$R4/.git/hooks/pre-push" ] && [ ! -e "$R4/.husky/pre-push" ] && grep -q 'core.hooksPath is set' <<<"$out" &&
+	ok "activate with core.hooksPath: no hook written, says so" || bad "activate, core.hooksPath: $out"
+rm -f "$(MK "$R4")" "$HOME/.claude/dsp-routes/pp1.json"
+git config --global core.hooksPath "$T/no-hooks"
 
 # --- the state hook: who it speaks to
 hook report "$(ev PostToolUse s1 '"tool_name":"Agent"')"
@@ -1495,8 +1611,8 @@ for c in "for f in a; do echo exit=0; done > $GL" "if true; then echo exit=0; fi
 	"python3 -c \"import pathlib; pathlib.Path('$GL').open('a').write('exit=0')\""; do
 	hook 'deny:a gate log holds only what the gate printed' "$(leadcmd "$c")"
 done
-# the hold names the computed dirty count its own remedy needs (a literal `dirty=0` is held)
-hook 'deny:dirty=\$\(git status --porcelain' "$(leadcmd "sed -i s/1/0/ $GL")"
+# the hold names the gate runner, which writes every line the push check reads
+hook 'deny:scripts/gate\.py <planning-dir> <name> -- ' "$(leadcmd "sed -i s/1/0/ $GL")"
 # reads on the hosted repository are no actions: a GET with fields, a graphql query, a list whose
 # label is a verb; a mutation still asks
 for c in "gh api -X GET search/issues -f q='repo:o/r is:pr is:open'" \

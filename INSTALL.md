@@ -18,6 +18,14 @@ state hook (`route_state.py --hook`) and push guard (`push_guard.py`) stay off, 
 about them are false. Both act only for a session that ran `route_state.py --activate`; any other
 session pays ~0.02 s per call. Turn it off with `claude plugin disable decision-spec-plan@skills-dir`.
 
+`--activate` also writes a `pre-push` hook into the repository's `.git/hooks`; the push checks run
+there, on the exact refs git sends. A pre-push hook the repository already had is renamed
+`pre-push.dsp-orig` and runs after it. Nothing is written where `core.hooksPath` is set (husky and
+the like): the Bash hook then checks each push command alone. The hook acts only in a Claude Code
+shell while a route is active in the repository, so a push from your terminal passes and a
+`!git push` typed in the session does not (prefix it with `DSP_SKIP_PUSH_GUARD=1`). To remove it,
+delete `.git/hooks/pre-push` and rename `pre-push.dsp-orig` back.
+
 **Upgrading**: the copy overwrites `agents/dsp-*.md`, so save each file's `tools:` line first if you
 edited it, and put it back after. A file this package no longer ships stays behind: compare
 `ls -R ~/.claude/skills/decision-spec-plan` with the package. Then run the hook suite (last

@@ -44,8 +44,17 @@ read the command with regexes until 2026-10-30, and a probe passed `timeout 60 g
 `git fetch . lane:main && git push`, `(cd x && ls) && git push`, `git push origin :` and a quoted
 `-C` path, while it held `if …; then git push` and `git log --grep push`.
 
+Git's own hook: `route_state.py --activate` installs a pre-push hook in the repository (the
+repository's own pre-push hook, if any, is kept as `pre-push.dsp-orig` and runs after it; none is
+written where core.hooksPath is set). It runs `push_guard.py --pre-push`, which applies the same
+gate, harness and review checks to the exact refs and commits git is about to send — so `--all`, a
+push with no refspec and a ref the command moved first are read as they are, not held. It acts
+only in a Claude Code shell (CLAUDECODE set) while a route's marker is in the repository; a push
+from a terminal passes. While that hook is in place the command guard leaves a push to it and
+holds only what would skip it: `--no-verify`, and a command that names CLAUDECODE or hooks.
+
 Bypass, only on the user's explicit word: DSP_SKIP_PUSH_GUARD=1 in the command skips both checks;
-DSP_SKIP_REVIEW=1 skips only the review.
+DSP_SKIP_REVIEW=1 skips only the review. Both reach the hook as environment variables.
 """
 
 import functools
@@ -317,6 +326,79 @@ def route_marker(repo, session):
         pathlib.Path(common).glob("dsp-route*.json"), key=lambda p: p.stat().st_mtime
     )
     return str(found[-1]) if found else None
+
+
+HOOK_TAG = "# decision-spec-plan pre-push"
+GATE = pathlib.Path(__file__).resolve().with_name("gate.py")
+SHIM = """#!/bin/sh
+{tag}, written by route_state.py --activate. In a Claude Code shell, while
+# a decision-spec-plan route is active in this repository, it holds a push the route's gates have
+# not passed (push_guard.py --pre-push); a push from a terminal passes. The repository's own
+# pre-push hook, if it had one, is pre-push.dsp-orig and runs after it. To remove: delete this
+# file and rename pre-push.dsp-orig back.
+guard={guard}
+input=$(cat)
+if [ -n "$CLAUDECODE" ]; then
+	if [ -f "$guard" ]; then
+		printf '%s\\n' "$input" | python3 "$guard" --pre-push "$@" || exit 1
+	elif ls "$(git rev-parse --git-common-dir)"/dsp-route*.json >/dev/null 2>&1; then
+		echo "[push_guard] a decision-spec-plan route is active here, but its guard $guard is gone (the plugin moved or was removed) — BLOCKED. Re-run route_state.py --activate, or end the route by deleting its marker." >&2
+		exit 1
+	fi
+fi
+orig="$(dirname "$0")/pre-push.dsp-orig"
+[ -x "$orig" ] || exit 0
+if [ -n "$input" ]; then printf '%s\\n' "$input"; fi | "$orig" "$@"
+"""
+
+
+def shim():
+    return SHIM.format(
+        tag=HOOK_TAG, guard=shlex.quote(str(pathlib.Path(__file__).resolve()))
+    )
+
+
+def hook_file(repo):
+    """Git's pre-push hook in repo, or None where core.hooksPath points git elsewhere: a tracked
+    hooks directory (husky's) is the project's, not the route's."""
+    if git(repo, "config", "core.hooksPath") is not None:
+        return None
+    hooks = git(repo, "rev-parse", "--path-format=absolute", "--git-path", "hooks")
+    return pathlib.Path(hooks, "pre-push") if hooks else None
+
+
+def hook_installed(repo):
+    """This guard's own hook, byte for byte: one written by another copy of the plugin (an
+    upgrade moves its path) may call a guard that is gone."""
+    f = hook_file(repo)
+    try:
+        return bool(f and os.access(f, os.X_OK) and f.read_text() == shim())
+    except (OSError, UnicodeDecodeError):
+        return False
+
+
+def install_hook(repo):
+    """Install the pre-push hook (route_state.py --activate); the line it prints.
+
+    Why: the command guard reads what a push would send from the command's text, so it holds
+    whatever it cannot read (`--all`, no refspec, a ref moved earlier in the command) — live
+    sessions met those holds on pushes that were gated. Git hands its pre-push hook the exact refs
+    and commits instead."""
+    f = hook_file(repo)
+    if f is None:
+        return "core.hooksPath is set: no pre-push hook installed; push_guard.py reads each push command instead"
+    orig = f.with_name("pre-push.dsp-orig")
+    if f.exists() and HOOK_TAG not in f.read_text(errors="replace"):
+        if orig.exists():
+            return f"no pre-push hook installed: {f} and {orig} both exist; push_guard.py reads each push command instead"
+        f.rename(orig)
+    f.parent.mkdir(parents=True, exist_ok=True)
+    f.write_text(shim())
+    f.chmod(0o755)
+    kept = (
+        f" (the repository's own runs after it: {orig.name})" if orig.exists() else ""
+    )
+    return f"pre-push hook installed: {f}{kept}"
 
 
 def cd(state, target, made: set[str] | frozenset[str] = frozenset()):
@@ -719,12 +801,69 @@ def walk(command, cwd, depth=0, state=None):
 
 
 class Guard:
-    def __init__(self, session, review_skip):
+    def __init__(self, session, review_skip, command=""):
         self.session = session
         self.review_skip = review_skip
+        # a command that names these may skip git's pre-push hook: the guard reads its pushes itself
+        self.unhooked = bool(re.search(r"hooks|CLAUDECODE", command))
         self.missing, self.no_harness, self.unreviewed = [], [], []
         self.forms = []  # pushes whose target the command does not let the guard read
         self.blocked = None  # (marker, planning, rung, harness) of the push that failed
+
+    def failures(self):
+        return (
+            len(self.missing)
+            + len(self.no_harness)
+            + len(self.unreviewed)
+            + len(self.forms)
+        )
+
+    def route(self, marker):
+        """(planning, rung, harness, review, main) from the route's marker; None, recorded as a
+        hold, when it names no planning dir."""
+        try:
+            m = json.loads(pathlib.Path(marker).read_text(errors="replace"))
+        except (OSError, ValueError):
+            m = None
+        if not isinstance(m, dict):
+            m = {}
+        planning = m.get("planning_dir")
+        if not planning:
+            self.missing.append(
+                "the route's marker names no planning dir — re-run route_state.py --activate"
+            )
+            self.blocked = (marker, "<planning-dir>", "", "")
+            return None
+        args = m.get("args") or []
+        main = args[args.index("--main") + 1] if "--main" in args[:-1] else None
+        return (
+            planning,
+            m.get("rung") or "",
+            m.get("ci_harness") or "",
+            m.get("sins") == "on" and not self.review_skip,
+            main and main.removeprefix("refs/heads/"),
+        )
+
+    def pre_push(self, repo, marker, remote, lines):
+        """Git's pre-push hook: each `<local ref> <local sha> <remote ref> <remote sha>` line."""
+        route = self.route(marker)
+        if route is None:
+            return
+        planning, rung, harness, review, main = route
+        for line in lines:
+            parts = line.split()
+            if len(parts) != 4 or not parts[1].strip("0"):
+                continue  # a deletion sends no commit
+            local, sha, to, theirs = parts
+            if (c := commit(repo, sha)) is None:
+                self.missing.append(f"{local} = {sha[:12]} (not a commit)")
+                continue
+            onto = commit(repo, theirs) if theirs.strip("0") else None
+            self.commit_ok(
+                repo, planning, harness, review, main, remote, local, c, to, onto
+            )
+        if self.failures():
+            self.blocked = (marker, planning, rung, harness)
 
     def check(self, p):
         form = None
@@ -753,34 +892,27 @@ class Guard:
         if not marker:
             return
         repo = p["dir"]
+        if not form and not self.unhooked and hook_installed(repo):
+            # git reads an unambiguous abbreviation as the option: `--no-veri` is `--no-verify`
+            if not any(
+                a.startswith("--no-v") and "--no-verify".startswith(a)
+                for a in p["args"]
+            ):
+                return  # git's pre-push hook reads the refs and commits this push sends
+            form = "`--no-verify`, which skips the pre-push hook that checks what a push sends"
         if not form and p.get("moved"):
             form = "a git command that moves refs earlier in the command — push in a command of its own"
         tags = new_tags(repo, p.get("tags", [])) if not form else {}
         if tags is None:
             form = "a `git tag` other than creating a new tag earlier in the command — push in a command of its own"
-        try:
-            m = json.loads(pathlib.Path(marker).read_text(errors="replace"))
-        except (OSError, ValueError):
-            m = None
-        if not isinstance(m, dict):
-            m = {}
-        planning = m.get("planning_dir")
-        if not planning:
-            self.missing.append(
-                "the route's marker names no planning dir — re-run route_state.py --activate"
-            )
-            self.blocked = (marker, "<planning-dir>", "", "")
+        route = self.route(marker)
+        if route is None:
             return
-        rung, harness = m.get("rung") or "", m.get("ci_harness") or ""
-        review = m.get("sins") == "on" and not self.review_skip
-        had = len(self.missing) + len(self.no_harness) + len(self.unreviewed)
-        had += len(self.forms)
+        planning, rung, harness, review, main = route
+        had = self.failures()
         if form:
             self.forms.append(form)
         else:
-            args = m.get("args") or []
-            main = args[args.index("--main") + 1] if "--main" in args[:-1] else None
-            main = main and main.removeprefix("refs/heads/")
             self.refspecs(
                 repo,
                 planning,
@@ -791,8 +923,7 @@ class Guard:
                 p.get("computed", []),
                 main,
             )
-        now = len(self.missing) + len(self.no_harness) + len(self.unreviewed)
-        if now + len(self.forms) > had:
+        if self.failures() > had:
             # the message names the route of the push that failed
             self.blocked = (marker, planning, rung, harness)
 
@@ -851,31 +982,33 @@ class Guard:
                 self.missing.append(f"{src} (does not resolve to a commit in {repo})")
             to = dst if colon else src
             to = (branch or "") if to == "HEAD" else to
-            # the branch push that starts the CI run cannot carry its log: the harness guards
-            # every push but one to `refs/heads/<x>`, x not main — the remote reads a bare
-            # name against its own refs, which may hold a tag of that name
-            branch_ref = to.startswith("refs/heads/")
-            to = to.removeprefix("refs/heads/")
-            ci = harness and (main is None or not branch_ref or to == main)
             for sha in sorted(shas):
-                why = []
-                if not gated(planning, sha, why=why):
-                    reason = (
-                        "; ".join(why)
-                        or f"no gate log under {planning}/lanes/ names it"
-                    )
-                    self.missing.append(f"{src} = {sha[:12]} — {reason}")
-                elif ci and not gated(planning, sha, harness):
-                    self.no_harness.append(f"{src} = {sha[:12]}")
-                elif review:
-                    onto = commit(repo, f"refs/remotes/{remote}/{to}")
-                    if not reviewed(repo, planning, sha, remote, onto):
-                        tracking = (
-                            f" (remote-tracking {remote}/{to} = {onto[:12]})"
-                            if onto
-                            else ""
-                        )
-                        self.unreviewed.append(f"{src} = {sha[:12]}{tracking}")
+                self.commit_ok(
+                    repo, planning, harness, review, main, remote, src, sha, to
+                )
+
+    def commit_ok(
+        self, repo, planning, harness, review, main, remote, src, sha, to, onto=None
+    ):
+        """Record where sha, sent from src to the remote's ref `to`, fails a check; onto is the
+        remote's commit of that ref, when known."""
+        # the branch push that starts the CI run cannot carry its log: the harness guards every
+        # push but one to `refs/heads/<x>`, x not main — the remote reads a bare name against
+        # its own refs, which may hold a tag of that name
+        branch_ref = to.startswith("refs/heads/")
+        to = to.removeprefix("refs/heads/")
+        ci = harness and (main is None or not branch_ref or to == main)
+        why = []
+        if not gated(planning, sha, why=why):
+            reason = "; ".join(why) or f"no gate log under {planning}/lanes/ names it"
+            self.missing.append(f"{src} = {sha[:12]} — {reason}")
+        elif ci and not gated(planning, sha, harness):
+            self.no_harness.append(f"{src} = {sha[:12]}")
+        elif review:
+            onto = onto or commit(repo, f"refs/remotes/{remote}/{to}")
+            if not reviewed(repo, planning, sha, remote, onto):
+                tracking = f" (remote {remote}/{to} = {onto[:12]})" if onto else ""
+                self.unreviewed.append(f"{src} = {sha[:12]}{tracking}")
 
     def report(self):
         assert self.blocked is not None  # main() reports only a blocked push
@@ -899,9 +1032,9 @@ Bypass only on the user's explicit instruction: prefix the push with DSP_SKIP_PU
             out += [f"  not gated: {s}" for s in self.missing]
             out.append(f"""
 CI confirms a state already proven green here; it never discovers one. Check out that exact commit
-on a clean tree and run the full gate into a log under the planning dir:
+on a clean tree and run the full gate through the gate runner, which writes the log:
 
-  {{ echo "sha=$(git rev-parse HEAD) dirty=$(git status --porcelain --untracked-files=no | grep -c .)"; <full gate>; echo "exit=$?"; }} > {planning}/lanes/<name>-gate.log 2>&1
+  {GATE} {planning} <name> -- '<full gate>'
 
 The push goes through once a log there has `sha=<the commit> dirty=0` as its first `sha=` line,
 within its first 20 lines (a build may print first), and `exit=0` as its last `exit=` line.
@@ -915,13 +1048,14 @@ Bypass only on the user's explicit instruction: prefix the push with DSP_SKIP_PU
             out.append(f"""
 CI runs a suite the local full gate does not (route_state.py --ci-harness), and a commit green
 locally went red there four times in one round. Run that suite on the exact commit, on a clean
-tree, into a log that names it:
+tree, through the gate runner, into a log that names it:
 
-  {{ echo "sha=$(git rev-parse HEAD) dirty=$(git status --porcelain --untracked-files=no | grep -c .)"; echo "harness={harness}"; <the CI's command>; echo "exit=$?"; }} > {planning}/lanes/<name>-{harness}-gate.log 2>&1
+  {GATE} {planning} <name> --harness {harness} -- '<the CI's command>'
 
 The push goes through once such a log ends `exit=0`. A suite only CI can run: push the commit to
 another branch first as `<commit>:refs/heads/<branch>` (that push needs only the full gate), let
-CI run it there, and write the log from that run's own output. Bypass only on the user's explicit instruction: DSP_SKIP_PUSH_GUARD=1.""")
+CI run it there, and record that run the same way, with `-- 'gh run watch <run-id> --exit-status'`
+(or the CI's equivalent) as the command. Bypass only on the user's explicit instruction: DSP_SKIP_PUSH_GUARD=1.""")
         if self.unreviewed:
             out.append(
                 "[push_guard] `git push` of a commit no pre-push review covers — BLOCKED "
@@ -950,6 +1084,20 @@ def main():
     if sys.argv[1:2] in (["--help"], ["-h"]):
         print(__doc__)
         return 0
+    if sys.argv[1:2] == ["--pre-push"]:
+        # git runs its hooks at the top of the worktree; a held push exits non-zero
+        if os.environ.get("DSP_SKIP_PUSH_GUARD") == "1":
+            return 0
+        session = os.environ.get("CLAUDE_CODE_SESSION_ID", "")
+        if not (marker := route_marker(os.getcwd(), session)):
+            return 0
+        guard = Guard(session, os.environ.get("DSP_SKIP_REVIEW") == "1")
+        remote = sys.argv[2] if len(sys.argv) > 2 else "origin"
+        guard.pre_push(os.getcwd(), marker, remote, sys.stdin)
+        if guard.blocked is None:
+            return 0
+        print(guard.report(), file=sys.stderr)
+        return 1
     try:
         event = json.load(sys.stdin)
     except ValueError:
@@ -958,7 +1106,9 @@ def main():
     # every command is read: an alias pushes with no `push` in the text, escapes hide `git` in it
     if "DSP_SKIP_PUSH_GUARD=1" in command:
         return 0
-    guard = Guard(str(event.get("session_id") or ""), "DSP_SKIP_REVIEW=1" in command)
+    guard = Guard(
+        str(event.get("session_id") or ""), "DSP_SKIP_REVIEW=1" in command, command
+    )
     try:
         for p in walk(command, event.get("cwd") or os.getcwd()):
             guard.check(p)
