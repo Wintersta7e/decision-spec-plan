@@ -60,12 +60,15 @@ flowchart LR
 
 ## Is it worth it
 
-Not for a small, clear task. On one size-S build, run once each in the same container, plain
-Claude Code cost **0.65×** the route ($20.69 against $31.95) in **0.7×** the time (73 against 105
-minutes), and both passed the gates. A blind cross-model review still preferred the route's branch:
-plain Claude had merged two people who share a name, while the route's decision step had given each
-their own id. That is one task and one run each, an observation rather than a benchmark
-(`failure-modes.md` F85).
+Not for a small, clear task, if cost is what you measure. On one rung-S build, run once each in the
+same container, plain Claude Code cost **0.36×** the route ($7.29 against $20.32) in **0.26×** the
+time (19 against 72 minutes), and both passed the project's gate. Against 15 hidden acceptance
+scenarios the route's branch had **4** defects and plain Claude's **7**: plain Claude merged two
+people who share a name, and treated a different note or local date at the same minute as a
+duplicate. A second route build of the same task cost $18.05 in 68 minutes and had **5** defects.
+An earlier pair, with an older version of the plugin, found the same name merge at 0.65× the cost.
+That is one task, two route runs and one plain run, an observation rather than a benchmark
+(`costs.md`, `failure-modes.md` F85).
 
 Use plain Claude for one obvious fix. Use the route when there are open design decisions, when
 several agents will build in parallel, or when you want every push and every merged lane checked.
@@ -103,6 +106,9 @@ arbiter.</sub>
 | **S** | 1–3 open decisions, and any PR review | The lead writes one decision document, one spec and one plan; fresh agents execute; one second-model review |
 | **M** | 4–7 decisions, or fewer needing several plans | Harvest inline or by one agent, 2–4 spec authors, reconciliation |
 | **L** | 8+ decisions, several subsystems | The full route, including the seven-reviewer panel |
+
+One rung-S route from a real run, from the task to the gated branch, is walked through in
+[`references/worked-example.md`](skills/decision-spec-plan/references/worked-example.md).
 
 Questions reach you in one batch, at most four at a time. The recommended option comes first, and
 every option states its consequence.

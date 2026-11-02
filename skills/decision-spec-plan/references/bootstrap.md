@@ -3,7 +3,8 @@
 The route's effectiveness in a mature project comes partly from what that project accumulated: a
 charter, a spec directory with owners, a handoff file, mechanical checkers, and a standing list of
 the defects that recur. A new project has none of it. Build the minimum **before stage 0**, and tell
-the user what you created.
+the user what you created. To see what each stage's output looks like before writing your own, read
+`worked-example.md`: one rung-S route from a real run, from the task to the gated branch.
 
 ## 1. The planning directory — private, gitignored
 
