@@ -28,4 +28,6 @@ jobs:
           pyright
           shellcheck -S warning skills/decision-spec-plan/tests/hooks_test.sh
       - name: Hook and checker suite
-        run: skills/decision-spec-plan/tests/hooks_test.sh
+        run: |
+          skills/decision-spec-plan/tests/hooks_test.sh
+          python3 -m unittest discover -s skills/decision-spec-plan/tests

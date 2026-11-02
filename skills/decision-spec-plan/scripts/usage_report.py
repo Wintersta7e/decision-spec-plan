@@ -29,14 +29,12 @@ Exit 0 on a report, 2 when no transcript is found.
 """
 
 import argparse
-import datetime
-import json
-import os
 import pathlib
 import re
 import statistics
-import subprocess
 import sys
+
+from dsp_route import transcript
 
 WEIGHTS = {"input": 1.0, "write_5m": 1.25, "write_1h": 2.0, "output": 5.0}
 # (model family, price against Opus 5.5, cache read against the model's input); Opus otherwise.
@@ -46,10 +44,6 @@ HAIKU_LONG = 100_000
 CACHE_LIFE = 300  # seconds: the default prompt-cache lifetime
 LONG_TURNS = 150
 LONG_CONTEXT = 300_000
-ENTRYPOINT = re.compile(r'"entrypoint":"([^"]*)"')
-CWD = re.compile(r'"cwd":"([^"]*)"')
-# route_state.py's session registry: one entry per route lead
-REGISTRY = pathlib.Path.home() / ".claude" / "dsp-routes"
 EDITS = {"Edit", "Write", "MultiEdit", "NotebookEdit"}
 COMMIT = re.compile(r"\bgit\b(?:\s+-[Cc]\s+\S+)*\s+commit\b")
 # route_state.py's CONTEXT_STOP: a task group past it finishes its task and returns (F75).
@@ -66,76 +60,35 @@ def rates(model, prompt):
     return OPUS
 
 
-def human(record):
-    """A prompt the user typed or queued, or their answer to AskUserQuestion."""
-    if record.get("isMeta") or record.get("isCompactSummary"):
-        return False
-    result = record.get("toolUseResult")
-    if isinstance(result, dict) and "answers" in result:
-        return True
-    attachment = record.get("attachment")
-    origin = record.get("origin") or (
-        attachment.get("origin") if isinstance(attachment, dict) else None
-    )
-    return isinstance(origin, dict) and origin.get("kind") == "human"
-
-
 def scan(path, since, until=None):
     """One transcript: weighted units, per-turn context sizes, model, first and last timestamp."""
-    seen = set()
     units = idle = 0.0
     contexts = []
     model = None
     efforts = []
-    first = last = previous = None
-    asked = False  # the user prompted or answered since the last request
-    with open(path, encoding="utf-8", errors="replace") as fh:
-        for line in fh:
-            try:
-                record = json.loads(line)
-            except json.JSONDecodeError:
-                continue
-            stamp = record.get("timestamp")
-            message = record.get("message")
-            if record.get("type") != "assistant" or not isinstance(message, dict):
-                asked = asked or human(record)
-                continue
-            usage = message.get("usage")
-            key = (message.get("id"), record.get("requestId"))
-            if not usage or key in seen or message.get("model") == "<synthetic>":
-                continue
-            seen.add(key)
-            now, before = epoch(stamp), epoch(previous)
-            gap = now - before if now is not None and before is not None else 0
-            previous = stamp or previous
-            waited, asked = asked, False
-            if stamp and ((since and stamp < since) or (until and stamp > until)):
-                continue
-            model = message.get("model") or model
-            if record.get("effort") and record["effort"] not in efforts:
-                efforts.append(record["effort"])
-            first = first or stamp
-            last = stamp or last
-            write_all = usage.get("cache_creation_input_tokens", 0) or 0
-            write_1h = (usage.get("cache_creation") or {}).get(
-                "ephemeral_1h_input_tokens", 0
-            ) or 0
-            read = usage.get("cache_read_input_tokens", 0) or 0
-            fresh = usage.get("input_tokens", 0) or 0
-            out = usage.get("output_tokens", 0) or 0
-            factor, read_weight = rates(model, fresh + write_all + read)
-            writes = factor * (
-                WEIGHTS["write_5m"] * (write_all - write_1h)
-                + WEIGHTS["write_1h"] * write_1h
-            )
-            units += writes + factor * (
-                WEIGHTS["input"] * fresh + read_weight * read + WEIGHTS["output"] * out
-            )
-            # past the cache's life the whole prompt is written again: when the user ended the
-            # wait, that is the wait's cost; after a task group's return it is the wave's (F93)
-            if waited and gap >= CACHE_LIFE and write_all > read:
-                idle += writes
-            contexts.append(fresh + write_all + read)
+    first = last = None
+    for q in transcript.requests(path, since, until):
+        stamp = q["stamp"]
+        model = q["model"] or model
+        if q["effort"] and q["effort"] not in efforts:
+            efforts.append(q["effort"])
+        first = first or stamp
+        last = stamp or last
+        fresh, write_all, write_1h = q["fresh"], q["write_all"], q["write_1h"]
+        read, out = q["read"], q["out"]
+        factor, read_weight = rates(model, fresh + write_all + read)
+        writes = factor * (
+            WEIGHTS["write_5m"] * (write_all - write_1h)
+            + WEIGHTS["write_1h"] * write_1h
+        )
+        units += writes + factor * (
+            WEIGHTS["input"] * fresh + read_weight * read + WEIGHTS["output"] * out
+        )
+        # past the cache's life the whole prompt is written again: when the user ended the
+        # wait, that is the wait's cost; after a task group's return it is the wave's (F93)
+        if q["waited"] and q["gap"] >= CACHE_LIFE and write_all > read:
+            idle += writes
+        contexts.append(fresh + write_all + read)
     return {
         "units": units,
         "idle": idle,
@@ -150,118 +103,23 @@ def scan(path, since, until=None):
 
 def group_stats(path, since, until=None):
     """A task group's context when it first edits a file, and how many `git commit` calls it ran."""
-    seen = set()
-    context = 0
     first_edit = None
     commits = 0
-    with open(path, encoding="utf-8", errors="replace") as fh:
-        for line in fh:
-            try:
-                record = json.loads(line)
-            except json.JSONDecodeError:
-                continue
-            stamp = record.get("timestamp")
-            if stamp and ((since and stamp < since) or (until and stamp > until)):
-                continue
-            message = record.get("message")
-            if record.get("type") != "assistant" or not isinstance(message, dict):
-                continue
-            usage = message.get("usage")
-            if usage and message.get("model") != "<synthetic>":
-                context = sum(
-                    usage.get(k, 0) or 0
-                    for k in (
-                        "input_tokens",
-                        "cache_creation_input_tokens",
-                        "cache_read_input_tokens",
-                    )
-                )
-            for block in message.get("content") or []:
-                if not isinstance(block, dict) or block.get("type") != "tool_use":
-                    continue
-                if block.get("id") in seen:
-                    continue
-                seen.add(block.get("id"))
-                if block.get("name") in EDITS and first_edit is None:
-                    first_edit = context
-                command = (block.get("input") or {}).get("command")
-                if block.get("name") == "Bash" and COMMIT.search(str(command or "")):
-                    commits += 1
+    for context, name, arg in transcript.tool_calls(path, since, until):
+        if name in EDITS and first_edit is None:
+            first_edit = context
+        if name == "Bash" and COMMIT.search(str(arg.get("command") or "")):
+            commits += 1
     return {"first_edit": first_edit, "commits": commits}
 
 
-def epoch(stamp):
-    """Seconds since the epoch of an ISO timestamp (UTC when it names no zone), or None."""
-    try:
-        moment = datetime.datetime.fromisoformat(stamp)
-    except (AttributeError, TypeError, ValueError):
-        return None
-    if moment.tzinfo is None:
-        moment = moment.replace(tzinfo=datetime.UTC)
-    return moment.timestamp()
-
-
-def timestamp(text):
-    """`--since` in the transcripts' format (UTC, milliseconds, `Z`): scan() compares the two as strings."""
-    seconds = epoch(text)
-    if seconds is None:
-        raise ValueError(text)
-    moment = datetime.datetime.fromtimestamp(seconds, datetime.UTC)
-    return moment.isoformat(timespec="milliseconds").replace("+00:00", "Z")
-
-
-def entrypoint(path):
-    with open(path, encoding="utf-8", errors="replace") as fh:
-        for _, line in zip(range(20), fh):
-            if m := ENTRYPOINT.search(line):
-                return m.group(1)
-    return ""
-
-
-def common_dir(path):
-    """The git common dir of the first `cwd` a transcript records, or None (gone, or no repo)."""
-    with open(path, encoding="utf-8", errors="replace") as fh:
-        for _, line in zip(range(20), fh):
-            if m := CWD.search(line):
-                r = subprocess.run(
-                    [
-                        "git",
-                        "-C",
-                        m.group(1),
-                        "rev-parse",
-                        "--path-format=absolute",
-                        "--git-common-dir",
-                    ],
-                    capture_output=True,
-                    text=True,
-                    check=False,
-                )
-                return r.stdout.strip() if r.returncode == 0 else None
-    return None
-
-
 def sdk_sessions(project, lead_path, since, until):
-    """Sessions with an `sdk-*` entrypoint in the project dir or a worktree's (`<project>-*`).
-
-    A route's lead (registered by `route_state.py --activate`) is a lead even when headless
-    (`sdk-cli`). A `<project>-*` dir counts only for the sessions that ran in the lead's
-    repository: one named alike, or whose repository is unknown, is another project — counted,
-    its headless sessions held a route's wave over a budget it had not spent."""
-    floor = epoch(since)
+    """The scan() rows of the hook sessions beside a lead (transcript.sdk_transcripts)."""
     rows = []
-    repo = common_dir(lead_path)
-    for directory in [project, *sorted(project.parent.glob(project.name + "-*"))]:
-        for path in sorted(directory.glob("*.jsonl")):
-            if path == lead_path or (floor and path.stat().st_mtime < floor):
-                continue
-            if (REGISTRY / f"{path.stem}.json").exists():
-                continue
-            if directory != project and (repo is None or common_dir(path) != repo):
-                continue
-            if entrypoint(path).startswith("sdk"):
-                row = scan(path, since, until)
-                if row["contexts"]:
-                    rows.append(row)
+    for path in transcript.sdk_transcripts(project, lead_path, since):
+        row = scan(path, since, until)
+        if row["contexts"]:
+            rows.append(row)
     return rows
 
 
@@ -278,19 +136,10 @@ def route_cost(lead_path, since, until=None):
 def subagents(lead_path, since, until=None):
     """The scan() rows of a session's subagents, each with its label, name and path."""
     agents = []
-    floor = epoch(since)
-    for path in sorted(
-        (lead_path.parent / lead_path.stem / "subagents").glob("agent-*.jsonl")
-    ):
-        if floor and path.stat().st_mtime < floor:
-            continue
-        meta_path = path.with_name(path.stem + ".meta.json")
-        meta = json.loads(meta_path.read_text()) if meta_path.exists() else {}
+    for path, label, name in transcript.subagent_transcripts(lead_path, since):
         row = scan(path, since, until)
         if row["contexts"]:
-            row["label"] = meta.get("description") or meta.get("agentType") or path.stem
-            row["name"] = str(meta.get("name") or meta.get("agentType") or "")
-            row["path"] = path
+            row["label"], row["name"], row["path"] = label, name, path
             agents.append(row)
     return agents
 
@@ -318,7 +167,9 @@ def group_lines(agents, since, until=None):
         first, commits = stats["first_edit"], stats["commits"]
         peak = max(row["contexts"])
         growth = (peak - first) / commits if first is not None and commits else None
-        span = ((epoch(row["last"]) or 0) - (epoch(row["first"]) or 0)) / 60
+        span = (
+            (transcript.epoch(row["last"]) or 0) - (transcript.epoch(row["first"]) or 0)
+        ) / 60
         if first is not None:
             firsts.append(first)
         if growth:
@@ -352,33 +203,13 @@ def main():
     )
     parser.add_argument("session", nargs="?")
     parser.add_argument("--project-dir", type=pathlib.Path)
-    parser.add_argument("--since", type=timestamp)
-    parser.add_argument("--until", type=timestamp)
+    parser.add_argument("--since", type=transcript.timestamp)
+    parser.add_argument("--until", type=transcript.timestamp)
     parser.add_argument("--top", type=int, default=40)
     parser.add_argument("--groups", action="store_true")
     args = parser.parse_args()
 
-    # --project-dir is the transcript dir, or the project itself (a lead passed that, live)
-    project = args.project_dir
-    if not (project and any(project.glob("*.jsonl"))):
-        project = (
-            pathlib.Path.home()
-            / ".claude"
-            / "projects"
-            / re.sub(
-                r"[^A-Za-z0-9]", "-", str((project or pathlib.Path.cwd()).resolve())
-            )
-        )
-    # Without a session id, the running session's own if it is in this project: the newest
-    # transcript may be a hook's or another lead's.
-    own = project / f"{os.environ.get('CLAUDE_CODE_SESSION_ID')}.jsonl"
-    if args.session:
-        lead_path = project / f"{args.session}.jsonl"
-    elif os.environ.get("CLAUDE_CODE_SESSION_ID") and own.exists():
-        lead_path = own
-    else:
-        candidates = sorted(project.glob("*.jsonl"), key=lambda p: p.stat().st_mtime)
-        lead_path = candidates[-1] if candidates else project / "missing.jsonl"
+    lead_path = transcript.find_lead(args.project_dir, args.session)
     if not lead_path.exists():
         print(f"no transcript at {lead_path}", file=sys.stderr)
         return 2

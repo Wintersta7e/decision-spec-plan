@@ -1086,7 +1086,7 @@ mkdir -p "$IW"
 	creq -8900 i3 0 100000 0
 	creq -3990 i4 0 500 100000
 } >"$IW/busy.jsonl"
-out=$(python3 -c 'import pathlib, sys; sys.path.insert(0, sys.argv[1]); import route_state as r
+out=$(python3 -c 'import pathlib, sys; sys.path.insert(0, sys.argv[1]); from dsp_route import holds as r
 s = lambda f: r.spend([pathlib.Path(sys.argv[2], f)], sys.argv[3])
 print(s("gap.jsonl") == s("none.jsonl") < s("busy.jsonl") == s("ret.jsonl"))' "$SCRIPTS" "$IW" "$(ts -10000)" 2>&1)
 [ "$out" = True ] && ok "budget spend: a rewrite after waiting for the user is not the wave's; one after a group's return or no gap is" ||
@@ -1273,10 +1273,11 @@ out=$(CLAUDE_CODE_SESSION_ID=g1 python3 "$SCRIPTS/route_state.py" --budget wg2 -
 grep -q 'about 2 commits fit' <<<"$out" && ! grep -q 'need at least' <<<"$out" &&
 	ok "--budget with enough groups only prints the fit" || bad "--budget fit, enough: $out"
 # the fit reads task groups only: a scan of every hook session per transcript took 54 s at 300
-out=$(python3 -c 'import sys; sys.path.insert(0, sys.argv[1]); import usage_report, route_state
+out=$(python3 -c 'import sys; sys.path.insert(0, sys.argv[1])
+from dsp_route import budget, transcript
 def read(*a): raise SystemExit("sdk sessions read")
-usage_report.sdk_sessions = read
-print(route_state.measured_fit("g1")[1])' "$SCRIPTS" 2>&1)
+transcript.sdk_transcripts = read
+print(budget.measured_fit("g1")[1])' "$SCRIPTS" 2>&1)
 [ "$out" = 2 ] && ok "--budget's fit never reads the hook sessions" || bad "--budget fit, sdk sessions: $out"
 rm "$HOME/.claude/dsp-routes/g1.json"
 
