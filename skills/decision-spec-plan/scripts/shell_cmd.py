@@ -316,17 +316,29 @@ def _dquote(text, i, word):
 
 
 def _ansi_c(s):
-    """The value of a `$'…'` string's text."""
+    """The value of a `$'…'` string's text, as bash reads it: `\\uHHHH`, `\\UHHHHHHHH` and `\\cX`
+    too, and an escape it does not know (or `\\x`, `\\u`, `\\c` with nothing after) keeps its
+    backslash."""
 
     def one(m: re.Match[str]) -> str:
         e = m[1]
-        if e[0] == "x":
-            return chr(int(e[1:], 16))
+        if e[0] in "xuU" and len(e) > 1:
+            code = int(e[1:], 16)
+            return chr(code) if code <= 0x10FFFF else ""
         if e[0] in "01234567":
             return chr(int(e, 8))
-        return ANSI_C.get(e, e)
+        if e[0] == "c" and len(e) > 1:
+            return chr(ord(e[1]) & 0x1F)
+        if e in ANSI_C:
+            return ANSI_C[e]
+        return e if e in "\\'\"?" else "\\" + e
 
-    return re.sub(r"\\(x[0-9a-fA-F]{1,2}|[0-7]{1,3}|.)", one, s, flags=re.DOTALL)
+    return re.sub(
+        r"\\(x[0-9a-fA-F]{1,2}|u[0-9a-fA-F]{1,4}|U[0-9a-fA-F]{1,8}|[0-7]{1,3}|c.|.)",
+        one,
+        s,
+        flags=re.DOTALL,
+    )
 
 
 def _dollar(text, i, word):
@@ -669,7 +681,9 @@ def _parse(tokens):
                 break
             nest += (w.text in OPENERS) - (w.text in CLOSERS)
         for kind, c in _command(words):
-            if isinstance(c, Cmd):  # the "cmd" events
+            if isinstance(c, Cmd) and c.after is None:
+                # the "cmd" events; a `bash -c` or `eval` body keeps its own operators after
+                # its first command
                 c.after = last
             element.append((kind, c))
         words = []

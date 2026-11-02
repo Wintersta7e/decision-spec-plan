@@ -198,7 +198,7 @@ tool list in the agent files.
 ### Requirements
 
 - Claude Code with plugin support
-- Python 3.11+, `bash`, `jq` and `git`
+- Python 3.11+, `bash` and `git`
 - Optional: `systemd-run --user` for the execution agents' memory cap; without it they fall back to
   `timeout` and `setsid`
 - Optional: a second model for cross-model review; without one, a Claude agent does the review
@@ -214,7 +214,7 @@ skills/decision-spec-plan/
 ├── references/           briefs, prompts, templates, costs, execution, the failure-mode log
 ├── scripts/              hooks and stage checkers (Python, standard library only)
 ├── hooks/hooks.json      hook wiring
-└── tests/                hooks_test.sh and the unittest files, run against throwaway repositories
+└── tests/                unittest files (standard library only), run against throwaway repositories
 ```
 
 [`references/failure-modes.md`](skills/decision-spec-plan/references/failure-modes.md) records each
@@ -224,13 +224,13 @@ evidence for that rule is in this log.
 ## Development
 
 ```
-skills/decision-spec-plan/tests/hooks_test.sh     # tests the copy it sits in
-python3 -m unittest discover -s skills/decision-spec-plan/tests
-ruff check skills/decision-spec-plan/scripts
-shellcheck -S warning skills/decision-spec-plan/tests/hooks_test.sh
+python3 -m unittest discover -s skills/decision-spec-plan/tests   # tests the copy it sits in
+ruff check skills/decision-spec-plan/scripts skills/decision-spec-plan/tests
+ruff format --check skills/decision-spec-plan/scripts skills/decision-spec-plan/tests
+pyright
 ```
 
-The suites build throwaway repositories and point `HOME` at a temp directory, so they never touch
+The suite builds throwaway repositories and points `HOME` at a temp directory, so it never touches
 your projects or your Claude configuration. CI runs the same commands on every push and pull
 request.
 
