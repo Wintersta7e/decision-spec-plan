@@ -122,8 +122,10 @@ def hook():
             from .agent import agent_pre
 
             return checked(agent_pre, event, session, entry) or 0
-        from .holds import gate_dispatch, ledger_hold, s_harvester
+        from .holds import dead_recipient, gate_dispatch, ledger_hold, s_harvester
 
+        if dead := checked(dead_recipient, event, entry):
+            return deny(dead)
         if checked(s_harvester, event, entry):
             return deny(
                 "rung S has no harvester: read the diff, the ticket and the code yourself "

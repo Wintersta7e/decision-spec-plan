@@ -22,6 +22,7 @@ from .common import (
     routes,
 )
 from .transcript import (
+    ended_run,
     event_transcript,
     finished_spans,
     session_transcripts,
@@ -43,6 +44,23 @@ def leads(event, marker):
         if e.get("marker") == str(marker):
             found += [p.resolve() for p in session_transcripts(sid)]
     return list(dict.fromkeys(found))
+
+
+def dead_recipient(event, entry):
+    """The lead's SendMessage to an agent whose run ended: the refusal, else None (F64)."""
+    if event.get("tool_name") != "SendMessage":
+        return None
+    to = str((event.get("tool_input") or {}).get("to") or "")
+    ended = to and ended_run(leads(event, pathlib.Path(entry["marker"])), to)
+    if not ended:
+        return None
+    stamp, reason = ended
+    return (
+        f"{to} stopped for good at {stamp} ({reason or 'its run failed'}): its idle notice "
+        "says its run ended, and a message never reaches it — after a spend limit one lead "
+        "messaged such an agent twice and reported it running for 20 min. Dispatch a fresh "
+        "agent with its brief, told to continue from its file's end (SKILL.md, F64)."
+    )
 
 
 def spend(paths, since):
