@@ -63,7 +63,7 @@ import re
 import subprocess
 import sys
 
-DEFAULT_EXT = "rs,ts,tsx,js,jsx,mjs,cjs,css,scss,json,sql,yml,yaml,toml,py,go,java,kt,swift,c,h,cpp,hpp,cs,rb,sh,md,html,xml,properties,gradle,kts"
+DEFAULT_EXT = "rs,ts,tsx,mts,cts,js,jsx,mjs,cjs,css,scss,json,sql,yml,yaml,toml,py,go,java,kt,swift,c,h,cpp,hpp,cs,rb,sh,md,adoc,puml,html,xml,properties,gradle,kts"
 SECTION_RE = re.compile(
     r"^#{2,3} File structure\s*$(.*?)(?:^#{2,3} (?:Task|Tasks|Global|Interfaces)|\Z)",
     re.MULTILINE | re.DOTALL | re.IGNORECASE,
