@@ -255,6 +255,57 @@ class ScopeAsksDiff(support.Sandbox):
             f"exit {r.code}: {r.out}",
         )
 
+    def test_diff_reads_every_row_the_plan_wrote(self):
+        """Live: one integrator's --diff flagged 55 of 123 changed files and was overridden on
+        all six lanes; every file was in a plan row the check could not read — an extension not
+        in --ext, a directory row, a `<domain>` template, a test beside its planned file."""
+        T = self.T / "rows"
+        (T / "plans").mkdir(parents=True)
+        self.write(
+            T / "plans/p1-01-a.md",
+            "# p1-01-a\n## File structure\n| File | Change | Ask |\n|---|---|---|\n"
+            # a template in a description cell, anchored to no directory, covers nothing
+            "| `src/api/calls/` | one `<domain>.ts` per block | Ask1 |\n"
+            "| `vitest.config.mts` | rule | Ask1 |\n"
+            "| `docs/srs/SRS.adoc` | embed | Ask1 |\n"
+            "| `docs/srs/diagrams/flow.puml` | new | Ask1 |\n"
+            "| `src/hubs/users/Dialog.tsx` | guard | Ask1 |\n"
+            "| `src/gen/<domain>.ts` | one per domain | Ask1 |\n## Task 1\n",
+        )
+        repo = self.init_repo(T / "repo", commits=("base",))
+        planned = (
+            "src/api/calls/rights.ts",
+            "src/api/calls/shared.ts",
+            "vitest.config.mts",
+            "docs/srs/SRS.adoc",
+            "docs/srs/diagrams/flow.puml",
+            "src/hubs/users/Dialog.tsx",
+            "src/hubs/users/__tests__/copy.test.tsx",
+            "src/hubs/users/Dialog.test.tsx",
+            "src/gen/cache.ts",
+        )
+        stray = (
+            "src/hubs/users/model.ts",
+            "src/other/__tests__/x.test.ts",
+            "src/api/callsX.ts",
+        )
+        for f in planned + stray:
+            self.write(repo / f, "x\n")
+        self.git("-C", repo, "add", "src", "docs", "vitest.config.mts")
+        self.commit(repo, "lane")
+        r = self.py(
+            "scope_check.py", T / "plans", "--diff", "HEAD~1..HEAD", "--repo", repo
+        )
+        flagged = [ln.strip() for ln in r.out.splitlines() if ln.startswith("   ")]
+        self.ok(
+            "scope_check --diff: rows of any extension, directories, templates and tests "
+            "beside a planned file are planned; the rest is not",
+            r.code == 1
+            and sorted(flagged) == sorted(stray)
+            and grep(r.out, "^3 of 12 changed"),
+            f"exit {r.code}: {r.out}",
+        )
+
 
 class ScopeUnimplemented(support.Sandbox):
     """A plan cut off after its File structure table, and a file named only inside a longer path

@@ -37,7 +37,10 @@ section names. Unasked changes were the largest class of user corrections in one
 review-fix rounds: a version bump, files the reviewer had said to leave alone, other tickets' work.
 
 With `--diff <base>..<head>` (in `--repo`, default `.`) it lists every file the range changed that
-no plan's File structure section lists: what a task group added beyond its plan.
+no plan's File structure section lists: what a task group added beyond its plan. A row is read
+whatever its extension; a directory row (`src/api/`) covers the files under it, a template under a
+directory (`src/gen/<domain>.ts`) any name in its place, and a test file beside a planned file (or
+in a `__tests__`/`tests` directory under its directory) is that file's test.
 
 Usage:
     scope_check.py <plans-dir> [--list] [--glob 'p4-*.md'] [--ext rs,ts,tsx,py,go,sql,...]
@@ -70,6 +73,12 @@ NAMED = (
     "|Justfile|justfile|Vagrantfile|LICENSE|CODEOWNERS"
 )
 DIR_RE = re.compile(r"`([A-Za-z0-9_./-]*/)`")
+# --diff: a backticked path of a row, templates (`<domain>.ts`, `*.sql`) included
+PATH_TOKEN = re.compile(r"`([A-Za-z0-9_./<>*-]+)`")
+TEST_FILE = re.compile(
+    r"(?:^|/)(?:__tests__|tests?)/|\.(?:test|spec)\.\w+$|(?:^|/)test_[^/]*\.py$|_test\.\w+$"
+)
+TEST_DIR = re.compile(r"(?:/(?:__tests__|tests?))+$")
 PLAN_ID = re.compile(r"p\d+-\d+[a-z]?(?=-|$)")
 ASK_RE = re.compile(r"\b((?:Ask|U)\d+)\b")
 # an id is defined where a line, heading or table row opens with it
@@ -143,8 +152,25 @@ def unasked(plans, sources, file_re):
     return 2 if not total else 1 if bad else 0
 
 
-def unplanned(plans, rev_range, repo, file_re):
-    """Files a commit range changed that no plan's File structure section lists."""
+def planned_paths(section):
+    """Every path the section's rows name in backticks, of any extension: --ext lists what a plan
+    may create, but a changed file a row names is planned whatever its extension. A backticked
+    name with no dot and no slash is a symbol (`KeysSection`), not a path."""
+    for path, _ in rows(section, PATH_TOKEN):
+        name = path.rstrip("/").rpartition("/")[2]
+        # a template with no directory (`<domain>.ts` in a description cell) would cover every
+        # file of its extension
+        if re.search(r"[<*]", path) and "/" not in path:
+            continue
+        if path.endswith("/") or "." in name or re.fullmatch(NAMED, name):
+            yield path
+
+
+def unplanned(plans, rev_range, repo):
+    """Files a commit range changed that no plan's File structure section lists. Live, the check
+    read rows by --ext alone and flagged 55 of 123 files on six lanes, all of them in a row: a
+    `.mts`, `.adoc` or `.puml` file, a directory, a test beside its planned file; every integrator
+    overrode it."""
     # --no-renames: a rename onto a planned path still deletes the old one. -z: a path keeps its
     # spaces and is never quoted.
     out = subprocess.run(
@@ -157,13 +183,29 @@ def unplanned(plans, rev_range, repo, file_re):
         print(out.stderr.strip())
         return 2
     changed = [c for c in out.stdout.split("\0") if c]
-    planned = set()
+    covers, dirs = [], set()
     for text in plans.values():
         m = SECTION_RE.search(text)
-        planned.update(promised(m.group(1), file_re) if m else ())
-    extra = [
-        c for c in changed if not any(c == p or c.endswith("/" + p) for p in planned)
-    ]
+        for path in planned_paths(m.group(1)) if m else ():
+            # a template's `<domain>` or `*` stands for any one name; a directory row covers
+            # everything under it
+            body = re.sub(r"<[^<>/]*>|\\\*", "[^/]+", re.escape(path))
+            covers.append(
+                re.compile(rf"(?:.*/)?{body}{'.+' if path.endswith('/') else ''}")
+            )
+            if not path.endswith("/") and "/" in path:
+                dirs.add(path.rpartition("/")[0])
+
+    def planned(c):
+        if any(p.fullmatch(c) for p in covers):
+            return True
+        # a test beside a planned file, or in a test directory under its directory, tests it
+        if not TEST_FILE.search(c):
+            return False
+        home = TEST_DIR.sub("", c.rpartition("/")[0])
+        return any(home == d or home.endswith("/" + d) for d in dirs)
+
+    extra = [c for c in changed if not planned(c)]
     for c in extra:
         print(f"   {c}")
     print(
@@ -318,7 +360,7 @@ def main():
     if args.asks:
         return unasked(plans, args.asks, file_re)
     if args.diff:
-        return unplanned(plans, args.diff, args.repo, file_re)
+        return unplanned(plans, args.diff, args.repo)
 
     # A bare name counts only in a plan whose own table resolves it to this path.
     lists = {
