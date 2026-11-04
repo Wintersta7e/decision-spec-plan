@@ -56,6 +56,8 @@ def hook():
     injects the whole report and what to re-read. Each names the skill's files changed since the
     session read them. After an AskUserQuestion, unthrottled, PostToolUse tallies whether each
     answer took the recommended option, and says so past TAKE_RATE of the last TAKE_WINDOW.
+    After the lead's own edit of the repository once the phase has a Stage 5 budget, unthrottled,
+    it says at the second and every tenth after that execution is a fresh group's (F68).
     """
     try:
         event = json.load(sys.stdin)
@@ -153,6 +155,17 @@ def hook():
     if name == "UserPromptSubmit":
         head = (event.get("prompt") or "").strip()[:500]
         if not any(t in head for t in RETURNS):
+            return 0
+    if name == "PostToolUse" and event.get("tool_name") in (
+        "Edit",
+        "Write",
+        "MultiEdit",
+        "NotebookEdit",
+    ):
+        from .lead_edits import lead_edits
+
+        if line := checked(lead_edits, event, session, entry):
+            emit(name, line)
             return 0
     if name == "PostToolUse" and event.get("tool_name") == "AskUserQuestion":
         from .inject import took
