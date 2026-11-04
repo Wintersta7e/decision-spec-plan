@@ -397,6 +397,42 @@ class Budget(support.Route):
             f.unlink()
 
 
+WAVE_SPEND = """import pathlib, sys; sys.path.insert(0, sys.argv[1]); from dsp_route import holds as r
+print(int(r.spend([pathlib.Path(sys.argv[2])], sys.argv[3])))"""
+
+
+class WaveSpend(support.Sandbox):
+    """A budget's spend is the lead's and the wave's agents' — not another phase's decision round
+    or a re-plan run in the same lead session."""
+
+    def test_spend_counts_only_the_waves_agents(self):
+        lead = self.T / "p" / "s1.jsonl"
+        self.write(lead, used(-50, "l1", 100) + "\n")
+        agents = lead.parent / "s1" / "subagents"
+
+        def agent(name, tokens):
+            self.write(agents / f"agent-{name}.jsonl", used(-40, name, tokens) + "\n")
+            self.write(agents / f"agent-{name}.meta.json", jline({"name": name}) + "\n")
+
+        def spend():
+            out = self.run_([support.PY, "-c", WAVE_SPEND, SCRIPTS, lead, ts(-100)]).out
+            return int(out)
+
+        for name, tokens in (
+            ("exec-p8-01-a", 1000),
+            ("verify-R1", 20),
+            ("wrath-p8-push1", 300),
+        ):
+            agent(name, tokens)
+        wave = spend()
+        self.ok("the lead and the wave's agents count", wave == 1420, wave)
+        # live: a phase-9 harvest and decision round tipped phase 8's wave over; re-plan agents
+        # tipped another
+        for name in ("harvest-code-p9", "dec-p9-D1", "plan-p1-03"):
+            agent(name, 5000)
+        self.ok("other agents of the session do not count", spend() == wave, spend())
+
+
 class RouteOfItsOwn(support.Sandbox):
     """The hook on a route of its own (session h1)."""
 

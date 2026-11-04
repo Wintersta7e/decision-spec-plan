@@ -28,6 +28,12 @@ from .transcript import (
     since_budget,
 )
 
+# The agents a Stage 5 budget prices: task groups and integrators, a test verifier, the seven sins
+# at the phase's end (`<sin>-<review name>`, sins/lead.md).
+WAVE_AGENT = re.compile(
+    rf"{EXEC}|verify-|(?:pride|greed|lust|envy|gluttony|wrath|sloth)-"
+)
+
 
 def leads(event, marker):
     """The route's lead transcripts: this session's and any other session registered to it."""
@@ -40,15 +46,18 @@ def leads(event, marker):
 
 
 def spend(paths, since):
-    """Units these leads, their agents and the hook sessions beside them spent from `since` on —
-    but a lead's prompt written again after it sat idle past the cache's life: that is the wait
-    for the user's answer, and one such rewrite after a 3 h wait tipped a wave over (F93)."""
+    """Units these leads, their wave's agents (WAVE_AGENT) and the hook sessions beside them spent
+    from `since` on — but a lead's prompt written again after it sat idle past the cache's life:
+    that is the wait for the user's answer, and one such rewrite after a 3 h wait tipped a wave
+    over (F93). Another phase's harvest and decision round in the same lead session, and re-plan
+    agents, are not the wave's: they made 8 of 20 over-budget holds false (F74)."""
     import usage_report
 
     total, projects = 0.0, set()
     for path in paths:
         lead, agents, sdk = usage_report.route_cost(path, since)
-        total += lead["units"] - lead["idle"] + sum(a["units"] for a in agents)
+        total += lead["units"] - lead["idle"]
+        total += sum(a["units"] for a in agents if WAVE_AGENT.match(a["name"]))
         if path.parent not in projects:
             projects.add(path.parent)
             total += sum(s["units"] for s in sdk)
