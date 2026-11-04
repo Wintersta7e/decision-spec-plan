@@ -255,6 +255,24 @@ class ScopeAsksDiff(support.Sandbox):
             f"exit {r.code}: {r.out}",
         )
 
+    def test_asks_reads_the_rows_live_plans_wrote(self):
+        """The extensions of rows one project's plans listed and --asks never checked."""
+        T = self.T / "exts"
+        (T / "plans").mkdir(parents=True)
+        self.write(T / "00-index.md", "| **Ask1** | x |\n")
+        self.write(
+            T / "plans/p1-01-a.md",
+            "# p1-01-a\n## File structure\n| `vitest.config.mts` | rule | — |\n"
+            "| `tsup.config.cts` | build | — |\n| `docs/SRS.adoc` | embed | — |\n"
+            "| `docs/flow.puml` | new | — |\n## Task 1\n",
+        )
+        r = self.py("scope_check.py", T / "plans", "--asks", T / "00-index.md")
+        self.ok(
+            "scope_check --asks: .mts, .cts, .adoc and .puml rows need an ask",
+            r.code == 1 and grep(r.out, "^4 of 4 planned files"),
+            f"exit {r.code}: {r.out}",
+        )
+
     def test_diff_reads_every_row_the_plan_wrote(self):
         """Live: one integrator's --diff flagged 55 of 123 changed files and was overridden on
         all six lanes; every file was in a plan row the check could not read — an extension not
