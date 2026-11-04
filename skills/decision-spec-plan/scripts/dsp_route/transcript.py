@@ -430,6 +430,40 @@ def finished_spans(paths, want):
     return spans
 
 
+def ended_run(paths, name):
+    """(timestamp, reason) when agent `name`'s last idle notice in these lead transcripts says its
+    run ended (`completedStatus: failed`) and no agent of that name was dispatched after it, else
+    None. A notice with only `idleReason: failed` is an agent stopped at a limit that a message
+    resumes: all seven such agents messaged did."""
+    tag = f'<teammate-message teammate_id="{name}"'
+    ended, dispatched = None, ""
+    for path in paths:
+        for r in read_records(path):
+            for block in tool_uses(r):
+                if (block.get("input") or {}).get("name") == name:
+                    dispatched = max(dispatched, r.get("timestamp") or "")
+            message = r.get("message")
+            content = message.get("content") if isinstance(message, dict) else None
+            if not (isinstance(content, str) and tag in content):
+                continue
+            body = content.partition(tag)[2].partition(">")[2]
+            try:
+                notice = json.loads(body.partition("</teammate-message>")[0])
+            except ValueError:
+                continue
+            if (
+                not isinstance(notice, dict)
+                or notice.get("type") != "idle_notification"
+            ):
+                continue
+            stamp = str(notice.get("timestamp") or r.get("timestamp") or "")
+            if ended and stamp < ended[0]:
+                continue
+            ran_out = notice.get("completedStatus") == "failed"
+            ended = (stamp, str(notice.get("failureReason") or "")) if ran_out else None
+    return ended if ended and ended[0] > dispatched else None
+
+
 def notified(record):
     """The ids of the background jobs a task notification in this record reports ended: one with a
     `<status>` (a monitor's event in between has none)."""

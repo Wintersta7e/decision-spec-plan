@@ -50,7 +50,7 @@ class PluginFiles(support.Sandbox):
         route = 'python3 "${CLAUDE_PLUGIN_ROOT}/scripts/route_state.py" --hook'
         want = [
             f"PostToolUse * {route}",
-            f"PreToolUse Agent|Bash|Write|Edit|MultiEdit|NotebookEdit {route}",
+            f"PreToolUse Agent|Bash|Write|Edit|MultiEdit|NotebookEdit|SendMessage {route}",
             'PreToolUse Bash python3 "${CLAUDE_PLUGIN_ROOT}/scripts/push_guard.py"',
             f"SessionStart compact|resume {route}",
             f"SubagentStop  {route}",

@@ -433,6 +433,69 @@ class WaveSpend(support.Sandbox):
         self.ok("other agents of the session do not count", spend() == wave, spend())
 
 
+def teammate_idle(offset, name, **fields):
+    """An agent's idle notice as the lead's transcript carries it: a user record."""
+    body = {
+        "type": "idle_notification",
+        "from": name,
+        "timestamp": ts(offset),
+        **fields,
+    }
+    return jline(
+        {
+            "type": "user",
+            "timestamp": ts(offset),
+            "message": {
+                "role": "user",
+                "content": "Another Claude session sent a message:\n"
+                f'<teammate-message teammate_id="{name}" color="orange">\n'
+                f"{jline(body)}\n</teammate-message>\n\nThis came from another Claude session.",
+            },
+        }
+    )
+
+
+class DeadAgent(support.Route):
+    """The lead messaging an agent that stopped for good (F64)."""
+
+    def message(self, to):
+        return ev(
+            "PreToolUse",
+            "s1",
+            f'"tool_name":"SendMessage","tool_input":{{"to":"{to}","message":"go on"}},'
+            f'"transcript_path":"{self.LEAD}"',
+        )
+
+    def test_message_to_a_dead_agent_is_refused(self):
+        limit = "You've hit your org's monthly spend limit"
+        self.write(LEAD := self.LEAD, human(-3600) + "\n")
+        # stopped at the limit, but resumable: seven such agents resumed on a message
+        self.append(
+            LEAD,
+            teammate_idle(-600, "plan-p1-08", idleReason="failed", failureReason=limit),
+        )
+        self.hook("silent", self.message("plan-p1-08"))
+        # its run ended: the one agent whose notice said so never received a message
+        self.append(
+            LEAD,
+            teammate_idle(
+                -590,
+                "plan-p1-11",
+                idleReason="failed",
+                completedStatus="failed",
+                failureReason=limit,
+            ),
+        )
+        self.hook(
+            "deny:plan-p1-11 stopped for good .*spend limit.*fresh",
+            self.message("plan-p1-11"),
+        )
+        self.hook("silent", self.message("plan-p1-08"))
+        # dispatched again under its name, it is a live agent
+        self.append(LEAD, sent(-300, "t1", "plan-p1-11"))
+        self.hook("silent", self.message("plan-p1-11"))
+
+
 class RouteOfItsOwn(support.Sandbox):
     """The hook on a route of its own (session h1)."""
 
