@@ -70,8 +70,8 @@ def activate(a, main):
         args += ["--spec-dir", str(pathlib.Path(spec_dir).resolve())]
     marker = {"args": args, "planning_dir": planning, "activated": time.time()}
     # A re-activation keeps the phase's rung (execution.md's `--activate --sins on` names none),
-    # the waves' recorded budgets (--budget) and the CI harness, a fact about the repository's CI
-    # rather than the round.
+    # budgets --budget recorded here before they moved to the planning dir, and the CI harness, a
+    # fact about the repository's CI rather than the round.
     if rung := a.rung or (old.get("rung") if same_phase else None):
         marker["rung"] = rung
     if budgets := old.get("budgets"):

@@ -1,14 +1,13 @@
-"""--budget: record a Stage 5 wave's estimate, which the hook then holds the lead's `exec-`
-dispatches to (execution.md, F74)."""
+"""--budget: record the route's estimate, which the hook then holds the lead's `exec-` dispatches
+to (execution.md, F74)."""
 
 import argparse
 import datetime
-import json
 import os
 import pathlib
 import re
 
-from .common import REGISTRY, SLACK, checked, load_json, parser
+from .common import BUDGETS, REGISTRY, SLACK, checked, load_json, parser, save_budget
 from .transcript import answered_this_turn, now, project_sessions, session_transcripts
 
 # --budget sizes groups by the project's task groups of this many days back
@@ -34,26 +33,28 @@ def measured_fit(session):
 
 
 def budget(argv):
-    """--budget: append a wave's estimate to the marker of this session's route."""
+    """--budget: append the route's estimate to its planning dir's budget file."""
     ap = argparse.ArgumentParser(
         prog="route_state.py --budget",
-        description="Record a Stage 5 wave's estimate (execution.md).",
+        description="Record the route's estimate: the lead, every review and agent of the "
+        "stages left (execution.md).",
     )
-    ap.add_argument("--budget", required=True, metavar="LABEL", help="the wave")
+    ap.add_argument(
+        "--budget", required=True, metavar="LABEL", help="the route, or the work left"
+    )
     ap.add_argument(
         "--estimate", type=float, required=True, help="M units, priced per costs.md"
     )
     ap.add_argument(
         "--groups",
         type=int,
-        required=True,
-        help="the exec- agents it covers: task groups, fix groups, the integrator",
+        help="optional: the exec- agents it covers (task groups, fix groups, integrators), "
+        "checked with --tasks against the project's measured group fit",
     )
     ap.add_argument(
         "--tasks",
         type=int,
-        help="optional: the plan tasks the wave's task groups carry, checked against the "
-        "project's measured group fit",
+        help="optional: the plan tasks its task groups carry",
     )
     ap.add_argument(
         "planning_dir", nargs="?", help="optional: this session's route's planning dir"
@@ -88,38 +89,44 @@ def budget(argv):
     record = {
         "label": a.budget,
         "estimate": a.estimate,
-        "groups": a.groups,
         "phase": phase,
         "at": now(),
         "session": session,
     }
+    if a.groups is not None:
+        record["groups"] = a.groups
     if answered := answered_this_turn(session, a.estimate):
         record["answered"] = answered
-    marker.setdefault("budgets", []).append(record)
-    path.write_text(json.dumps(marker) + "\n")
+    save_budget(own, marker, record)
     print(
-        f"budget recorded: {a.budget} — {a.estimate:g}M, {a.groups} exec- agents, phase "
-        f"{phase}, at {record['at']}"
+        f"budget recorded: {a.budget} — {a.estimate:g}M, phase {phase}, at {record['at']}, in "
+        f"{own / BUDGETS}"
     )
     # sized by count, one route's groups ran 5 -> 11 where its own measure fit two commits (F60)
     line, fit = checked(measured_fit, session) or (None, None)
     if line and fit is not None:  # measured_fit gives both or neither
         print(f"measured on this project: {line.partition('; ')[2] or line}")
         need = -(-a.tasks // max(fit, 1)) if a.tasks else 0
-        if need > a.groups:
+        if a.groups is not None and need > a.groups:
             print(
                 f"{a.tasks} tasks need at least {need} task groups, not {a.groups}: size each "
-                f"group to {max(fit, 1)} tasks, re-price, and record the wave again (execution.md)."
+                f"group to {max(fit, 1)} tasks, re-price, and record the figure again "
+                "(execution.md)."
             )
     then = (
-        f"again past {a.estimate * SLACK:.3g}M spent or {int(a.groups * SLACK)} exec- "
-        "dispatches from now."
+        f"again once the route's spend from now passes {a.estimate * SLACK:.3g}M; a new lead "
+        "session of the route keeps this figure and its answer."
     )
     if answered:
         print(
             f"The user answered your question at {answered}, earlier in this turn: that answer "
             f"stands for this figure, so the hook lets exec- dispatches through, and holds them "
             + then
+        )
+    elif marker.get("rung") == "S":
+        print(
+            "At S, tell the user this figure with the plan and go on: the hook does not wait "
+            "for an answer, and holds exec- dispatches " + then
         )
     else:
         print(
@@ -129,7 +136,8 @@ def budget(argv):
         # the figure asked is the figure recorded: an ask of 0.5M against a record of 0.8M
         # was no answer to it, and cost a second ask (F93)
         print(
-            f'Ask exactly: "Wave {a.budget}: {a.estimate:g}M for {a.groups} exec- agents — '
-            'go ahead?", with the strongest reason against it and an option to run less.'
+            f"Ask exactly: \"{a.budget}: {a.estimate:g}M for phase {phase}'s work left — the "
+            'lead, its reviews and agents — go ahead?", with the strongest reason against it '
+            "and an option to run less."
         )
     return 0

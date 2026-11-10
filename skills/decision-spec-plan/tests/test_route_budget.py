@@ -1,4 +1,4 @@
-"""The Stage 5 budget hold on the lead's `exec-` dispatches (F74, F93), its ETA (F83), the rung-S
+"""The route's budget hold on the lead's `exec-` dispatches (F74, F93), its ETA (F83), the rung-S
 harvester refusal (F87), and the hook's gates on a route of its own."""
 
 import json
@@ -89,28 +89,8 @@ def auq(offset, question="Raise the budget to 50M?"):
     )
 
 
-def refused(offset, tool_id):
-    return jline(
-        {
-            "type": "user",
-            "timestamp": ts(offset),
-            "message": {
-                "role": "user",
-                "content": [
-                    {
-                        "type": "tool_result",
-                        "tool_use_id": tool_id,
-                        "is_error": True,
-                        "content": "held",
-                    }
-                ],
-            },
-        }
-    )
-
-
 SPEND = """import pathlib, sys; sys.path.insert(0, sys.argv[1]); from dsp_route import holds as r
-s = lambda f: r.spend([pathlib.Path(sys.argv[2], f)], sys.argv[3])
+s = lambda f: r.spend([pathlib.Path(sys.argv[2], f)], sys.argv[3], "1")
 print(s("gap.jsonl") == s("none.jsonl") < s("busy.jsonl") == s("ret.jsonl"))"""
 
 
@@ -154,9 +134,7 @@ class Budget(support.Route):
         T, HOME, R, P, LEAD = self.T, self.HOME, self.R, self.P, self.LEAD
         S9 = HOME / ".claude/projects/p/s9.jsonl"
         self.write(LEAD, human(-3600) + "\n")
-        self.hook(
-            "deny:phase 1 has no Stage 5 budget", self.dispatch("exec-p1-01-a", "t1")
-        )
+        self.hook("deny:phase 1 has no budget", self.dispatch("exec-p1-01-a", "t1"))
         self.hook("silent", self.dispatch("plan-p1-01", "t1"))
         self.hook(
             "silent",
@@ -180,7 +158,7 @@ class Budget(support.Route):
         # ...but a task group whose work names a harvest, or a review of harvested findings, is
         # no harvester
         self.hook(
-            "deny:has no Stage 5 budget",
+            "deny:has no budget",
             self.harvester("exec-p1-01-a", "Fix harvest-date parsing in crop importer"),
         )
         self.hook(
@@ -202,7 +180,7 @@ class Budget(support.Route):
             "--budget naming another planning dir records nothing",
             r.code == 2
             and support.grep(r.out, "not this session's route")
-            and self.marker().get("budgets") in (None, False),
+            and not self.budgets(),
             r.out,
         )
         # so may the phase and repository, as a lead passed them from --activate (live)
@@ -214,22 +192,24 @@ class Budget(support.Route):
                 f"--budget {flags} of another route records nothing",
                 r.code == 2
                 and support.grep(r.out, "not this session's route")
-                and self.marker().get("budgets") in (None, False),
+                and not self.budgets(),
                 r.out,
             )
         r = self.budget(
             "w1", P, "--phase", "1", "--repo", R, "--estimate", "10", "--groups", "4"
         )
-        last = (self.marker().get("budgets") or [{}])[-1]
+        last = (self.budgets() or [{}])[-1]
         self.ok(
-            "--budget records the wave in the marker and prints the question to ask",
+            "--budget records the route's figure in its planning dir and prints the question",
             r.code == 0
             and last.get("label") == "w1"
             and last.get("groups") == 4
             and last.get("phase") == "1"
-            and support.grep(r.out, "past 12.5M spent or 5 exec- dispatches")
+            and support.grep(r.out, "spend from now passes 12.5M")
             and support.grep(
-                r.out, 'Ask exactly: "Wave w1: 10M for 4 exec- agents', F=True
+                r.out,
+                "Ask exactly: \"w1: 10M for phase 1's work left — the lead, its reviews",
+                F=True,
             ),
             r.out,
         )
@@ -245,26 +225,20 @@ class Budget(support.Route):
         )
         self.activate_route()
         self.ok(
-            "a re-activation keeps the budgets",
-            len(self.marker().get("budgets", [])) == 1,
+            "a re-activation keeps the budget, with the answer the hold saw",
+            len(self.budgets()) == 1 and bool(self.budgets()[0].get("answered")),
+            self.budgets(),
         )
         self.unthrottle()
         self.hook(
             "/budget     w1 · 10M · 4 exec- agents/",
             ev("PostToolUse", "s1", '"tool_name":"Agent"'),
         )
-        for i in range(1, 5):
+        # no hold on the count of exec- dispatches: the successor of a group the context stop
+        # ended is no overrun (F74)
+        for i in range(1, 7):
             self.append(LEAD, sent(2, f"t{i}", f"exec-p1-0{i}-a"))
-        # its own call is not counted twice
-        self.hook("/^ETA exec-p1-04-a/", self.dispatch("exec-p1-04-a", "t4"))
-        self.hook(
-            "/^ETA exec-p1-05-a/", self.dispatch("exec-p1-05-a", "t5")
-        )  # 5 = 4 × 1.25
-        self.append(LEAD, sent(2, "t5", "exec-p1-05-a"))
-        self.hook(
-            "deny:this would be exec- dispatch 6 since — more than 25% over",
-            self.dispatch("exec-p1-06-a", "t6"),
-        )
+        self.hook("/^ETA exec-p1-07-a/", self.dispatch("exec-p1-07-a", "t7"))
         self.budget("w2", "--estimate", "0.01", "--groups", "9")
         self.append(LEAD, human(1))
         self.append(LEAD, used(2, "u1", 11000))
@@ -299,15 +273,18 @@ class Budget(support.Route):
             out == "True",
             out,
         )
-        # a budget another lead session recorded, answered there, is not this session's (F74)
+        # one budget a route: a figure another lead session recorded and its user answered there
+        # holds here too — a hand-over asked both budgets again (F74) — but an answer here is no
+        # answer to a figure this session never told
+        time.sleep(4)  # past the answers stamped up to 3 s ahead above
         self.budget("w3", "--estimate", "50", "--groups", "9", session="s9")
-        self.append(S9, human(2))
         self.append(LEAD, human(2))
         self.hook(
-            "deny:recorded in another lead session", self.dispatch("exec-p1-07-a", "t7")
+            "deny:has not answered it in the lead session that recorded it.*record it "
+            "again from this one",
+            self.dispatch("exec-p1-07-a", "t7"),
         )
-        self.budget("w3", "--estimate", "50", "--groups", "9")
-        self.append(LEAD, human(3))
+        self.append(S9, human(2))
         self.hook("/^ETA exec-p1-07-a/", self.dispatch("exec-p1-07-a", "t7"))
         # asked first, recorded after the answer in the same turn: that one answer is enough
         # (F93); a prompt that opened the turn, or an answer in an earlier turn, is not
@@ -336,6 +313,19 @@ class Budget(support.Route):
         self.append(LEAD, endturn(0))
         self.budget("w6", "--estimate", "50", "--groups", "9")
         self.hook("deny:has not answered", self.dispatch("exec-p1-07-a", "t7"))
+        # at S the figure is told with the plan, not asked: 58 of 121 questions in one window
+        # were budget asks, 50 approved as offered (F74)
+        self.activate_route("--rung", "S")
+        out = self.budget("s1-round", "--estimate", "50").out
+        self.ok(
+            "--budget at S says to tell the figure and go on",
+            support.grep(out, "At S, tell the user this figure with the plan and go on")
+            and not support.grep(out, "Ask exactly"),
+            out,
+        )
+        self.hook("/^ETA exec-p1-07-a/", self.dispatch("exec-p1-07-a", "t7"))
+        self.activate_route("--rung", "M")
+        self.budget("w6", "--estimate", "50", "--groups", "9")
         self.append(LEAD, human(3))
         # an allowed dispatch's ETA: the median minutes of the route's finished agents of its
         # kind, its lane's first (F83)
@@ -397,15 +387,15 @@ class Budget(support.Route):
             f.unlink()
 
 
-WAVE_SPEND = """import pathlib, sys; sys.path.insert(0, sys.argv[1]); from dsp_route import holds as r
-print(int(r.spend([pathlib.Path(sys.argv[2])], sys.argv[3])))"""
+ROUTE_SPEND = """import pathlib, sys; sys.path.insert(0, sys.argv[1]); from dsp_route import holds as r
+print(int(r.spend([pathlib.Path(sys.argv[2])], sys.argv[3], "8")))"""
 
 
-class WaveSpend(support.Sandbox):
-    """A budget's spend is the lead's and the wave's agents' — not another phase's decision round
-    or a re-plan run in the same lead session."""
+class RouteSpend(support.Sandbox):
+    """A budget's spend is the lead's and every agent's of the route — a review's too — but not
+    another phase's harvest or decision round run in the same lead session."""
 
-    def test_spend_counts_only_the_waves_agents(self):
+    def test_spend_counts_the_routes_agents(self):
         lead = self.T / "p" / "s1.jsonl"
         self.write(lead, used(-50, "l1", 100) + "\n")
         agents = lead.parent / "s1" / "subagents"
@@ -415,7 +405,9 @@ class WaveSpend(support.Sandbox):
             self.write(agents / f"agent-{name}.meta.json", jline({"name": name}) + "\n")
 
         def spend():
-            out = self.run_([support.PY, "-c", WAVE_SPEND, SCRIPTS, lead, ts(-100)]).out
+            out = self.run_(
+                [support.PY, "-c", ROUTE_SPEND, SCRIPTS, lead, ts(-100)]
+            ).out
             return int(out)
 
         for name, tokens in (
@@ -424,13 +416,17 @@ class WaveSpend(support.Sandbox):
             ("wrath-p8-push1", 300),
         ):
             agent(name, tokens)
-        wave = spend()
-        self.ok("the lead and the wave's agents count", wave == 1420, wave)
-        # live: a phase-9 harvest and decision round tipped phase 8's wave over; re-plan agents
-        # tipped another
+        route = spend()
+        self.ok("the lead and the route's agents count", route == 1420, route)
+        # live: a phase-9 harvest and decision round tipped phase 8's wave over
         for name in ("harvest-code-p9", "dec-p9-D1", "plan-p1-03"):
             agent(name, 5000)
-        self.ok("other agents of the session do not count", spend() == wave, spend())
+        self.ok("another phase's agents do not count", spend() == route, spend())
+        # the route's budget prices its reviews and re-plans: overruns of 152–364% came from
+        # the work no figure priced (F74)
+        agent("review-1e", 5000)
+        agent("plan-p8-03", 5000)
+        self.ok("a review and a re-plan of the phase count", spend() == 11420, spend())
 
 
 def teammate_idle(offset, name, **fields):
@@ -524,18 +520,13 @@ class RouteOfItsOwn(support.Sandbox):
         def budget(*args):
             self.py(RS, "--budget", *args, session="h1")
 
-        # a dispatch refused before it ran is no dispatch
+        # one budget a route, held on its spend, never on its count of exec- dispatches: the
+        # successor of a group the context stop ended asked the user again (F74)
         budget("hw", "--estimate", "50", "--groups", "1")
-        self.append(
-            HL, sent(1, "r1", "exec-p1-01-a")
-        )  # held: the user had not answered yet
-        self.append(HL, refused(1, "r1"))
         self.append(HL, human(2))
         self.hook("/^ETA exec-p1-01-a/", hdispatch("exec-p1-01-a", "r2"))
         self.append(HL, sent(3, "r2", "exec-p1-01-a"))
-        self.hook(
-            "deny:this would be exec- dispatch 2 since", hdispatch("exec-p1-02-a", "r3")
-        )
+        self.hook("/^ETA exec-p1-02-a/", hdispatch("exec-p1-02-a", "r3"))
         # each gate fails on its own: a ledger check that raises still leaves the budget hold
         time.sleep(4)  # past the records stamped up to 3 s ahead above
         budget("hw2", "--estimate", "50", "--groups", "4")

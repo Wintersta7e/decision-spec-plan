@@ -1,9 +1,9 @@
-"""The lead's own edits to the route's repository once Stage 5 began (F68)."""
+"""The lead's own edits to the route's repository once its budget is recorded (F68)."""
 
 import json
 import pathlib
 
-from .common import REGISTRY, git, load_json, parser
+from .common import REGISTRY, budgets, git, load_json, parser
 
 # A rebase, merge or cherry-pick in progress: a conflict the lead resolves itself is cheaper
 # than a group's checkpoint.
@@ -33,14 +33,14 @@ def repo_edit(event, route):
 
 
 def lead_edits(event, session, entry):
-    """The nudge at the lead's FIRST edit of the repository since the phase's last Stage 5
-    budget, and every EVERY after it; else None."""
+    """The nudge at the lead's FIRST edit of the repository since the phase's last budget, and
+    every EVERY after it; else None."""
     marker = load_json(pathlib.Path(entry["marker"]))
     route = parser().parse_args(marker["args"])
-    budgets = [b for b in marker.get("budgets", []) if b.get("phase") == route.phase]
-    if not budgets or not repo_edit(event, route):
+    found = budgets(route.planning_dir, marker, route.phase)
+    if not found or not repo_edit(event, route):
         return None
-    b = budgets[-1]
+    b = found[-1]
     tally_path = REGISTRY / f"{session}.edits"
     tally = load_json(tally_path)
     n = tally.get("n", 0) + 1 if tally.get("at") == b["at"] else 1
@@ -49,7 +49,7 @@ def lead_edits(event, session, entry):
         return None
     return (
         f"route_state.py (hook): you edited {n} files of the repository yourself since this "
-        f"phase's Stage 5 budget ({b.get('label')}). Execution is a fresh group's, never yours: "
+        f"phase's budget ({b.get('label')}). Execution is a fresh group's, never yours: "
         "a fix, a post-merge bug, a real-data run or an investigation gets an `exec-` group "
         "with its own checkpoint (execution.md). Edits while a rebase or merge is in progress "
         "do not count. Why: after its last lane returned, one lead made 126 edits itself and "

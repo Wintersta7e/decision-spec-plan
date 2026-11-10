@@ -56,7 +56,7 @@ def hook():
     injects the whole report and what to re-read. Each names the skill's files changed since the
     session read them. After an AskUserQuestion, unthrottled, PostToolUse tallies whether each
     answer took the recommended option, and says so past TAKE_RATE of the last TAKE_WINDOW.
-    After the lead's own edit of the repository once the phase has a Stage 5 budget, unthrottled,
+    After the lead's own edit of the repository once the phase has a budget, unthrottled,
     it says at the second and every tenth after that execution is a fresh group's (F68).
     """
     try:
@@ -189,7 +189,7 @@ def hook():
 
     buf = io.StringIO()
     with contextlib.redirect_stdout(buf):
-        report(a, fresh=False, extra=budget_line(marker, a.phase))
+        report(a, fresh=False, extra=budget_line(a.planning_dir, marker, a.phase))
     text = buf.getvalue().rstrip()
     body = text.partition("\n")[2]
     last = path.with_suffix(".last")

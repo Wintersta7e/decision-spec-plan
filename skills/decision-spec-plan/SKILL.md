@@ -179,7 +179,7 @@ and when the user asks, the seven sins review the same sections beside them for 
 2. **Write the plan brief** (`briefs/plan-brief.md`); dispatch one author per plan (`prompts.md` §4),
    each writing a plan and a manifest.
 3. **Lint**: `scripts/plan_lint.py <plans-dir>`, `scripts/scope_check.py <plans-dir>` (every file a
-   File-structure table promises is created somewhere; a heuristic, `failure-modes` F25) and
+   File-structure table promises is created somewhere; a heuristic, F25) and
    `scope_check.py <plans-dir> --waves <index>` (no file changed by two plans that run at once; F82)
    and `--asks <decision-index> <arbiter>` (every planned file cites an ask or a U-ruling; F89).
 4. Rule the plan authors' challenges — they find arbiter mistakes; that is the round working.
@@ -220,15 +220,15 @@ before it, `off` after; past 30 commits, slice by slice (`sins/lead.md`, code mo
 - **Never batch several edits to one file in one message**, yours or an agent's.
 - **Measure before ruling.** When two agents disagree about the tree, open the code or run a probe.
 - **Quota.** Routes on one account share its weekly limit — four at once hit it in a day and
-  stalled 62.7 h (`failure-modes` F63). Before a stage estimated at ≥20M, quote `usage_report.py`'s
-  figures so far and the estimate; a Stage 5 wave's goes to `route_state.py --budget`, whose hook
-  holds `exec-` dispatches until the user answers, then gives each an ETA to tell them
-  (`execution.md`, F83) — headless (`claude -p`) it holds nothing: record the budget anyway and
-  report it at the end. A stage >25% over its announced headcount, or grown into the next rung:
+  stalled 62.7 h (F63). Before a stage estimated at ≥20M, quote `usage_report.py`'s
+  figures so far and the estimate. The route's goes to `route_state.py --budget` once, at the
+  go-ahead (S: told, not asked); its hook holds `exec-` dispatches until the user answers and past
+  125%, and gives each an ETA to tell them (`execution.md`, F74, F83) — headless (`claude -p`) it
+  holds nothing: record it anyway, report it at the end. A stage >25% over its announced headcount, or grown into the next rung:
   re-announce and wait for the user.
 - **The route runs unattended** — never ask the user to `/clear` or restart mid-route. An
   auto-compact window ≈ 300000 (`autoCompactWindow` per model under `modelSettings`, or
-  `CLAUDE_CODE_AUTO_COMPACT_WINDOW`) keeps the lead small (`failure-modes` F47). Unset at the announcement: say so.
+  `CLAUDE_CODE_AUTO_COMPACT_WINDOW`) keeps the lead small (F47). Unset at the announcement: say so.
 - **A stopped agent is resumed, not re-dispatched**: after a session or spend limit, `SendMessage` it
   to continue from its file, whose end you check first (F38) — a fresh dispatch repays its whole
   exploration (F49). New work — an execution lane's next task group above all — goes to a fresh

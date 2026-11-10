@@ -1,5 +1,5 @@
 """The PreToolUse holds on the lead's dispatches in an active route: a harvester at rung S (F87),
-the decision ledger, and the Stage 5 budget with each allowed dispatch's ETA (F74, F83). The hold
+the decision ledger, and the route's budget with each allowed dispatch's ETA (F74, F83). The hold
 on a route agent with no route (F79) is the hook's own: it runs before any route is read."""
 
 import contextlib
@@ -15,25 +15,25 @@ from .common import (
     PLAN_ID,
     SCRIPT,
     SLACK,
+    budgets,
     deny,
     emit,
     load_json,
     parser,
     routes,
+    save_budget,
 )
 from .transcript import (
+    answered_since,
     ended_run,
     event_transcript,
     finished_spans,
     session_transcripts,
-    since_budget,
 )
 
-# The agents a Stage 5 budget prices: task groups and integrators, a test verifier, the seven sins
-# at the phase's end (`<sin>-<review name>`, sins/lead.md).
-WAVE_AGENT = re.compile(
-    rf"{EXEC}|verify-|(?:pride|greed|lust|envy|gluttony|wrath|sloth)-"
-)
+# The phase an agent's name names (`harvest-code-p9`, `exec-p9-01-a`, `dec-p9-D1`): that phase's
+# work, not another's budget's.
+PHASE_OF = re.compile(r"(?<![A-Za-z0-9])p(\d+)(?=-|$)")
 
 
 def leads(event, marker):
@@ -63,19 +63,24 @@ def dead_recipient(event, entry):
     )
 
 
-def spend(paths, since):
-    """Units these leads, their wave's agents (WAVE_AGENT) and the hook sessions beside them spent
-    from `since` on — but a lead's prompt written again after it sat idle past the cache's life:
-    that is the wait for the user's answer, and one such rewrite after a 3 h wait tipped a wave
-    over (F93). Another phase's harvest and decision round in the same lead session, and re-plan
-    agents, are not the wave's: they made 8 of 20 over-budget holds false (F74)."""
+def spend(paths, since, phase):
+    """Units these leads, their agents and the hook sessions beside them spent from `since` on: the
+    route's budget prices the lead and every review and agent (F74) — but a lead's prompt written
+    again after it sat idle past the cache's life: that is the wait for the user's answer, and one
+    such rewrite after a 3 h wait tipped a wave over (F93). An agent whose name names another
+    phase (`harvest-code-p9`, `exec-p9-01-a`) is that phase's: another phase's harvest and decision
+    round in the same lead session made 8 of 20 over-budget holds false (F74)."""
     import usage_report
 
     total, projects = 0.0, set()
     for path in paths:
         lead, agents, sdk = usage_report.route_cost(path, since)
         total += lead["units"] - lead["idle"]
-        total += sum(a["units"] for a in agents if WAVE_AGENT.match(a["name"]))
+        total += sum(
+            a["units"]
+            for a in agents
+            if set(PHASE_OF.findall(a["name"])) <= {str(phase)}
+        )
         if path.parent not in projects:
             projects.add(path.parent)
             total += sum(s["units"] for s in sdk)
@@ -154,57 +159,49 @@ def ledger_hold(event, entry):
 
 
 def gate_dispatch(event, entry):
-    """The lead dispatching an `exec-` agent: held until the wave's budget is recorded and
-    answered, and once the wave runs more than 25% over it (execution.md, F74); an allowed one
-    gets its ETA (F83)."""
+    """The lead dispatching an `exec-` agent: held until the route's budget is recorded and the
+    user answered it in the lead session that recorded it — at S, recorded is enough — and once
+    the route's spend since passes 125% of it (execution.md, F74); an allowed one gets its ETA
+    (F83). One budget a route: a hand-over to a new lead session keeps it (F74)."""
     path = pathlib.Path(entry["marker"])
     marker = json.loads(path.read_text())
     phase = parser().parse_args(marker["args"]).phase
-    budgets = [b for b in marker.get("budgets", []) if b.get("phase") == phase]
-    record = (
-        f'`python3 {SCRIPT} --budget "<wave>" --estimate <M> --groups <exec- agents>`'
-    )
-    if not budgets:
+    found = budgets(entry["planning_dir"], marker, phase)
+    record = f'`python3 {SCRIPT} --budget "<route>" --estimate <M>`'
+    if not found:
         return deny(
-            f"phase {phase} has no Stage 5 budget. Price the wave per costs.md (its exec- "
-            "agents × the task-group median, the lead per group, a seven-sins review at L's "
-            f"phase end), record it with {record}, tell the user the figure and wait "
-            "for their answer (execution.md)."
+            f"phase {phase} has no budget. Price the route's work left per costs.md (the lead, "
+            "every review and agent of the stages left, the task groups at the group median, a "
+            f"seven-sins review at L's phase end), record it with {record}, tell the user the "
+            "figure and wait for their answer — at S, tell them and go on (execution.md)."
         )
-    b = budgets[-1]
+    b = found[-1]
     paths = leads(event, path)
-    own = pathlib.Path(event.get("transcript_path") or "").resolve()
-    answered, sent = since_budget(paths, b["at"], event.get("tool_use_id"), own)
-    head = (
-        f"budget '{b['label']}' ({b['estimate']:g}M, {b['groups']} exec- agents, "
-        f"recorded {b['at']})"
-    )
-    # Why: "read the handoff and proceed" in a new session once counted as the answer to the
-    # previous session's figure, which this session never told the user.
-    if b.get("session") != event.get("session_id"):
-        return deny(
-            f"{head} was recorded in another lead session. Price the remaining work, record it "
-            f"from this session with {record}, tell the user the figure and wait for their "
-            "answer (F74)."
-        )
-    if not (answered or b.get("answered")):
-        return deny(
-            f"{head}: the user has not answered since it was recorded. Tell them the "
-            "figure and wait for their answer before dispatching."
-        )
-    over = (
-        f"Record the remaining work's figure with {record}, tell the user what ran over "
-        "and why, and wait for their answer (F74)."
-    )
-    if sent + 1 > int(b["groups"] * SLACK):
-        return deny(
-            f"{head}: this would be exec- dispatch {sent + 1} since — more than 25% over. "
-            + over
-        )
-    used = spend(paths, b["at"])
+    head = f"budget '{b['label']}' ({b['estimate']:g}M, recorded {b['at']})"
+    if not (b.get("answered") or marker.get("rung") == "S"):
+        # Only the recording session's transcripts: a new session's "read the handoff and
+        # proceed" once approved a figure that session never told the user (F74).
+        rec = session_transcripts(b.get("session") or "")
+        answered = rec and answered_since(rec, b["at"])
+        if not answered:
+            return deny(
+                f"{head}: the user has not answered it in the lead session that recorded it. "
+                "Tell them the figure and wait for their answer before dispatching"
+                + (
+                    f" — or, the user gone from that session, record it again from this one "
+                    f"with {record}."
+                    if b.get("session") != event.get("session_id")
+                    else "."
+                )
+            )
+        # kept with the record, so a hand-over to a new lead session asks nothing again
+        save_budget(entry["planning_dir"], marker, {**b, "answered": answered})
+    used = spend(paths, b["at"], phase)
     if used > b["estimate"] * 1e6 * SLACK:
         return deny(
-            f"{head}: {used / 1e6:.1f}M spent since — more than 25% over. " + over
+            f"{head}: {used / 1e6:.1f}M spent since — more than 25% over. Record the "
+            f"remaining work's figure with {record}, tell the user what ran over and why, and "
+            "wait for their answer (F74)."
         )
     emit("PreToolUse", eta(paths, str((event.get("tool_input") or {}).get("name"))))
     return 0

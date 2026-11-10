@@ -23,6 +23,27 @@ SLACK = 1.25
 # the decision_check version a phase is bound under; 2 added the decisions table's Serves column
 LEDGER_CHECKS = 2
 PLAN_ID = re.compile(r"p\d+-\d+[a-z]?(?=-|$)")
+# The route's budgets live in its planning dir, which a hand-over carries: kept per lead session in
+# the marker, both were asked again after a lead moved to another machine (F74).
+BUDGETS = "route-budget.json"
+
+
+def budgets(planning_dir, marker, phase):
+    """The phase's recorded budgets, oldest first: the planning dir's, else a marker's from
+    before they moved there."""
+    found = load_json(pathlib.Path(planning_dir) / BUDGETS).get(
+        "budgets"
+    ) or marker.get("budgets", [])
+    return [b for b in found if b.get("phase") == phase]
+
+
+def save_budget(planning_dir, marker, record):
+    """Append or update (by its `at`) one budget record in the planning dir's file."""
+    path = pathlib.Path(planning_dir) / BUDGETS
+    found = load_json(path).get("budgets") or list(marker.get("budgets", []))
+    found = [b for b in found if b.get("at") != record["at"]] + [record]
+    found.sort(key=lambda b: b.get("at") or "")
+    path.write_text(json.dumps({"budgets": found}, indent=1) + "\n")
 
 
 def ago(seconds):

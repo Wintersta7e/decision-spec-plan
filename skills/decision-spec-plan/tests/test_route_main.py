@@ -88,7 +88,7 @@ class TwoRoutes(support.Route):
                 "9",
                 session=session,
             )
-        assert len(cls.marker()["budgets"]) == 8, cls.marker()
+        assert len(cls.budgets()) == 8, cls.budgets()
 
     def test_two_routes_one_repository(self):
         T, HOME, R, P = self.T, self.HOME, self.R, self.P
@@ -110,9 +110,7 @@ class TwoRoutes(support.Route):
         m1, m2 = self.marker(), self.marker(plan=P2)
         self.ok(
             "a second route in the repository leaves the first's phase and budgets",
-            m1["args"][2] == "1"
-            and len(m1.get("budgets", [])) == 8
-            and m2["args"][2] == "4",
+            m1["args"][2] == "1" and len(self.budgets()) == 8 and m2["args"][2] == "4",
             json.dumps(m1),
         )
         L5 = HOME / ".claude/projects/p/s5.jsonl"

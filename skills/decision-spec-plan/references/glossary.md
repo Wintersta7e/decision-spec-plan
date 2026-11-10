@@ -83,8 +83,9 @@ The route's working vocabulary, in reading order. Ids in `code` are the literal 
 - **CI harness** — a suite only CI runs (another database, another OS). With `--ci-harness`, every
   push also needs a gate log naming it, except `<commit>:refs/heads/<branch>` to a branch other
   than main — the push that starts the CI run.
-- **Budget hold** — `route_state.py --budget` records a wave's estimate; the hook holds the wave's
-  dispatches until the user answers, and asks again past 125% of the estimate.
+- **Budget hold** — `route_state.py --budget` records the route's estimate, once, at the go-ahead;
+  the hook holds `exec-` dispatches until the user answers (at S, never), and asks again past 125%
+  of the estimate.
 - **Units (M)** — the route's cost unit, about a million Opus-input-equivalent tokens
   (`costs.md`).
 

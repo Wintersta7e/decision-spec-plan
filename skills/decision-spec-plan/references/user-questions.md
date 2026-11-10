@@ -16,8 +16,8 @@ Every ask follows this: a decision call, a scope question, a budget, a push.
   panel ("Scratch 7 sins run"); a round of 14 mostly-infrastructure decisions was approved and
   disowned a minute later (F101).
 - **A budget ask is the sentence `--budget` prints.** It has the recorded figure, the reason
-  against and a smaller option, and covers one wave and every lane in it, never a single group
-  (F93).
+  against and a smaller option, and covers the route's work left — one ask a route, at the
+  go-ahead, never a wave or a group (F74, F93).
 - **The hook tallies the answers.** If 9 of the last 10 took your recommendation, it says so:
   ask fewer and sharper questions, and rule the rest yourself. **Why:** across three projects
   users took the recommendation in 34 of 37 asks and 27 of 29, once 3 s after the ask; published,
