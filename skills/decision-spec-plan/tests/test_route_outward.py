@@ -89,6 +89,23 @@ class OutwardActions(support.Route):
         self.hook(
             "silent", leadbash("s1", "git push --dry-run -u origin main --follow-tags")
         )
+        # a publish to a package or image registry cannot be taken back: one lead published five
+        # immutable packages on a bare "go"
+        self.hook(
+            "ask:npm publish --access public.*or a registry",
+            leadbash("s1", "npm run build && npm publish --access public"),
+        )
+        self.hook("ask:twine upload", leadbash("s1", "python -m twine upload dist/*"))
+        self.hook(
+            "ask:docker image push", leadbash("s1", "docker image push reg/app:1")
+        )
+        self.hook(
+            "ask:cargo publish", leadbash("s1", "cd core && cargo publish -p core")
+        )
+        self.hook(
+            "silent",
+            leadbash("s1", "npm run build; npm pack; docker build -t x .; cargo build"),
+        )
         # the text names the action it matched, past the excerpt of a long command (live: the
         # excerpt showed no gh at all)
         self.hook(

@@ -35,6 +35,10 @@ structure section must cite an ask (`Ask<n>`, a row of the index's asks table) o
 (`U<n>`) that one of those files defines, and none may list a file the index's `Do not touch`
 section names. Unasked changes were the largest class of user corrections in one project's
 review-fix rounds: a version bump, files the reviewer had said to leave alone, other tickets' work.
+It checks the other direction too: every ask must have a row that cites it, or a user ruling that
+names it — one a row cites, or one that defers it (deferred, backlog, dropped, out of scope, not
+this round). One route reported a phase finished with an ask no plan row served, and this check
+green. With --glob, only the matched plans' rows serve.
 
 With `--diff <base>..<head>` (in `--repo`, default `.`) it lists every file the range changed that
 no plan's File structure section lists: what a task group added beyond its plan. A row is read
@@ -51,8 +55,9 @@ Usage:
 Exit 0 when nothing is unimplemented, 1 otherwise (a File structure section that lists no file
 counts), 2 when no plan matched or no plan has a File structure section. With `--waves`: 0 when
 no wave shares a file, 1 when one does or a plan is missing from the index's plan set, 2 when the
-index has no table with `Plan` and `Wave` columns. With `--asks`: 0 when every row cites an ask,
-1 when one does not or lists a file not to touch, 2 when the plans list no file. With `--diff`: 0
+index has no table with `Plan` and `Wave` columns. With `--asks`: 0 when every row cites an ask
+and every ask is served or deferred, 1 when a row cites none or lists a file not to touch or an ask
+is neither, 2 when the plans list no file. With `--diff`: 0
 when every changed file is planned, 1 when one is not, 2 when the range changed nothing or git
 failed.
 """
@@ -83,6 +88,11 @@ PLAN_ID = re.compile(r"p\d+-\d+[a-z]?(?=-|$)")
 ASK_RE = re.compile(r"\b((?:Ask|U)\d+)\b")
 # an id is defined where a line, heading or table row opens with it
 DEFINED_RE = re.compile(r"^[#>*|\s-]*\**((?:Ask|U)\d+)\b", re.MULTILINE)
+# a user ruling that takes an ask out of the round
+DEFERS = re.compile(
+    r"\b(?:defer\w*|backlog|postpone\w*|drop\w*|later round|out of scope|not (?:in )?this round)",
+    re.IGNORECASE,
+)
 FENCE_RE = re.compile(
     r"^#{2,4} Do not touch\s*$(.*?)(?=^#{1,4} |\Z)", re.MULTILINE | re.DOTALL
 )
@@ -114,10 +124,43 @@ def mentions(text, path, bare):
     )
 
 
+def blocks(text):
+    """{id: its text}: from the line that defines an `Ask<n>` or `U<n>` to the next heading or
+    line that defines one."""
+    out, cur = {}, None
+    for line in text.split("\n"):
+        if m := DEFINED_RE.match(line):
+            cur = m[1]
+        elif line.startswith("#"):
+            cur = None
+        if cur:
+            out[cur] = out.get(cur, "") + line + "\n"
+    return out
+
+
+def unserved(text, cited):
+    """The asks no plan row serves: a row cites it, or cites a U<n> that names it; else a U<n> that
+    names it defers it (DEFERS)."""
+    rulings = {k: v for k, v in blocks(text).items() if k.startswith("U")}
+    asks = {k for k in DEFINED_RE.findall(text) if k.startswith("Ask")}
+    out = []
+    for ask in sorted(asks, key=lambda k: int(k[3:])):
+        named = [u for u, body in rulings.items() if ask in ASK_RE.findall(body)]
+        if not (
+            ask in cited
+            or set(named) & cited
+            or any(DEFERS.search(rulings[u]) for u in named)
+        ):
+            out.append(ask)
+    return out
+
+
 def unasked(plans, sources, file_re):
-    """Plan rows that cite no ask the index defines, or list a file under its Do not touch."""
+    """Plan rows that cite no ask the index defines, or list a file under its Do not touch; and
+    the asks no row serves and no user ruling defers."""
     text = "\n".join(pathlib.Path(s).read_text(errors="replace") for s in sources)
     known = set(DEFINED_RE.findall(text))
+    cited = set()
     m = FENCE_RE.search(text)
     fenced = set(file_re.findall(m.group(1))) if m else set()
     print(
@@ -126,10 +169,11 @@ def unasked(plans, sources, file_re):
     print(f"{'plan':<40} {'files':>5} {'UNASKED':>7}")
     print("-" * 54)
     total, bad = 0, []
-    for name, text in plans.items():
-        m = SECTION_RE.search(text)
+    for name, plan in plans.items():
+        m = SECTION_RE.search(plan)
         found = list(rows(m.group(1), file_re)) if m else []
         total += len(found)
+        cited |= {i for _, line in found for i in ASK_RE.findall(line)}
         miss = [
             (
                 f,
@@ -149,7 +193,12 @@ def unasked(plans, sources, file_re):
     print(
         f"\n{len(bad)} of {total} planned files cite no ask (Ask<n> or U<n>) or are not to be touched"
     )
-    return 2 if not total else 1 if bad else 0
+    missing = unserved(text, cited)
+    for ask in missing:
+        print(f"   {ask}  (no plan row serves it, and no U<n> defers it)")
+    asks = sum(k.startswith("Ask") for k in known)
+    print(f"{len(missing)} of {asks} asks no plan row serves")
+    return 2 if not total else 1 if bad or missing else 0
 
 
 def planned_paths(section):

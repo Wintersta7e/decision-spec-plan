@@ -255,6 +255,43 @@ class ScopeAsksDiff(support.Sandbox):
             f"exit {r.code}: {r.out}",
         )
 
+    def test_asks_each_served_or_deferred(self):
+        """An ask no plan row serves: one round reported "finished" at 52.9M with an ask unbuilt
+        and --asks green (F89)."""
+        T = self.T / "served"
+        (T / "plans").mkdir(parents=True)
+        self.write(
+            T / "00-index.md",
+            "## The asks\n| **Ask1** | a |\n| **Ask2** | b |\n| **Ask3** | c |\n"
+            "| **Ask4** | d |\n",
+        )
+        self.write(
+            T / "00-arbiter.md",
+            "### U5 — Ask3 waits\nThe user deferred it to the next round.\n"
+            "### U6 — Ask4 by a config switch\n",
+        )
+        self.write(
+            T / "plans/p1-01-a.md",
+            "# p1-01-a\n## File structure\n| `src/a.py` | new | Ask1 |\n"
+            "| `src/d.py` | switch | U6 |\n## Task 1\n",
+        )
+        r = self.py(
+            "scope_check.py",
+            T / "plans",
+            "--asks",
+            T / "00-index.md",
+            T / "00-arbiter.md",
+        )
+        self.ok(
+            "scope_check --asks: an ask no row serves and no U<n> defers",
+            r.code == 1
+            and grep(r.out, "^   Ask2  (no plan row serves it")
+            and not grep(r.out, r"^   Ask[134] ")
+            and grep(r.out, "^1 of 4 asks no plan row serves")
+            and grep(r.out, "^0 of 2 planned files"),
+            f"exit {r.code}: {r.out}",
+        )
+
     def test_asks_reads_the_rows_live_plans_wrote(self):
         """The extensions of rows one project's plans listed and --asks never checked."""
         T = self.T / "exts"

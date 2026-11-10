@@ -8,10 +8,34 @@ import shell_cmd
 
 # Git commands that make a commit: one made before the agent re-reads a ruling skips it (F59).
 COMMITTING = {"commit", "merge", "cherry-pick", "revert", "am", "pull", "rebase"}
+# Tools that publish to a package registry or an image registry, with the verbs that do: what
+# they send cannot be taken back, and one lead published five immutable packages on a bare "go"
+# (F81). A verb counts among the first three words that are no option.
+PUBLISHERS = {
+    "npm": {"publish"},
+    "pnpm": {"publish"},
+    "yarn": {"publish"},
+    "bun": {"publish"},
+    "deno": {"publish"},
+    "vsce": {"publish"},
+    "cargo": {"publish"},
+    "twine": {"upload"},
+    "poetry": {"publish"},
+    "uv": {"publish"},
+    "flit": {"publish"},
+    "hatch": {"publish"},
+    "gem": {"push"},
+    "dotnet": {"push"},
+    "nuget": {"push"},
+    "mvn": {"deploy"},
+    "docker": {"push"},
+    "podman": {"push"},
+    "helm": {"push"},
+}
 
 
 def bash_commands(command, cwd=None, depth=0):
-    """Each `git` and `gh` command the Bash command runs, from that word on (`sudo git commit`),
+    """Each `git`, `gh` and PUBLISHERS command the Bash command runs, from that word on (`sudo git commit`),
     read as bash reads it (shell_cmd.py): regexes over the text missed wrapped and quoted forms and
     backtracked for 36 s on a long line. A script file it runs is read in turn, three deep. None
     when a part cannot be read — stdin or an unreadable script fed to a shell, a computed `bash -c`
@@ -103,9 +127,9 @@ def bash_commands(command, cwd=None, depth=0):
             dirs[-1] = None
         names = [os.path.basename(w) for w in c.argv]
         for i, name in enumerate(names):
-            # every `git` word (`sudo -u git git push`); only the first `gh`, whose check reads all
-            # the words after it (each later one took the line to quadratic time)
-            if name == "git" or (name == "gh" and "gh" not in names[:i]):
+            # every `git` word (`sudo -u git git push`); only the first `gh` or publisher, whose
+            # check reads all the words after it (each later one took the line to quadratic time)
+            if name == "git" or (name in ("gh", *PUBLISHERS) and name not in names[:i]):
                 cmd = shell_cmd.Cmd([], c.words[i:])
                 if (g := shell_cmd.git_args(cmd)) and g[1] is None:
                     return None
