@@ -37,7 +37,7 @@ finding is settled this way, not by debate (sins/lead.md).
 Decisions — each row of the index's decisions table names, in its Serves column, the ask (`Ask<n>`)
 or user ruling (`U<n>`) it serves, or is marked `backlog`; past six live decisions the index records
 the user's triage as `> **Triage**: U<n>`. A review round grew to 14 mostly-infrastructure decisions
-priced 20M, was approved, and a minute later the user disliked its direction (F101). `--legacy`
+priced 20M, was approved, and a minute later the user disliked its direction (F89). `--legacy`
 skips this check: the route's hook passes it for a phase bound before the check existed.
 
 Usage:
@@ -167,7 +167,7 @@ def decisions(index):
         return [
             (
                 "the decisions table has no Serves column: each decision names the Ask<n> or "
-                "U<n> it serves, or `backlog` (F101)"
+                "U<n> it serves, or `backlog` (F89)"
             )
         ]
     col = header.index("serves")
@@ -182,13 +182,13 @@ def decisions(index):
         if not re.search(r"\b(?:Ask|U)\d+\b", cells[col]):
             fails.append(
                 f"{did[1]} serves no ask or user ruling ({cells[col][:60] or 'empty'}): cite "
-                "the Ask<n> or U<n> it serves, or mark it `backlog` (F101)"
+                "the Ask<n> or U<n> it serves, or mark it `backlog` (F89)"
             )
     if live > TRIAGE and not re.search(r"\*\*Triage\*\*:.*\bU\d+", index):
         fails.append(
             f"{live} decisions to rule: past {TRIAGE}, the user triages first — which to rule "
             "now, which wait in the backlog, with each one's cost — recorded as "
-            "`> **Triage**: U<n>` (F101)"
+            "`> **Triage**: U<n>` (F89)"
         )
     return fails
 

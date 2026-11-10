@@ -104,7 +104,7 @@ What the code does now that a ruling might keep or change; a row binds nothing.
 Serves names the ask or user ruling the decision exists for; one that serves neither — tidier
 infrastructure, a refactor the round noticed — is `backlog` and is not dispatched. Past six live
 decisions, ask the user to triage before dispatch: each decision with its cost, keep or backlog
-(`decision_check.py`, F101).
+(`decision_check.py`, F89).
 
 ### What each decision may NOT decide
 - **D1** prices; it does not choose which things pay — D2… name their transitions.

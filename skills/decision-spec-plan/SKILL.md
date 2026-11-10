@@ -116,8 +116,8 @@ data-loss or safety defect goes to the user immediately, with a proposed fix —
 
 1. **Write the brief** (`briefs/decision-brief.md`) **and the index** (`templates.md` §1) — its
    **asks** first: every sentence the requester wrote asking for a change, verbatim, and a Do not
-   touch list; every change the round makes cites one or a user ruling (F89), every decision the
-   ask it serves or `backlog`, past six the user's triage (F101); every requirement
+   touch list; every change the round makes cites one or a user ruling, every decision the
+   ask it serves or `backlog`, past six the user's triage (F89); every requirement
    dimension owned or N/A — and check the index against §1's pre-dispatch list (each item a real
    framing error) and `decision_check.py`.
 2. **Framing review before dispatch** by the second model, read-only (`prompts.md` §1a); apply its
