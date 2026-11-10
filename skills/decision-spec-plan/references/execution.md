@@ -33,6 +33,15 @@ run `criteria_check.py` on the one spec file.)
   wave ran 42% over and the headcount rule never fired; in one window 58 of 121 questions were
   budget asks, 50 approved as offered, while sessions still ended at 152–364% of the first figure,
   the lead and reviews never priced (`failure-modes` F74).
+- **A moved base is the user's call, asked with the budget.** `git fetch` before the figure; when
+  `--budget` prints what moved under the round — the base's upstream past the local base, an
+  assumed ref moved, merged or gone — put the choice with the figure: **pin** (build on the
+  recorded base), **catch up** (re-check each ruling on the moved ref and re-plan, priced) or
+  **track by merge** (merge the base into each lane as it goes), and record the answer with
+  `--base pin|catch-up|merge`. The hook holds `exec-` dispatches while a move is undecided; a
+  catch-up covers the moves it was recorded with, not the next. **Why:** one route's report flagged
+  a moved base seven times and the lead never mentioned it before the user did; its three catch-up
+  rounds cost 44.8M (`failure-modes` F91).
 
 ## A lane
 - `git worktree add ../<repo>-<plan-id> -b <plan-id> <main-sha>`; symlink in the gitignored agent

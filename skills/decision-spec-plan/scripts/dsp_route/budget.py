@@ -61,6 +61,12 @@ def budget(argv):
     )
     ap.add_argument("--phase", help="optional: this session's route's phase")
     ap.add_argument("--repo", help="optional: this session's route's repository")
+    ap.add_argument(
+        "--base",
+        choices=("pin", "catch-up", "merge"),
+        help="the user's answer when what the round was planned on moved (F91): pin the "
+        "recorded base, catch up to the moves seen now, or merge the base into each lane",
+    )
     a = ap.parse_args(argv)
     session = os.environ.get("CLAUDE_CODE_SESSION_ID", "")
     entry = load_json(REGISTRY / f"{session}.json") if session else {}
@@ -95,6 +101,11 @@ def budget(argv):
     }
     if a.groups is not None:
         record["groups"] = a.groups
+    from .report import round_moved
+
+    moved = checked(round_moved, own, route) or []
+    if a.base:
+        record["base"], record["moved"] = a.base, moved
     if answered := answered_this_turn(session, a.estimate):
         record["answered"] = answered
     save_budget(own, marker, record)
@@ -113,6 +124,14 @@ def budget(argv):
                 f"group to {max(fit, 1)} tasks, re-price, and record the figure again "
                 "(execution.md)."
             )
+    if moved and not a.base:
+        print(
+            "What the round was planned on moved, as of the last fetch (F91):\n"
+            + "\n".join(f"  {ln}" for ln in moved)
+            + "\nAsk with this figure: pin the recorded base, catch up (re-check each ruling on "
+            "the moved ref and re-plan, priced) or track by merge — the hook holds exec- "
+            "dispatches until you record the answer with --base pin|catch-up|merge."
+        )
     then = (
         f"again once the route's spend from now passes {a.estimate * SLACK:.3g}M; a new lead "
         "session of the route keeps this figure and its answer."
