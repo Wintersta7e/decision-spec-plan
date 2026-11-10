@@ -272,8 +272,9 @@ It commits merges and runs gates, so it does not end with the closing lines. Its
 > assertions dropped or an acceptance test edited: stop and record each line it printed that
 > `<planning-dir>/lanes/<plan-id>-rulings.md` does not already rule — then merge exactly that SHA, never
 > the branch name. 2. Resolve conflicts; regenerate every derived file and count (<codegen, locks>),
-> never hand-merge them. 3. Run the full gate with its whole output to
-> `<planning-dir>/lanes/wave<w>-<plan-id>-gate.log` — never piped through `tail` or `head` — exactly
+> never hand-merge them. 3. Run the full gate (the plans' gate tables' `group` gates; a `lead` or
+> `CI` gate you never run: read the log the lead or the pipeline wrote for this SHA, and stop if
+> there is none) with its whole output to `<planning-dir>/lanes/wave<w>-<plan-id>-gate.log` — never piped through `tail` or `head` — exactly
 > `<skill-dir>/scripts/gate.py <planning-dir> wave<w>-<plan-id> -- '<command>'` (it writes the lines
 > the push guard reads; never write or edit a gate log by hand), and hand-check every file both sides touched: the values, not only that
 > it compiles. 4. `git merge-base --is-ancestor <sha> HEAD`. A red gate or a failed check: stop,

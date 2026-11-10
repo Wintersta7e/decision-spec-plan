@@ -9,11 +9,17 @@ Checks what makes a plan executable, so a truncated or malformed one fails:
   - balanced code fences
   - checkbox steps (`- [ ]` or ticked `- [x]` — an executed plan is still a plan)
   - the required header fields
+  - a gate table, `| Gate | Command | Minutes | Runs |`: each gate's measured minutes and where it
+    runs — `group` (the task group runs it), `lead` (the lead's background job through gate.py; the
+    group reads its log) or `CI` (the project's pipeline; the group reads its run's log). A gate
+    over --group-minutes (default 30) never runs in a group: one local three-database gate cost
+    12.12M and 553 agent-minutes and never completed
 
 Index files (`00-*.md`, `p<N>-00-*.md`) are skipped: an index is not a plan.
 
 Usage:
     plan_lint.py <plans-dir> [--require '**Goal:**' --require '**Spec:**' ...] [--glob 'p4-*.md']
+        [--group-minutes 30]
 
 Exit 0 when every plan is ok, 1 when any has problems, 2 when no plan matched.
 """
@@ -24,9 +30,58 @@ import re
 import sys
 
 DEFAULT_REQUIRED = ["**Goal:**", "**Spec:**", "**Depends on:**"]
+RUNS = ("group", "lead", "ci")
+GROUP_MINUTES = 30
 
 
-def lint(text, required):
+def cells(line):
+    return [c.strip().strip("`*").strip() for c in line.strip().strip("|").split("|")]
+
+
+def gates(text):
+    """[(gate, minutes or None, runs)] of the plan's gate table, or None without one."""
+    lines = text.split("\n")
+    for i, line in enumerate(lines):
+        head = [c.lower() for c in cells(line)]
+        if not (
+            line.lstrip().startswith("|") and {"gate", "minutes", "runs"} <= set(head)
+        ):
+            continue
+        g, m, r = (head.index(k) for k in ("gate", "minutes", "runs"))
+        out = []
+        for row in lines[i + 1 :]:
+            if not row.lstrip().startswith("|"):
+                break
+            c = cells(row) + [""] * len(head)
+            if not "".join(c).strip("-: "):
+                continue  # the separator row
+            n = re.fullmatch(r"~?(\d+(?:\.\d+)?)\s*(?:min\w*)?", c[m])
+            out.append((c[g], float(n[1]) if n else None, c[r].lower()))
+        return out
+    return None
+
+
+def gate_problems(text, group_minutes):
+    found = gates(text)
+    if found is None:
+        return ["no gate table (| Gate | Command | Minutes | Runs |)"]
+    if not found:
+        return ["the gate table lists no gate"]
+    problems = []
+    for gate, minutes, runs in found:
+        if minutes is None:
+            problems.append(f"gate '{gate}' has no minutes")
+        if runs not in RUNS:
+            problems.append(f"gate '{gate}' runs '{runs}', not group, lead or CI")
+        elif runs == "group" and minutes and minutes > group_minutes:
+            problems.append(
+                f"gate '{gate}' takes {minutes:g} min in a group (over {group_minutes:g}): "
+                "the lead's background job or CI runs it, and the group reads its log"
+            )
+    return problems
+
+
+def lint(text, required, group_minutes=GROUP_MINUTES):
     tasks = len(re.findall(r"^#{2,3} Task ", text, re.MULTILINE))
     produces = len(re.findall(r"^- Produces\b", text, re.MULTILINE))
     consumes = len(re.findall(r"^- Consumes", text, re.MULTILINE))
@@ -47,6 +102,7 @@ def lint(text, required):
     for field in required:
         if field not in text:
             problems.append(f"missing {field}")
+    problems += gate_problems(text, group_minutes)
     return tasks, produces, consumes, steps, problems
 
 
@@ -58,6 +114,13 @@ def main():
     ap.add_argument("--glob", default="*.md")
     ap.add_argument(
         "--require", action="append", help="header field that must appear (repeatable)"
+    )
+    ap.add_argument(
+        "--group-minutes",
+        type=float,
+        default=GROUP_MINUTES,
+        help="the longest gate a task group runs itself (default 30; the route's group ETA "
+        "once one has finished)",
     )
     args = ap.parse_args()
     required = args.require or DEFAULT_REQUIRED
@@ -75,7 +138,7 @@ def main():
     bad = 0
     for f in files:
         tasks, produces, consumes, steps, problems = lint(
-            f.read_text(errors="replace"), required
+            f.read_text(errors="replace"), required, args.group_minutes
         )
         bad += bool(problems)
         print(

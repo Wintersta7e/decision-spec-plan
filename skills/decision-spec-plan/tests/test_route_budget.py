@@ -352,6 +352,17 @@ class Budget(support.Route):
             out,
         )
         self.hook("/^ETA exec-p1-07-a/", self.dispatch("exec-p1-07-a", "t7"))
+        # the lane's plan names its gates' minutes: the ETA carries them (F83)
+        self.write(
+            P / "plans/p1-07-a.md",
+            "## Gates\n| Gate | Command | Minutes | Runs |\n|---|---|---|---|\n"
+            "| unit | `npm test` | 3 | group |\n| e2e | `npm run e2e` | 45 | lead |\n",
+        )
+        self.hook(
+            "/^ETA exec-p1-07-a: .* Its plan's gates: 3 min in the group that runs them, 45 "
+            "min the lead's or CI's/",
+            self.dispatch("exec-p1-07-a", "t7"),
+        )
         self.activate_route("--rung", "M")
         self.budget("w6", "--estimate", "50", "--groups", "9")
         self.append(LEAD, human(3))

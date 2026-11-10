@@ -59,10 +59,15 @@ run `criteria_check.py` on the one spec file.)
   fix round's groups first edited at a median 122k and fit 2; another route's added 67k a commit and
   fit 1, F60). A ruling that adds work counts as a task: a group already at size gets it in the next
   group's dispatch.
-  **The lane's last group runs the plan's final gate task**: the lane's full gate on the SHA it
-  reports, into `<planning-dir>/lanes/<plan-id>-gate.log` (the format under *Push only gated
-  commits*), a red fixed under `dsp-deep`'s no-progress rule; the integrator refuses a lane SHA
-  without it (`prompts.md` §5). Each agent gets the plan path, its task numbers, the
+  **The lane's last group runs the plan's final gate task**: the gates its plan's table marks
+  `group`, on the SHA it reports, into `<planning-dir>/lanes/<plan-id>-gate.log` (the format under
+  *Push only gated commits*), a red fixed under `dsp-deep`'s no-progress rule; the integrator
+  refuses a lane SHA without it (`prompts.md` §5). A gate marked `lead` you run as your own
+  background job through `gate.py` on that SHA when the group returns, one marked `CI` runs in the
+  project's pipeline (a push, asked like any), and the next group or the integrator reads that
+  log. **Never dispatch a group whose only task is a gate**: it closes the last group with work.
+  **Why:** a local three-database gate cost 12.12M and 553 agent-minutes and never completed;
+  four gate-only groups cost 2.31M (`failure-modes` F90). Each agent gets the plan path, its task numbers, the
   previous group's checkpoint, the lane's rulings file and any archived ruling ids its tasks need,
   the brief's house rules, "run a gate into a file and read the file, never pipe it through
   `tail`/`head`" (the pipe's exit status turns a red gate green; groups that never read the plan
@@ -84,8 +89,10 @@ run `criteria_check.py` on the one spec file.)
   commits' trailers, uncommitted work — never a hand probe of the tree (one lead spent 74% of its
   cost hand-checking 18 returns, F80); then dispatch the next group as a **new agent** — no user step.
   **Tell the user the ETA the hook answers each `exec-` dispatch with** — the median minutes of the
-  route's finished groups, the lane's first — and the lane's, that × its groups left: one wave ran
-  3 h 37 m with no ETA in any report until the user paused it (`failure-modes` F83).
+  route's finished groups, the lane's first, plus the minutes of the gates the lane's plan names —
+  and the lane's, the median × its groups left plus those gates: one wave ran 3 h 37 m with no ETA
+  in any report until the user paused it, and the median alone said 77 min for a group that ran 341
+  (`failure-modes` F83).
   **Name every Stage 5 agent `exec-<plan-id>-<group>`** (a
   fix group `exec-<review>-fixes`, an integrator `exec-wave<w>`): `route_state.py`'s hooks find
   them by that prefix — they tell a group past 200k tokens of context to finish its task and
@@ -178,7 +185,10 @@ Once every lane of a wave has reported, dispatch one fresh `dsp-deep` **wave int
 3. **Run the full gate after every cross-lane merge**, its whole output to
    `<planning-dir>/lanes/<name>-gate.log` through `scripts/gate.py` (below), and hand-check any file both sides touched. A merge that compiles is
    not a merge that carries the values. Red: it stops and records; **you** rule the fix (a fresh
-   agent on that lane, or a revert).
+   agent on that lane, or a revert). The full gate is the plans' gate tables: the integrator runs
+   the `group` gates; a `lead` gate is your background job on the merge SHA, a `CI` gate the
+   pipeline's run, and the integrator reads their logs before it reports — it never runs a gate
+   over its own ETA itself (F90).
 4. Re-check `git merge-base --is-ancestor <sha> HEAD` (a lane can move past its reported SHA).
 5. Clean build caches that accumulate stale artefacts.
 
