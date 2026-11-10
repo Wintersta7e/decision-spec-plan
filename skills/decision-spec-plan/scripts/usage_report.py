@@ -24,7 +24,9 @@ counted too, over the same span — up to the last record of the lead or its age
 `--groups` adds a line per Stage 5 task group (`exec-*`, not an integrator `exec-wave*`): its
 context at its first edit, its peak, its `git commit` calls, the context each commit added,
 minutes and units; then the medians, and how many commits fit between the median first edit and
-the 200k stop — the size of the lane's next groups (`execution.md`).
+the 200k stop — the size of the lane's next groups (`execution.md`); and each group's cache
+rewrites: turns that wrote the whole prompt again after a gap past the cache's 5 minutes. A line
+`cache` sums those rewrites over every agent.
 Exit 0 on a report, 2 when no transcript is found.
 """
 
@@ -62,7 +64,8 @@ def rates(model, prompt):
 
 def scan(path, since, until=None):
     """One transcript: weighted units, per-turn context sizes, model, first and last timestamp."""
-    units = idle = 0.0
+    units = idle = rewrite_units = 0.0
+    rewrites = 0
     contexts = []
     model = None
     efforts = []
@@ -86,12 +89,19 @@ def scan(path, since, until=None):
         )
         # past the cache's life the whole prompt is written again: when the user ended the
         # wait, that is the wait's cost; after a task group's return it is the wave's (F93)
-        if q["waited"] and q["gap"] >= CACHE_LIFE and write_all > read:
-            idle += writes
+        if q["gap"] >= CACHE_LIFE and write_all > read:
+            rewrites += 1
+            rewrite_units += writes
+            if q["waited"]:
+                idle += writes
         contexts.append(fresh + write_all + read)
     return {
         "units": units,
         "idle": idle,
+        # every rewrite after a gap past the cache's life, waited for or not: an agent's own
+        # 10-minute wait loop or long foreground command cost 56M of 274M in one window (F92)
+        "rewrites": rewrites,
+        "rewrite_units": rewrite_units,
         "contexts": contexts,
         "model": model,
         # every effort its requests ran at, in order: the lead may set it per dispatch
@@ -179,7 +189,7 @@ def group_lines(agents, since, until=None):
         lines.append(
             f"group  {name[:32]:32s}  turns={len(row['contexts']):4d}  first-edit={kilo(first)}  "
             f"peak={kilo(peak)}  commits={commits:2d}  per-commit={kilo(growth)}  "
-            f"{span:4.0f} min  {row['units'] / 1e6:5.1f}M"
+            f"{span:4.0f} min  {row['units'] / 1e6:5.1f}M  rewrites={row['rewrites']}"
         )
     if not lines:
         return lines
@@ -235,6 +245,13 @@ def main():
         print(
             "\n".join(group_lines(agents, args.since, args.until))
             or "no exec- task groups"
+        )
+    rewrites = sum(a["rewrites"] for a in agents)
+    if rewrites:
+        print(
+            f"cache  {sum(a['rewrite_units'] for a in agents) / 1e6:6.1f}M  {rewrites} agent turns "
+            "wrote the whole prompt again after a gap past the cache's 5 minutes (dsp-deep: wait "
+            "in calls under 4 minutes, long commands in the background; F92)"
         )
     if sdk:
         print(

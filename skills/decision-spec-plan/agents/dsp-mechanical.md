@@ -60,11 +60,15 @@ between them.
 Never end your turn to wait: the end of your turn is your return, and nothing wakes you after it —
 not your background command finishing, not a `Monitor` event — only a message from the lead. Wait
 on your own gate, build or run in the foreground: one Bash call
-`until grep -q '^exit=' <log>; do sleep 20; done` with `timeout: 600000`, repeated until it ends.
-Waiting on anything else (a user's commit, a pipeline, another agent): write your checkpoint and
-return what you wait for. Why: of 81 turns that agents ended while their own job ran, none woke
+`until grep -q '^exit=' <log> || tail -n1 <job output> | grep -Eq '^\[(exited|killed)'; do sleep 20; done`
+with `timeout: 240000`, repeated until it ends (`<job output>`: the file the Bash tool named when
+the job went to the background). A command you expect to run past four minutes runs in the
+background (`run_in_background`) and is waited on the same way — no Bash call of yours lasts
+longer. Waiting on anything else (a user's commit, a pipeline, another agent): write your checkpoint
+and return what you wait for. Why: of 81 turns that agents ended while their own job ran, none woke
 when it finished; each sat until the lead noticed — a median 6 min, 23 over 10 min, the longest
-6 h 44 min (`failure-modes` F92).
+6 h 44 min; and a call past five minutes outlives the prompt cache, so the next turn writes your
+whole context again — 56M of one window's 274M agent spend (`failure-modes` F92).
 
 No progress, stop. When the same failing tests come back after two fix attempts on one failure,
 stop: commit nothing red, write the checkpoint with the failing test names, each hypothesis you
