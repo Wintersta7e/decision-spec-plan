@@ -181,6 +181,33 @@ def base_drift(repo, text):
     return out
 
 
+def moved_under(repo, text):
+    """What moved under the round that the route did not move itself, as of the last fetch (F91):
+    commits the base's upstream has that the local base lacks — the route's own merges move only
+    the local one — a base with no upstream past its SHA, an assumed ref moved, merged or gone."""
+    drift = base_drift(repo, text)
+    base = next((ref for kind, ref, _ in BASE.findall(text) if kind == "Base"), None)
+    rc, n = git(repo, "rev-list", "--count", f"{base}..{base}@{{upstream}}")
+    if not base or rc:
+        return drift
+    out = [ln for ln in drift if not ln.startswith("base moved")]
+    if int(n):
+        out.append(
+            f"{'base behind upstream':<34} {base} lacks {n} commits of its upstream"
+        )
+    return out
+
+
+def round_moved(planning_dir, route):
+    """moved_under for the route's phase index, or [] with no repository or index."""
+    index = (
+        pathlib.Path(planning_dir) / "decisions" / f"phase{route.phase}" / "00-index.md"
+    )
+    if not route.repo or not index.exists():
+        return []
+    return moved_under(route.repo, index.read_text(errors="replace"))
+
+
 def report(a, fresh=True, extra=()):
     base, p = pathlib.Path(a.planning_dir), a.phase
     if not base.is_dir():

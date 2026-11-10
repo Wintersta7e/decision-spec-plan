@@ -694,5 +694,83 @@ class RouteOfItsOwn(support.Sandbox):
         )
 
 
+class BaseMoved(support.Sandbox):
+    """What the round was planned on moved: a held decision at the budget, not a flag (F91)."""
+
+    def test_base_moved_is_held_until_decided(self):
+        T, HOME = self.T, self.HOME
+        UP = self.init_repo(T / "up", commits=("one",))
+        C = T / "clone"
+        self.git("clone", "-q", UP, C)
+        self.git("-C", C, "config", "user.email", "t@t")
+        self.git("-C", C, "config", "user.name", "t")
+        P = C / ".plan"
+        self.write(
+            P / "decisions/phase1/00-index.md",
+            f"> **Base**: `main` at `{self.rev(C, 'main')}`\n",
+        )
+        self.py(RS, P, "--phase", "1", "--repo", C, "--activate", session="s1")
+        LEAD = HOME / ".claude/projects/p/s1.jsonl"
+        self.write(LEAD, human(-3600) + "\n")
+
+        def dispatch():
+            return ev(
+                "PreToolUse",
+                "s1",
+                '"tool_name":"Agent","tool_input":{"name":"exec-p1-01-a"},'
+                f'"tool_use_id":"t1","transcript_path":"{LEAD}"',
+            )
+
+        def budget(label, *extra):
+            out = self.py(
+                RS,
+                "--budget",
+                label,
+                "--estimate",
+                "10",
+                *extra,
+                session="s1",
+                merge=True,
+            ).out
+            time.sleep(1)
+            self.append(LEAD, human(1))
+            return out
+
+        def upstream():
+            self.git("-C", UP, "commit", "-q", "--allow-empty", "-m", "theirs")
+            self.git("-C", C, "fetch", "-q")
+
+        budget("w1")
+        self.hook("/^ETA exec-p1-01-a/", dispatch())
+        # the route's own merge moves only the local base
+        self.git("-C", C, "commit", "-q", "--allow-empty", "-m", "ours")
+        self.hook("/^ETA exec-p1-01-a/", dispatch())
+        upstream()
+        self.hook(
+            "deny:(?s)what this round was planned on moved.*base behind upstream *main lacks 1 "
+            "commits.*pin.*catch up.*track by merge",
+            dispatch(),
+        )
+        out = budget("w2")
+        self.ok(
+            "--budget names the move and the choice to ask with the figure",
+            support.grep(out, "base behind upstream")
+            and support.grep(out, "--base pin|catch-up|merge", F=True),
+            out,
+        )
+        self.hook("deny:base behind upstream", dispatch())
+        budget("w3", "--base", "catch-up")
+        self.hook("/^ETA exec-p1-01-a/", dispatch())
+        # caught up to that move, not to the next one
+        upstream()
+        self.hook("deny:main lacks 2 commits", dispatch())
+        budget("w4", "--base", "pin")
+        self.hook("/^ETA exec-p1-01-a/", dispatch())
+        # a later figure keeps the user's choice
+        upstream()
+        budget("w5")
+        self.hook("/^ETA exec-p1-01-a/", dispatch())
+
+
 if __name__ == "__main__":
     unittest.main()

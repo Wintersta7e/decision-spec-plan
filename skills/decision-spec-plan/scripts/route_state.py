@@ -21,6 +21,7 @@ Usage:
     route_state.py <planning-dir> --phase P [--repo DIR] [--main BRANCH] [--sections 38-48 | 38-]
         [--spec-dir DIR] [--all] [--activate [--rung S|M|L] [--ci-harness LABEL] [--sins on|off]]
     route_state.py --budget LABEL --estimate M [--groups N --tasks T] [--phase P] [--repo R]
+        [--base pin|catch-up|merge]
 
 --main defaults to the repository's default branch. --sections `38-` counts every section from
 §38 on (a phase whose last section is not known yet). --all lists every file with its size, age
@@ -51,7 +52,11 @@ the record — the route's leads, their agents but those naming another phase, a
 passes 125% of the estimate (F74), and holds an `exec-` agent whose name names another phase, which
 that spend leaves out. A session whose transcript holds no prompt the user typed (headless
 `claude -p`) has no answer to wait for, so the hold lets its own dispatches through, never another
-session's, and keeps no answer: record the budget anyway and report it at the end. Inside an `exec-` agent it tells a group past 200k tokens of context to finish
+session's, and keeps no answer: record the budget anyway and report it at the end. While
+something moved under the round since its decision index recorded it — commits the Base's upstream
+has that the local Base lacks, a Base with no upstream past its SHA, an Assumes ref moved, merged or
+gone, as of the last fetch — it holds the dispatch until a budget records the user's choice with
+`--base`: pin and merge cover any move, catch-up the moves seen when it was recorded (F91). Inside an `exec-` agent it tells a group past 200k tokens of context to finish
 its task and return (F75), and holds a `git commit` while its own lane's rulings file changed after
 the agent last read it (F59). In a session with no active route it holds
 a `dsp-deep` or `dsp-mechanical` dispatch until the route is activated (F79). On a route activated

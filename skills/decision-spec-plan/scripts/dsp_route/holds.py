@@ -16,6 +16,7 @@ from .common import (
     SCRIPT,
     SLACK,
     budgets,
+    checked,
     deny,
     emit,
     load_json,
@@ -158,6 +159,31 @@ def ledger_hold(event, entry):
     return "\n".join(held) or None
 
 
+def base_hold(planning_dir, route, found):
+    """What moved under the round (report.moved_under), unless the user's latest choice on it
+    covers it: pin and merge cover any move, catch-up the moves it was recorded with (F91)."""
+    from .report import round_moved
+
+    # a check that raises holds nothing, and leaves the budget's own checks standing
+    moved = checked(round_moved, planning_dir, route)
+    choice = next((b for b in reversed(found) if b.get("base")), {})
+    if not moved or choice.get("base") in ("pin", "merge"):
+        return None
+    if choice.get("base") == "catch-up" and set(moved) <= set(
+        choice.get("moved") or []
+    ):
+        return None
+    return (
+        "what this round was planned on moved, as of the last fetch:\n"
+        + "\n".join(f"  {ln}" for ln in moved)
+        + "\nAsk the user with the budget: pin (build on the recorded base), catch up (re-check "
+        "each ruling on the moved ref and re-plan, priced) or track by merge (merge the base "
+        f"into each lane as it goes); record the answer with `python3 {SCRIPT} --budget "
+        '"<route>" --estimate <M> --base pin|catch-up|merge`. One route\'s report flagged a '
+        "moved base seven times, no lead raised it, and the catch-up rounds cost 44.8M (F91)."
+    )
+
+
 def gate_dispatch(event, entry):
     """The lead dispatching an `exec-` agent: held until the route's budget is recorded and the
     user answered it in the lead session that recorded it — at S, recorded is enough — and once
@@ -165,7 +191,8 @@ def gate_dispatch(event, entry):
     (F83). One budget a route: a hand-over to a new lead session keeps it (F74)."""
     path = pathlib.Path(entry["marker"])
     marker = json.loads(path.read_text())
-    phase = parser().parse_args(marker["args"]).phase
+    route = parser().parse_args(marker["args"])
+    phase = route.phase
     found = budgets(entry["planning_dir"], marker, phase)
     record = f'`python3 {SCRIPT} --budget "<route>" --estimate <M>`'
     if not found:
@@ -185,6 +212,8 @@ def gate_dispatch(event, entry):
         )
     paths = leads(event, path)
     head = f"budget '{b['label']}' ({b['estimate']:g}M, recorded {b['at']})"
+    if held := base_hold(entry["planning_dir"], route, found):
+        return deny(f"{head}: {held}")
     if not (b.get("answered") or marker.get("rung") == "S"):
         # Only the recording session's transcripts: a new session's "read the handoff and
         # proceed" once approved a figure that session never told the user (F74). A session
