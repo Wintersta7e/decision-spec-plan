@@ -125,10 +125,11 @@ def bash_words(text, cwd):
 
 HANDLER = r"""
 command_not_found_handle() {
-    { printf '%s\0' "$@"; printf '\1\0'; } >&3
+    # one printf, one write: a pipeline's commands run at once and interleaved two
+    printf '%s\0' "$@" $'\1' >&3
     [ "$1" != fail ]
 }
-{ eval "$1"; } 3>"$2" >/dev/null 2>&1
+{ eval "$1"; wait; } 3>"$2" >/dev/null 2>&1
 """
 
 
