@@ -6,7 +6,7 @@ import json
 import pathlib
 import re
 
-from .common import RETURNS, SKILL, SKILL_DIR
+from .common import RETURNS, SKILL, SKILL_DIR, budgets
 from .report import lane_checkpoints
 from .transcript import skill_loaded
 
@@ -47,12 +47,14 @@ def stage_docs(a, rung):
     return 0, "references/prompts.md §0"
 
 
-def budget_line(marker, phase):
-    budgets = [b for b in marker.get("budgets", []) if b.get("phase") == phase]
-    if not budgets:
+def budget_line(planning_dir, marker, phase):
+    found = budgets(planning_dir, marker, phase)
+    if not found:
         return []
-    b = budgets[-1]
-    line = f"budget     {b['label']} · {b['estimate']:g}M · {b['groups']} exec- agents"
+    b = found[-1]
+    line = f"budget     {b['label']} · {b['estimate']:g}M"
+    if "groups" in b:
+        line += f" · {b['groups']} exec- agents"
     return [f"{line} · since {b['at'][:16]}Z"]
 
 

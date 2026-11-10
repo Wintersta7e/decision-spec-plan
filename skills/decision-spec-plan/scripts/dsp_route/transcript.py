@@ -9,7 +9,7 @@ import os
 import pathlib
 import re
 
-from .common import EXEC, REGISTRY, git, load_json
+from .common import REGISTRY, git, load_json
 
 PROJECTS = pathlib.Path.home() / ".claude" / "projects"
 
@@ -375,31 +375,21 @@ def answered_this_turn(session, estimate):
     return answered
 
 
-def since_budget(paths, since, current, own):
-    """(the user answered in this session's transcript `own`, other `exec-` dispatches in all of
-    these transcripts) from `since` on. An answer in another lead session never counts (F74)."""
-    answered = ever = False
-    sent, refused = set(), set()
+def answered_since(paths, since):
+    """When the user first prompted or answered in these transcripts of the lead session that
+    recorded a budget, from `since` on, else None. An answer in another lead session never counts:
+    "read the handoff and proceed" there once approved a figure that session never told (F74). No
+    prompt of the user's anywhere (headless `claude -p`, or a changed transcript format) answers at
+    `since`: the hold never waits on it."""
+    ever = False
     for path in paths:
         for r in read_records(path):
-            is_human = path == own and r.get("type") != "assistant" and human(r)
-            ever = ever or is_human
-            if (r.get("timestamp") or "") < since:
+            if r.get("type") == "assistant" or not human(r):
                 continue
-            answered = answered or is_human
-            for block in tool_uses(r):
-                name = str((block.get("input") or {}).get("name") or "")
-                if block.get("name") == "Agent" and name.startswith(EXEC):
-                    sent.add(block.get("id"))
-            # A dispatch the hook or the user refused gets an error result and starts no agent: a
-            # wave of one was held at its only dispatch after one early refusal.
-            for block in tool_uses(r, "tool_result"):
-                if block.get("is_error"):
-                    refused.add(block.get("tool_use_id"))
-    sent -= refused
-    sent.discard(current)
-    # No prompt of the user's anywhere means the transcript format changed: never hold on it.
-    return answered or not ever, len(sent)
+            ever = True
+            if (r.get("timestamp") or "") >= since:
+                return r.get("timestamp") or since
+    return None if ever else since
 
 
 def finished_spans(paths, want):

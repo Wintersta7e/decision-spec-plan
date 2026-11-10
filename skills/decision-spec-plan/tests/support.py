@@ -404,6 +404,12 @@ class Route(Sandbox):
         return json.loads(cls.MK(repo or cls.R, plan).read_text())
 
     @classmethod
+    def budgets(cls, plan=None):
+        """The budgets `route_state.py --budget` recorded in the route's planning dir."""
+        path = Path(plan or cls.P) / "route-budget.json"
+        return json.loads(path.read_text())["budgets"] if path.exists() else []
+
+    @classmethod
     def set_marker(cls, data, repo=None, plan=None):
         cls.MK(repo or cls.R, plan).write_text(json.dumps(data))
 

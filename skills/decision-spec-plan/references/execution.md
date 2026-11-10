@@ -16,18 +16,23 @@ run `criteria_check.py` on the one spec file.)
   dispatch; lanes sharing one run one after the other. **Why:** three lanes of one wave edited the
   same four UI files; of the seam defects that left, the integrator fixed four and three stayed open
   (`failure-modes` F82).
-- **Price each wave before its first dispatch** (`costs.md`, Stage 5) and record it:
-  `python3 <skill-dir>/scripts/route_state.py --budget "<wave>" --estimate <M> --groups <n>
-  --tasks <t>`, `<n>` the `exec-` agents it covers (task groups, fix groups, the integrator), `<t>`
-  the plan tasks its groups carry. It prints the commits that fit a group on this project's
-  measured groups, and the groups `<t>` needs when `<n>` is short of them. Ask the user in the
-  sentence it prints (`user-questions.md`) and wait for their answer — one question: an AskUserQuestion answered earlier in the turn that
-  records the figure counts (F93). The hook holds every `exec-` dispatch until the user has answered
-  after the record in the session that made it — a new lead session records its own — and again once the dispatches since pass 125% of `<n>` or the spend 125% of
-  the estimate: record the remaining work's figure, say what ran over and why, and wait again.
-  **Why:** one run quoted its Stage 5 figure half a minute after its first dispatches, from the
-  older group median five times too high; in another, a wave ran 42% over and the headcount rule
-  never fired (`failure-modes` F74).
+- **One budget a route, recorded at the go-ahead** (at S, with the plan): the figure of the rung
+  announcement — the lead, every review and agent of the stages left, Stage 5 priced per
+  `costs.md` — as `python3 <skill-dir>/scripts/route_state.py --budget "<route>" --estimate <M>
+  [--groups <n> --tasks <t>]`, `<n>` the `exec-` agents, `<t>` the plan tasks their groups carry;
+  with both, it prints the commits that fit a group on this project's measured groups and the
+  groups `<t>` needs. It lives in `<planning-dir>/route-budget.json`, so a new lead session of
+  the route keeps it and its answer. Ask the user in the sentence it prints (`user-questions.md`)
+  — one question: an AskUserQuestion answered earlier in the turn that records the figure counts
+  (F93); at S, tell them and go on. The hook holds every `exec-` dispatch until the user has
+  answered after the record in the session that made it (at S, never), and again once the
+  route's spend since passes 125% of the estimate: record the remaining work's figure, say what
+  ran over and why, and wait again. Waves, a later group's re-sizing and a context-stopped
+  group's successor ask nothing new. **Why:** one run quoted its Stage 5 figure half a minute
+  after its first dispatches, from the older group median five times too high; in another, a
+  wave ran 42% over and the headcount rule never fired; in one window 58 of 121 questions were
+  budget asks, 50 approved as offered, while sessions still ended at 152–364% of the first figure,
+  the lead and reviews never priced (`failure-modes` F74).
 
 ## A lane
 - `git worktree add ../<repo>-<plan-id> -b <plan-id> <main-sha>`; symlink in the gitignored agent
@@ -85,8 +90,8 @@ run `criteria_check.py` on the one spec file.)
   across groups by message ran 314–719 turns and cost 23–46M each (`failure-modes` F46). `dsp-deep`
   enforces the one-group limit itself, and ends its group at the first task boundary after a
   compaction or once its context passes 200k tokens (the hook tells it; F75) — a group that does
-  either has outgrown its size: size the lane's next groups smaller, and when that raises the lane's
-  group count, re-record its wave's budget. `dsp-deep` with the model and effort announced for task
+  either has outgrown its size: size the lane's next groups smaller; the route's budget asks
+  nothing new until its spend passes 125%. `dsp-deep` with the model and effort announced for task
   groups (`prompts.md` header).
 - **Rulings reach a running lane through its file, never by message alone.** Append each ruling,
   verbatim with its id, to `<planning-dir>/lanes/<plan-id>-rulings.md` — append-only; a correction is
@@ -128,8 +133,8 @@ run `criteria_check.py` on the one spec file.)
   task group.
   **Why:** a lead that did this unprompted found 30 of 44 claims stale in a plan 230 commits old;
   published, a false premise is the commonest root cause of agent failure (30.7%, arXiv 2607.09510; F91).
-- **Offer every unblocked lane at once.** When a lane ends, and when you prepare a wave's budget
-  ask, list each lane whose dependencies are merged and that shares no file with a running one
+- **Offer every unblocked lane at once.** When a lane ends, and when you start a wave, list each
+  lane whose dependencies are merged and that shares no file with a running one
   (`scope_check.py --waves`). Offer them to run in parallel, with one combined figure. Only
   independent lanes: splitting one coupled task across agents does worse. **Why:** on two routes
   the lanes ran one after another until each user wrote, in the same hour, "you can use more

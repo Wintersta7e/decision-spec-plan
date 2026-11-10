@@ -36,10 +36,11 @@ the conversion from older figures: Sources, below.
 
 ## Pricing a stage
 
-**Stage 5**, per wave: its task groups × the group median (the project's own, from
+**Stage 5**: its task groups × the group median (the project's own, from
 `usage_report.py --groups` on its last route, before the table's), plus the lead per group, plus at
-L one seven-sins review before the phase's last push (and any review the user asks for). Record each
-wave's figure in M with `route_state.py --budget` (`execution.md`).
+L one seven-sins review before the phase's last push (and any review the user asks for). The
+route's figure — every stage's agents and reviews, the lead, and Stage 5 — is recorded once, in M,
+at the go-ahead with `route_state.py --budget` (`execution.md`).
 
 **Rung S**: announce an S build as the lead's writing plus its execution priced per task group. A
 review-fix round is the review, plus its findings' task groups — findings ÷ the tasks a group fits

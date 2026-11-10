@@ -20,7 +20,7 @@ ref that moved or merged into the base, a ref gone (F91).
 Usage:
     route_state.py <planning-dir> --phase P [--repo DIR] [--main BRANCH] [--sections 38-48 | 38-]
         [--spec-dir DIR] [--all] [--activate [--rung S|M|L] [--ci-harness LABEL] [--sins on|off]]
-    route_state.py --budget LABEL --estimate M --groups N [--tasks T] [--phase P] [--repo R]
+    route_state.py --budget LABEL --estimate M [--groups N --tasks T] [--phase P] [--repo R]
 
 --main defaults to the repository's default branch. --sections `38-` counts every section from
 §38 on (a phase whose last section is not known yet). --all lists every file with its size, age
@@ -40,12 +40,15 @@ that are off: each lets every call through on a shape it cannot find. `--ci-harn
 a suite CI runs that the local full gate does not; push_guard.py then also wants, per pushed
 commit, a gate log whose first 20 lines hold `harness=<label>` (F90).
 
---budget records a Stage 5 wave's estimate in M units (costs.md) and the `exec-` agents it covers
-in the marker (execution.md). As a PreToolUse hook (Registration, below), it then holds the
-lead's dispatch of an `exec-` agent until the phase has a budget recorded in this session and the
-user has answered after it here — or answered an AskUserQuestion earlier in the turn that records
-it, so ask, then record, and the one answer is enough (F93) — and again once the dispatches since it pass 125% of its agents or the spend since it 125% of
-its estimate (F74). A session whose transcript holds no prompt the user typed (headless
+--budget records the route's estimate in M units (costs.md) — the lead, every review and agent of
+the stages left — in <planning-dir>/route-budget.json, one budget a route (execution.md). As a
+PreToolUse hook (Registration, below), it then holds the lead's dispatch of an `exec-` agent until
+the phase has a budget and the user has answered after it in the lead session that recorded it —
+or answered an AskUserQuestion earlier in the turn that records it, so ask, then record, and the
+one answer is enough (F93); at rung S a recorded figure is enough. The answer is kept with the
+record, so a new lead session of the route asks nothing again. It holds again once the spend since
+the record — the route's leads, their agents but those naming another phase, and hook sessions —
+passes 125% of the estimate (F74). A session whose transcript holds no prompt the user typed (headless
 `claude -p`) has no answer to wait for, so the hold lets its dispatches through: record the budget
 anyway and report it at the end. Inside an `exec-` agent it tells a group past 200k tokens of context to finish
 its task and return (F75), and holds a `git commit` while its own lane's rulings file changed after
