@@ -78,9 +78,10 @@ def own_wait(event, session):
         f"route_state.py (hook): your own background job is still running — {what} — and "
         "nothing wakes you when it ends: of 81 turns agents ended this way, none woke, and each "
         "sat until the lead noticed, the longest 6 h 44 min (F92). Wait for it in the foreground "
-        "now: Bash `until grep -q '^exit=' <its log>; do sleep 20; done` with timeout 600000, "
-        "repeated until it ends (a job with no such log: its output file ends `[exited with "
-        "code N]`); then finish your task and return. If it already ended, carry on.",
+        "now: Bash `until grep -q '^exit=' <its log> || tail -n1 <its output> | grep -Eq "
+        "'^\\[(exited|killed)'; do sleep 20; done` with timeout 240000 — under the prompt "
+        "cache's 5 minutes — repeated until it ends; then finish your task and return. If it "
+        "already ended, carry on.",
         file=sys.stderr,
     )
     return 2

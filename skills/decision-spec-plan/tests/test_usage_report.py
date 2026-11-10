@@ -288,6 +288,32 @@ class UsageReport(support.Route):
             and not support.grep(out, "exec-wave1"),
             out,
         )
+        # a turn after a gap past the cache's 5 minutes that writes the whole prompt again: a
+        # 10-minute wait loop cost 38.0M of one window's agent spend so (F92)
+        rewrite = json.loads(grec(-1300, "r2", 0))
+        rewrite["message"]["usage"] = {"cache_creation_input_tokens": 100000}
+        self.append(
+            g1 / "agent-e3.jsonl",
+            grec(-1700, "r1", 90000, tool("t7", "Edit")),
+            jline(rewrite),
+            grec(-1250, "r3", 100000),
+        )
+        self.write(
+            g1 / "agent-e3.meta.json",
+            '{"name":"exec-p1-02-a","agentType":"dsp-deep"}\n',
+        )
+        out = self.usage("g1", "--project-dir", GP, "--groups").out
+        self.ok(
+            "usage_report counts the cache rewrites after a gap past 5 minutes",
+            support.grep(out, "^group  exec-p1-02-a .* rewrites=1$")
+            and support.grep(out, "^group  exec-p1-01-a .* rewrites=0$")
+            and support.grep(
+                out, "^cache +0.1M  1 agent turns wrote the whole prompt", E=True
+            ),
+            out,
+        )
+        (g1 / "agent-e3.jsonl").unlink()
+        (g1 / "agent-e3.meta.json").unlink()
         # --budget prints that measure where the lead prices the wave (F60, F75)
         m = self.marker()
         m["budgets"] = []
