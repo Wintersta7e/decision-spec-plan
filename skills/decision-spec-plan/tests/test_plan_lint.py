@@ -24,6 +24,45 @@ class PlanLint(support.Sandbox):
             f"exit {r.code}: {r.out}",
         )
 
+    def test_gate_table(self):
+        """Each gate's minutes and where it runs; a long one never in a group (12.12M on a gate
+        that never completed)."""
+        L = self.T / "gates"
+        head = (
+            "**Goal:** a\n**Spec:** b\n**Depends on:** none\n## Task 1 — a\n- Produces: a\n"
+            "- Consumes: none\n- [ ] Step 1: write the test\n"
+        )
+        table = "## Gates\n| Gate | Command | Minutes | Runs |\n|---|---|---|---|\n"
+        self.write(L / "p1-01-none.md", head)
+        self.write(
+            L / "p1-02-good.md",
+            head + table + "| unit | `npm test` | 3 | group |\n"
+            "| e2e | `npm run e2e` | ~45 min | `lead` |\n| matrix | three databases | 90 | CI |\n",
+        )
+        self.write(
+            L / "p1-03-bad.md",
+            head + table + "| e2e | `npm run e2e` | 45 | group |\n"
+            "| lint | `npm run lint` | quick | group |\n| db | `make db` | 5 | laptop |\n",
+        )
+        r = self.py("plan_lint.py", L)
+        self.ok(
+            "plan_lint: the gate table — missing, good, a long gate in a group, no minutes, "
+            "no place",
+            r.code == 1
+            and grep(r.out, "p1-01-none.md .*no gate table")
+            and grep(r.out, "p1-02-good.md .* ok$")
+            and grep(r.out, "gate 'e2e' takes 45 min in a group (over 30)")
+            and grep(r.out, "gate 'lint' has no minutes")
+            and grep(r.out, "gate 'db' runs 'laptop', not group, lead or CI"),
+            f"exit {r.code}: {r.out}",
+        )
+        r = self.py("plan_lint.py", L, "--glob", "p1-03-*", "--group-minutes", "60")
+        self.ok(
+            "plan_lint --group-minutes: the group's own limit",
+            not grep(r.out, "gate 'e2e' takes"),
+            r.out,
+        )
+
 
 if __name__ == "__main__":
     unittest.main()

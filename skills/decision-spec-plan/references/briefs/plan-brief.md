@@ -160,9 +160,29 @@ phase boundary.›
 
 ## The gates your plan must be executable against
 
-‹ADAPT: the exact gate commands, chained with `&&`. The baseline counts with their SHA.› **Never pipe
-a gate through `tail`/`head`** — the pipeline returns the pipe's exit status and a red gate reads
-green. **Compare failing-test identity, not count.**
+‹ADAPT: the exact gate commands, chained with `&&`. The baseline counts with their SHA. Where the
+project's own rules (its CLAUDE.md, AGENTS.md, contributing guide) say a suite runs locally or on
+the pipeline, quote the line.› **Never pipe a gate through `tail`/`head`** — the pipeline returns
+the pipe's exit status and a red gate reads green. **Compare failing-test identity, not count.**
+
+**Your plan opens its gates with a table** — `plan_lint.py` fails a plan without it:
+
+    ## Gates
+    | Gate | Command | Minutes | Runs |
+    |---|---|---|---|
+    | unit | `<command>` | 3 | group |
+    | e2e | `<command>` | 45 | lead |
+
+Minutes are measured on this tree (a timed run, or the pipeline's last run of that job), never
+guessed. **Runs** is `group` (the task group runs it), `lead` (the lead's background job through
+`gate.py`; the group, or the next, reads its log) or `CI` (the project's pipeline; the group reads
+its run's log). A gate over 30 minutes — or the route's group ETA once a group has finished — is
+never a group's, and the project's own rule picks `lead` or `CI`. **No task is only a gate**: the
+final gate task closes the last task with work, so no group carries a gate alone. *A local
+three-database gate cost 12.12M and 553 agent-minutes and never completed; the user asked once
+for the pipeline ("lets run it on ci") and once against it ("NO external testing, i told you") —
+the project's rule decides, not the plan's author; four groups that only ran a gate cost 2.31M; the ETA, blind to what a group carried, said
+77 min for a group that ran 341* (`failure-modes` F90, F83).
 
 ## Public-repo hygiene
 

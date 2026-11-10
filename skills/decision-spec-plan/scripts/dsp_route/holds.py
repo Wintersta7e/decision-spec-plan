@@ -245,7 +245,7 @@ def gate_dispatch(event, entry):
             f"remaining work's figure with {record}, tell the user what ran over and why, and "
             "wait for their answer (F74)."
         )
-    emit("PreToolUse", eta(paths, str((event.get("tool_input") or {}).get("name"))))
+    emit("PreToolUse", eta(paths, name, entry["planning_dir"]))
     return 0
 
 
@@ -254,9 +254,39 @@ def lane_of(name):
     return found and found.group(0)
 
 
-def eta(paths, name):
+def gate_minutes(planning_dir, lane):
+    """The minutes of the lane's plan's gates: (a group runs, the lead or CI runs), or None."""
+    import plan_lint
+
+    plans = pathlib.Path(planning_dir) / "plans"
+    plan = next(iter(sorted(plans.glob(f"{lane}-*.md")) + [plans / f"{lane}.md"]))
+    found = plan.exists() and plan_lint.gates(plan.read_text(errors="replace"))
+    if not found:
+        return None
+    own = sum(m or 0 for _, m, runs in found if runs == "group")
+    return own, sum(m or 0 for _, m, runs in found if runs != "group")
+
+
+def eta(paths, name, planning_dir=None):
     """The `exec-` dispatch `name`'s ETA: the median minutes of the route's finished agents of its
-    kind — integrators (`exec-wave*`) or task groups — its lane's first (F83)."""
+    kind — integrators (`exec-wave*`) or task groups — its lane's first, and the minutes of the
+    gates its lane's plan names (F83)."""
+    return eta_work(paths, name) + gates_line(planning_dir, lane_of(name))
+
+
+def gates_line(planning_dir, lane):
+    found = planning_dir and lane and checked(gate_minutes, planning_dir, lane)
+    if not found:
+        return ""
+    own, other = found
+    return (
+        f" Its plan's gates: {own:g} min in the group that runs them, {other:g} min the "
+        "lead's or CI's that the lane waits on — add them to that group's figure; the median "
+        "alone said 77 min for a group that ran 341 (F83)."
+    )
+
+
+def eta_work(paths, name):
     wave = name.startswith(EXEC + "wave")
     kind = "integrator" if wave else "task group"
     spans = [
