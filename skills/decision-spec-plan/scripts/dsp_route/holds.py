@@ -176,13 +176,24 @@ def gate_dispatch(event, entry):
             "figure and wait for their answer — at S, tell them and go on (execution.md)."
         )
     b = found[-1]
+    name = str((event.get("tool_input") or {}).get("name") or "")
+    if set(PHASE_OF.findall(name)) - {str(phase)}:
+        # spend() leaves another phase's agents out, so one dispatched here would run uncounted
+        return deny(
+            f"{name} names another phase than this route's phase {phase}: activate that phase "
+            "(`--activate --phase <P>`) and record its budget first (F74)."
+        )
     paths = leads(event, path)
     head = f"budget '{b['label']}' ({b['estimate']:g}M, recorded {b['at']})"
     if not (b.get("answered") or marker.get("rung") == "S"):
         # Only the recording session's transcripts: a new session's "read the handoff and
-        # proceed" once approved a figure that session never told the user (F74).
-        rec = session_transcripts(b.get("session") or "")
+        # proceed" once approved a figure that session never told the user (F74). A session
+        # with no prompt of the user's answers only its own dispatches (headless `claude -p`).
+        recorder = b.get("session") or ""
+        rec = session_transcripts(recorder)
         answered = rec and answered_since(rec, b["at"])
+        if answered == b["at"] and recorder != event.get("session_id"):
+            answered = None
         if not answered:
             return deny(
                 f"{head}: the user has not answered it in the lead session that recorded it. "
@@ -194,8 +205,10 @@ def gate_dispatch(event, entry):
                     else "."
                 )
             )
-        # kept with the record, so a hand-over to a new lead session asks nothing again
-        save_budget(entry["planning_dir"], marker, {**b, "answered": answered})
+        if answered != b["at"]:
+            # a user's answer is kept with the record, so a hand-over to a new lead session asks
+            # nothing again; a headless session's pass is its own and is never kept
+            save_budget(entry["planning_dir"], marker, {**b, "answered": answered})
     used = spend(paths, b["at"], phase)
     if used > b["estimate"] * 1e6 * SLACK:
         return deny(

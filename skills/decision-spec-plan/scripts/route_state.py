@@ -48,9 +48,10 @@ or answered an AskUserQuestion earlier in the turn that records it, so ask, then
 one answer is enough (F93); at rung S a recorded figure is enough. The answer is kept with the
 record, so a new lead session of the route asks nothing again. It holds again once the spend since
 the record — the route's leads, their agents but those naming another phase, and hook sessions —
-passes 125% of the estimate (F74). A session whose transcript holds no prompt the user typed (headless
-`claude -p`) has no answer to wait for, so the hold lets its dispatches through: record the budget
-anyway and report it at the end. Inside an `exec-` agent it tells a group past 200k tokens of context to finish
+passes 125% of the estimate (F74), and holds an `exec-` agent whose name names another phase, which
+that spend leaves out. A session whose transcript holds no prompt the user typed (headless
+`claude -p`) has no answer to wait for, so the hold lets its own dispatches through, never another
+session's, and keeps no answer: record the budget anyway and report it at the end. Inside an `exec-` agent it tells a group past 200k tokens of context to finish
 its task and return (F75), and holds a `git commit` while its own lane's rulings file changed after
 the agent last read it (F59). In a session with no active route it holds
 a `dsp-deep` or `dsp-mechanical` dispatch until the route is activated (F79). On a route activated
