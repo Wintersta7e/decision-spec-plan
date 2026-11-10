@@ -286,6 +286,34 @@ class Budget(support.Route):
         )
         self.append(S9, human(2))
         self.hook("/^ETA exec-p1-07-a/", self.dispatch("exec-p1-07-a", "t7"))
+        # an agent named for another phase is that phase's work, left out of this spend
+        self.hook(
+            "deny:exec-p9-01-a names another phase than this route's phase 1",
+            self.dispatch("exec-p9-01-a", "t7"),
+        )
+        # a headless lead (no prompt of the user's) passes its own dispatches, never another
+        # session's, and its pass is not kept with the record
+        S8 = HOME / ".claude/projects/p/s8.jsonl"
+        reg = HOME / ".claude/dsp-routes"
+        shutil.copy(reg / "s1.json", reg / "s8.json")
+        self.write(S8, "")
+        time.sleep(1)
+        self.budget("w3h", "--estimate", "50", "--groups", "9", session="s8")
+        self.hook(
+            "/^ETA exec-p1-07-a/",
+            ev(
+                "PreToolUse",
+                "s8",
+                '"tool_name":"Agent","tool_input":{"name":"exec-p1-07-a"},'
+                f'"tool_use_id":"t7","transcript_path":"{S8}"',
+            ),
+        )
+        self.hook("deny:has not answered", self.dispatch("exec-p1-07-a", "t7"))
+        self.ok(
+            "a headless session's pass is not kept with the budget",
+            not self.budgets()[-1].get("answered"),
+            self.budgets(),
+        )
         # asked first, recorded after the answer in the same turn: that one answer is enough
         # (F93); a prompt that opened the turn, or an answer in an earlier turn, is not
         time.sleep(4)  # past the answers stamped up to 3 s ahead above
