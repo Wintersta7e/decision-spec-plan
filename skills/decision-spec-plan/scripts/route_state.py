@@ -62,7 +62,8 @@ the agent last read it (F59). In a session with no active route it holds
 a `dsp-deep` or `dsp-mechanical` dispatch until the route is activated (F79). On a route activated
 with `--rung S` it refuses the lead's dispatch of an agent whose name or description says harvest:
 at S the lead harvests itself (F87). While a route is
-active it asks the user before the lead's `gh pr close|merge`, `gh issue close|delete`, `gh release
+active it asks the user before the lead's publish to a package or image registry (`npm publish`,
+`cargo publish`, `twine upload`, `docker push` and the like), `gh pr close|merge`, `gh issue close|delete`, `gh release
 create|delete|edit|upload`, `gh repo delete|archive|rename`, a `gh api` write, `--delete-branch`
 or a remote branch delete by `git push`, and refuses them inside a route agent (F81). It refuses
 a hand-written gate log (`lanes/*gate*.log`) to the lead and its agents alike: Write or Edit on one,

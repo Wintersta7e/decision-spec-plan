@@ -112,12 +112,13 @@ def hook():
         if act := checked(outward, event, entry):
             if event.get("agent_id"):
                 return deny(
-                    f"`{act}` acts on the hosted repository, and a route agent never runs "
-                    "one: name it in your return and the lead asks the user (F81)."
+                    f"`{act}` acts on the hosted repository or a registry, and a route agent "
+                    "never runs one: name it in your return and the lead asks the user (F81)."
                 )
             return deny(
-                f"`{act}` acts on the hosted repository: the user approves it here, each "
-                "time — an earlier answer authorizes only what it named (F81).",
+                f"`{act}` acts on the hosted repository or a registry: the user approves it "
+                "here, each time — an earlier answer authorizes only what it named, and a "
+                "standing 'later' rules it out until they lift it (F81).",
                 "ask",
             )
         if event.get("agent_id"):

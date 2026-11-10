@@ -264,5 +264,9 @@ on red read only the failed job's log (`gh run view <run-id> --log-failed`).
   all of them.
 
 ## Report
-Status leads with the user's priority track: what merged (SHAs), the gate figures with the SHA they
-were measured on, what is still in flight, and what is known-unfixed with an owner.
+A "done" report, like the budget ask, opens with **the asks not delivered**: each `Ask<n>` of the
+index with no merged change that serves it, verbatim, and the U-ruling that deferred it — or "every
+ask delivered". Then status leads with the user's priority track: what merged (SHAs), the gate
+figures with the SHA they were measured on, what is still in flight, and what is known-unfixed with
+an owner. **Why:** one route reported "Phase 1 is finished" at 52.9M; the user found by hand that
+the tool did nothing — one ask had no plan row (`failure-modes` F89).

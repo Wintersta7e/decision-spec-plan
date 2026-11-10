@@ -1,12 +1,12 @@
-"""Outward actions on the hosted repository, which the lead asks the user before and a route agent
-never runs (F81)."""
+"""Outward actions on the hosted repository or a registry, which the lead asks the user before and
+a route agent never runs (F81)."""
 
 import pathlib
 import re
 
 import shell_cmd
 
-from .commands import bash_commands, text_commands
+from .commands import PUBLISHERS, bash_commands, text_commands
 
 # Outward actions on the hosted repository: the lead asks the user each time and a route agent
 # never runs one (F81). Each noun and verb may have any options between them, as gh accepts. A
@@ -20,7 +20,10 @@ GH_ACTIONS = {
 
 
 def outward_cmd(cmd):
-    """Whether cmd, a command from a `gh` or `git` word on, is an outward action."""
+    """Whether cmd, a command from a `gh`, `git` or publisher's word on, is an outward action."""
+    if cmd.name in PUBLISHERS:
+        words = [w for w in cmd.argv[1:] if not w.startswith("-")]
+        return bool(set(words[:3]) & PUBLISHERS[cmd.name])
     if cmd.name == "gh":
         rest = cmd.argv[1:]
         if "--delete-branch" in rest:
