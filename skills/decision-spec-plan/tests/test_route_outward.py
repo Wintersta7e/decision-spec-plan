@@ -133,7 +133,11 @@ class OutwardActions(support.Route):
         )
         self.hook("ask:npm", leadbash("s1", "npm ${V:=publish}"))
         self.hook("ask:gradlew pTML", leadbash("s1", "./gradlew pTML"))
-        self.hook("silent", leadbash("s1", "./gradlew processResources build"))
+        self.hook("ask:gradlew :app:PTML", leadbash("s1", "./gradlew :app:PTML"))
+        self.hook(
+            "ask:push=1", leadbash("s1", "docker buildx build -o TYPE=image,push=1 .")
+        )
+        self.hook("silent", leadbash("s1", "./gradlew clean build test"))
         deep = "$(" * 1500 + "gh -R npm pr merge 5" + ")" * 1500
         self.hook("ask:acts on the hosted repository", leadbash("s1", deep))
         # the text names the action it matched, past the excerpt of a long command (live: the

@@ -27,12 +27,12 @@ def publish_word(tool, w):
     t = w.text
     if t in PUBLISHERS[tool] or t.startswith("--push"):
         return True
-    if re.search(r"\b(?:type=registry|push=true)\b", t):
+    if re.search(r"(?i)\b(?:type=registry|push=(?:1|t|true))\b", t):
         return True
-    if tool in ("gradle", "gradlew"):
-        task = re.fullmatch(r"([a-z]+)(?:[A-Z][a-z]*)*", t.rpartition(":")[2])
-        if task and "publish".startswith(task[1]):
-            return True
+    # gradle runs a task by any camel or kebab abbreviation (`pTML`, `PTML`, `p-t-m-l`): a task
+    # word that opens with p may be one
+    if tool in ("gradle", "gradlew") and re.match(r"(?i)p", t.rpartition(":")[2]):
+        return True
     bare = re.sub(r"\$\{[^}]*\}|\$\([^)]*\)|`[^`]*`", "", t)
     return not (w.static or re.search(r"[/=]", bare))
 
