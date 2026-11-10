@@ -157,11 +157,11 @@ def text_commands(command):
     # a NAME=value word is read as its value (`X='gh pr close 5'`)
     names = [os.path.basename(re.sub(r"^[A-Za-z_]\w*=", "", t)) for t in texts]
     out = []
-    heads = ("git", "gh", *PUBLISHERS)
     for i, name in enumerate(names):
-        if name in heads:
+        if name in ("git", "gh", *PUBLISHERS):
+            # only a git or gh word ends one: a publisher's may be a value (`gh -R npm pr merge`)
             end = min(len(names), i + 41)
-            end = next((k for k in range(i + 1, end) if names[k] in heads), end)
+            end = next((k for k in range(i + 1, end) if names[k] in ("git", "gh")), end)
             cmd = shell_cmd.Cmd(
                 [], [shell_cmd.literal(t) for t in [name, *texts[i + 1 : end]]]
             )

@@ -19,17 +19,28 @@ GH_ACTIONS = {
 }
 
 
+def publish_word(tool, w):
+    """Whether word w of a PUBLISHERS command may publish: its verb, a push flag or output
+    (`--push=true`, `-o type=registry`), a gradle task that abbreviates `publish…` (`pTML`), or a
+    computed word that may be the verb (`npm $V`). A computed word with a path or an `=` outside
+    its expansions is a value (`-v $PWD:/app`, `-e K=$V`); a false match only asks."""
+    t = w.text
+    if t in PUBLISHERS[tool] or t.startswith("--push"):
+        return True
+    if re.search(r"\b(?:type=registry|push=true)\b", t):
+        return True
+    if tool in ("gradle", "gradlew"):
+        task = re.fullmatch(r"([a-z]+)(?:[A-Z][a-z]*)*", t.rpartition(":")[2])
+        if task and "publish".startswith(task[1]):
+            return True
+    bare = re.sub(r"\$\{[^}]*\}|\$\([^)]*\)|`[^`]*`", "", t)
+    return not (w.static or re.search(r"[/=]", bare))
+
+
 def outward_cmd(cmd):
     """Whether cmd, a command from a `gh`, `git` or publisher's word on, is an outward action."""
     if cmd.name in PUBLISHERS:
-        # a computed word may be the verb (`V=publish; npm $V`); one with a path or an `=` is a
-        # value (`-v $PWD:/app`, `-e K=$V`)
-        return any(
-            w.text in PUBLISHERS[cmd.name]
-            or w.text == "--push"
-            or not (w.static or re.search(r"[/=]", w.text))
-            for w in cmd.words[1:]
-        )
+        return any(publish_word(cmd.name, w) for w in cmd.words[1:])
     if cmd.name == "gh":
         rest = cmd.argv[1:]
         if "--delete-branch" in rest:
