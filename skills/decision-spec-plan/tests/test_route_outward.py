@@ -122,6 +122,20 @@ class OutwardActions(support.Route):
             "silent",
             leadbash("s1", "docker run -v $PWD:/app -e K=$K img npm test"),
         )
+        # a push flag's value or a registry output, an `=` inside the expansion, a gradle task
+        # abbreviated, and a publisher's name as a gh option's value in text the reader fails on
+        self.hook(
+            "ask:--push=true", leadbash("s1", "docker buildx build --push=true .")
+        )
+        self.hook(
+            "ask:type=registry",
+            leadbash("s1", "docker buildx build -o type=registry,name=r/a ."),
+        )
+        self.hook("ask:npm", leadbash("s1", "npm ${V:=publish}"))
+        self.hook("ask:gradlew pTML", leadbash("s1", "./gradlew pTML"))
+        self.hook("silent", leadbash("s1", "./gradlew processResources build"))
+        deep = "$(" * 1500 + "gh -R npm pr merge 5" + ")" * 1500
+        self.hook("ask:acts on the hosted repository", leadbash("s1", deep))
         # the text names the action it matched, past the excerpt of a long command (live: the
         # excerpt showed no gh at all)
         self.hook(
