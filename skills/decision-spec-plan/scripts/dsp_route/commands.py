@@ -10,8 +10,13 @@ import shell_cmd
 COMMITTING = {"commit", "merge", "cherry-pick", "revert", "am", "pull", "rebase"}
 # Tools that publish to a package registry or an image registry, with the verbs that do: what
 # they send cannot be taken back, and one lead published five immutable packages on a bare "go"
-# (F81). A verb counts among the first three words that are no option.
+# (F81). A verb counts anywhere in the command's words, and so does `--push` (`docker buildx
+# build --push`) or a computed word (outward.py); a false match only asks.
 PUBLISHERS = {
+    "gradle": {"publish"},
+    "gradlew": {"publish"},
+    "skopeo": {"copy"},
+    "crane": {"push", "copy"},
     "npm": {"publish"},
     "pnpm": {"publish"},
     "yarn": {"publish"},
@@ -138,8 +143,8 @@ def bash_commands(command, cwd=None, depth=0):
 
 
 def text_commands(command):
-    """Each `git` and `gh` command in text the reader cannot follow, read word by word: from that
-    word to the next `git` or `gh` word, at most 40 words. A regex over the text for `gh` or
+    """Each `git`, `gh` and PUBLISHERS command in text the reader cannot follow, read word by word:
+    from that word to the next such word, at most 40 words. A regex over the text for `gh` or
     `push` held a stub `gh` on PATH, a JS `.push(` and a plain push (2026-10-31). The blank-split
     words, ends trimmed, count too: a heredoc's body is text to the reader but commands to a shell
     fed it (`bash <<EOF`), and the reader fails on nesting too deep."""
@@ -152,10 +157,11 @@ def text_commands(command):
     # a NAME=value word is read as its value (`X='gh pr close 5'`)
     names = [os.path.basename(re.sub(r"^[A-Za-z_]\w*=", "", t)) for t in texts]
     out = []
+    heads = ("git", "gh", *PUBLISHERS)
     for i, name in enumerate(names):
-        if name in ("git", "gh"):
+        if name in heads:
             end = min(len(names), i + 41)
-            end = next((k for k in range(i + 1, end) if names[k] in ("git", "gh")), end)
+            end = next((k for k in range(i + 1, end) if names[k] in heads), end)
             cmd = shell_cmd.Cmd(
                 [], [shell_cmd.literal(t) for t in [name, *texts[i + 1 : end]]]
             )

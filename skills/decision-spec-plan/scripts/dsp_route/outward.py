@@ -22,8 +22,14 @@ GH_ACTIONS = {
 def outward_cmd(cmd):
     """Whether cmd, a command from a `gh`, `git` or publisher's word on, is an outward action."""
     if cmd.name in PUBLISHERS:
-        words = [w for w in cmd.argv[1:] if not w.startswith("-")]
-        return bool(set(words[:3]) & PUBLISHERS[cmd.name])
+        # a computed word may be the verb (`V=publish; npm $V`); one with a path or an `=` is a
+        # value (`-v $PWD:/app`, `-e K=$V`)
+        return any(
+            w.text in PUBLISHERS[cmd.name]
+            or w.text == "--push"
+            or not (w.static or re.search(r"[/=]", w.text))
+            for w in cmd.words[1:]
+        )
     if cmd.name == "gh":
         rest = cmd.argv[1:]
         if "--delete-branch" in rest:

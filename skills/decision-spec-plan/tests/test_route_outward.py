@@ -106,6 +106,22 @@ class OutwardActions(support.Route):
             "silent",
             leadbash("s1", "npm run build; npm pack; docker build -t x .; cargo build"),
         )
+        # the verb past valued options, a computed verb, a --push flag, text eval runs
+        self.hook(
+            "ask:npm --registry r --tag beta --otp 1 publish",
+            leadbash("s1", "npm --registry r --tag beta --otp 1 publish"),
+        )
+        self.hook("ask:npm \\$V", leadbash("s1", "V=publish; npm $V"))
+        self.hook(
+            "ask:docker buildx build --push",
+            leadbash("s1", "docker buildx build --push -t reg/app ."),
+        )
+        self.hook("ask:eval", leadbash("s1", "X='npm publish'; eval $X"))
+        self.hook("ask:gradlew publish", leadbash("s1", "./gradlew publish"))
+        self.hook(
+            "silent",
+            leadbash("s1", "docker run -v $PWD:/app -e K=$K img npm test"),
+        )
         # the text names the action it matched, past the excerpt of a long command (live: the
         # excerpt showed no gh at all)
         self.hook(
