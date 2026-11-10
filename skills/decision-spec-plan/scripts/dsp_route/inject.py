@@ -1,6 +1,6 @@
 """The lines the hook puts into the lead's context beside the report: the skill's files changed
 since the session read them (F78), the stage and what to re-read, the budget, a prompt naming the
-route in a session that never loaded it, and the answer tally (F101)."""
+route in a session that never loaded it, and the answer tally (F89)."""
 
 import json
 import pathlib
@@ -10,7 +10,7 @@ from .common import RETURNS, SKILL, SKILL_DIR, budgets
 from .report import lane_checkpoints
 from .transcript import skill_loaded
 
-# answers taking the recommended option: past 9 of the last 10 the asks stopped informing (F101)
+# answers taking the recommended option: past 9 of the last 10 the asks stopped informing (F89)
 TAKE_WINDOW, TAKE_RATE = 10, 9
 # the route named in a prompt; "DSP" in capitals is signal processing, `dsp-deep` an agent type
 NAMED = re.compile(r"\bdsp\b(?!-)|\bdecision-spec-plan\b")
@@ -102,5 +102,5 @@ def took(event, entry):
         "answers: an ask answered that way no longer tells you what they want. Ask only the "
         "calls you are unsure of, each with the strongest case against your recommendation "
         "and a `backlog` option where it adds scope; rule the rest as defaults they may "
-        "overturn (F101)."
+        "overturn (F89)."
     )

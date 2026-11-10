@@ -76,7 +76,7 @@ def activate(a, main):
         marker["rung"] = rung
     if budgets := old.get("budgets"):
         marker["budgets"] = budgets
-    if asks := old.get("asks"):  # the answer tally spans the route (F101)
+    if asks := old.get("asks"):  # the answer tally spans the route (F89)
         marker["asks"] = asks
     harness = a.ci_harness or old.get("ci_harness")
     if harness and harness != "none":

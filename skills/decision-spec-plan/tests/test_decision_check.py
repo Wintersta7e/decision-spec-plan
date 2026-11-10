@@ -93,7 +93,7 @@ class DecisionCheck(support.Route):
         )
         self.dcheck(1, "dimension 'background jobs' has no row")
         # a decision serves an ask or a user ruling, or waits in the backlog; past six, the user
-        # triages first (F101)
+        # triages first (F89)
         why = text.replace("| # | Decision | Serves |", "| # | Decision | Why |")
         self.write(idx, why)
         self.dcheck(1, "decisions table has no Serves column")
