@@ -182,6 +182,12 @@ From this repository as a marketplace:
 /plugin install decision-spec-plan@decision-spec-plan
 ```
 
+Each release bumps the plugin's version and is listed in [`CHANGELOG.md`](CHANGELOG.md). Claude
+Code updates an install only when that version changes. To take a release, run
+`claude plugin marketplace update decision-spec-plan`, then
+`claude plugin update decision-spec-plan@decision-spec-plan`. To have it done for you, turn on
+auto-update for the marketplace under `/plugin` → Marketplaces.
+
 Start a new session afterwards, because hooks load at session start. Then add to
 `~/.claude/settings.json`:
 

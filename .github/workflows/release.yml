@@ -1,0 +1,51 @@
+name: release
+
+# Conventional Commits on main drive the plugin's version: release-please keeps one release PR
+# open that bumps plugin.json and CHANGELOG.md, and merging it tags and publishes the release.
+# A pinned manifest version is what Claude Code compares on `claude plugin update`, so an
+# unbumped version leaves every marketplace install on its cached copy.
+on:
+  push:
+    branches: [main]
+
+permissions: {}
+
+concurrency:
+  group: ${{ github.workflow }}
+  cancel-in-progress: false
+
+jobs:
+  release-please:
+    name: release-please
+    runs-on: ubuntu-latest
+    permissions:
+      actions: write # dispatch CI on the release PR's branch
+      contents: write # push the release branch, create the tags and the GitHub release
+      issues: write # create and set the release PR's `autorelease:` labels
+      pull-requests: write # open and update the release PR
+    timeout-minutes: 10
+    steps:
+      - id: release
+        uses: googleapis/release-please-action@45996ed1f6d02564a971a2fa1b5860e934307cf7 # v5.0.0
+        with:
+          config-file: release-please-config.json
+          manifest-file: .release-please-manifest.json
+      # A PR that GITHUB_TOKEN opens or updates starts no workflow, but a dispatch does: CI runs
+      # on the release branch, so its head carries the `ci-ok` that main requires
+      - name: Run CI on the release PR
+        if: ${{ steps.release.outputs.pr }}
+        env:
+          GH_TOKEN: ${{ github.token }}
+          BRANCH: ${{ fromJSON(steps.release.outputs.pr).headBranchName }}
+        run: gh workflow run ci.yml --repo "$GITHUB_REPOSITORY" --ref "$BRANCH"
+      # Claude Code resolves a dependent plugin's version range against `<name>--v<version>`
+      # tags, a separator release-please cannot read back as its own; it keeps `v<version>`
+      - name: Tag the release for Claude Code
+        if: ${{ steps.release.outputs.release_created == 'true' }}
+        env:
+          GH_TOKEN: ${{ github.token }}
+          VERSION: ${{ steps.release.outputs.version }}
+          SHA: ${{ steps.release.outputs.sha }}
+        run: >-
+          gh api "repos/$GITHUB_REPOSITORY/git/refs"
+          -f "ref=refs/tags/decision-spec-plan--v$VERSION" -f "sha=$SHA"
