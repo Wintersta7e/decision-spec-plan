@@ -47,8 +47,17 @@ grew to 14 mostly-infrastructure decisions priced 20M, was approved, and a minut
 the user disliked its direction (F89). `--legacy` skips this check: the route's hook
 passes it for a phase bound before the check existed.
 
+Coverage — an index that records a review (`> **Review**: `<base>..<head>``, the range
+`git diff --name-only` lists in --repo, default the decisions dir's repository) has a
+Coverage section: each file the range changes in a row labelled `Read in full`, `Diff
+read` or `Not read` (tests, recordings, documentation and lockfiles exempt), and each
+probe run as a line with its command in backticks and `exit=<n>`. With a file Not read
+or no probe, the index's `> **Verdict**:` says unfinished. A lead posted a review whose
+verdict rested on files it never read and no probe it ran; the route's hook refuses a
+review comment while this check fails (F104).
+
 Usage:
-    decision_check.py <decisions-dir> [--rung S|M|L] [--legacy]
+    decision_check.py <decisions-dir> [--rung S|M|L] [--legacy] [--repo <dir>]
     decision_check.py <decisions-dir> --verifier R<n> --sha <commit>
     decision_check.py <run-dir> --verifier <finding id> --sha <commit>
         --from <run-dir>/<sin>.md
@@ -59,6 +68,8 @@ Exit 0 when every check holds, 1 with each failure listed, 2 when the index is m
 import argparse
 import pathlib
 import re
+import shutil
+import subprocess
 import sys
 from collections.abc import Mapping, Sequence
 from typing import NamedTuple
@@ -94,6 +105,38 @@ DISPOSITION_CELLS = 3
 SIN_CELLS = 7
 # the shortest `Claim:` quote that counts as quoting the claim
 MIN_QUOTE = 10
+# A review's index records the range it reviews (templates.md §1), and its verdict.
+REVIEW = re.compile(
+    r"^>?\s*\*\*Review\*\*:\s*`([0-9a-f]{7,40}\.\.\.?[0-9a-f]{7,40})`", re.MULTILINE
+)
+VERDICT = re.compile(r"^[>\s*]*Verdict[*\s]*:[*\s]*(.*)$", re.MULTILINE)
+LABELS = ("Read in full", "Diff read", "Not read")
+# a Coverage row: the file and how it was read
+COVERAGE_CELLS = 2
+# a probe: its command in backticks and the exit code it ended with
+PROBE = re.compile(r"`[^`\n]+`.*\bexit=\d+")
+# Changed files a review need not read: tests, recordings, documentation, lockfiles.
+EXEMPT_DIRS = {
+    "test",
+    "tests",
+    "__tests__",
+    "testdata",
+    "spec",
+    "specs",
+    "fixtures",
+    "recordings",
+    "cassettes",
+    "snapshots",
+    "__snapshots__",
+    "doc",
+    "docs",
+}
+EXEMPT_NAME = re.compile(
+    r"(?i)test_.*|.*_test\.\w+|.*\.(?:test|spec)\.\w+|.*Tests?\.(?:java|kt|cs|swift)"
+    r"|.*\.(?:snap|har)"
+    r"|.*\.(?:md|rst|adoc)|(?:readme|changelog|license)(?:\.\w+)?"
+    r"|.*(?:\.lock|\.lockb|\.lockfile|-lock\.(?:json|ya?ml))|go\.sum|packages\.lock\.json"
+)
 
 
 class Disposition(NamedTuple):
@@ -115,6 +158,7 @@ class _Args(argparse.Namespace):
     verifier: str | None = None
     sha: str | None = None
     report: pathlib.Path | None = None
+    repo: str | None = None
 
 
 def matches(pattern: str, text: str) -> list[str]:
@@ -396,6 +440,101 @@ def dispositions(
     return fails
 
 
+def changed_files(repo: str, span: str) -> tuple[list[str] | None, str]:
+    """Return the files `git diff --name-only <span>` lists in repo, or None and why."""
+    r = subprocess.run(
+        [shutil.which("git") or "git", "-C", repo, "diff", "--name-only", "-z", span],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    if r.returncode:
+        return None, (r.stderr.strip().splitlines() or [f"exit {r.returncode}"])[0]
+    return [f for f in r.stdout.split("\0") if f], ""
+
+
+def exempt(path: str) -> bool:
+    """Return whether a review need not read path: a test, recording, doc, lockfile."""
+    *dirs, name = path.split("/")
+    return bool(EXEMPT_DIRS & {d.lower() for d in dirs}) or bool(
+        EXEMPT_NAME.fullmatch(name)
+    )
+
+
+def unlabelled(
+    files: Sequence[str], body: str, span: str
+) -> tuple[list[str], list[str]]:
+    """Return the failures of the Coverage rows of files, and the files Not read."""
+    labels = {
+        c[0].strip("`* ").removeprefix("./"): c[1].strip("`* ")
+        for c in rows(body)
+        if len(c) >= COVERAGE_CELLS
+    }
+    fails: list[str] = []
+    unread: list[str] = []
+    for f in (f for f in files if not exempt(f)):
+        label = labels.get(f)
+        if label is None:
+            fails.append(
+                f"{f} changed in {span} and has no Coverage row: Read in full, Diff "
+                "read or Not read (F104)"
+            )
+        elif label not in LABELS:
+            fails.append(
+                f"{f}: '{label}' is not Read in full, Diff read or Not read (F104)"
+            )
+        elif label == "Not read":
+            unread.append(f)
+    return fails, unread
+
+
+def review_coverage(index: str, repo: str) -> list[str]:
+    """Return the failures of a review's Coverage section; [] for no review (F104).
+
+    Each changed file but the exempt is labelled, and the verdict says unfinished while
+    a file is Not read or no probe ran.
+    """
+    m = REVIEW.search(index)
+    if not m:
+        return []
+    span = m[1]
+    body = section(index, "Coverage")
+    if body is None:
+        return [
+            (
+                "the index records a review (`**Review**`) and has no Coverage "
+                "section: list each changed file as Read in full, Diff read or Not "
+                "read, and each probe run with its exit code (F104)"
+            )
+        ]
+    files, why = changed_files(repo, span)
+    if files is None:
+        return [
+            (
+                "cannot list the files the review changed (`git diff --name-only "
+                f"{span}` in {repo}: {why}): fetch both commits, or pass --repo (F104)"
+            )
+        ]
+    fails, unread = unlabelled(files, body, span)
+    verdict = VERDICT.search(index)
+    if not verdict:
+        return [*fails, "the review states no verdict (`> **Verdict**: …`) (F104)"]
+    if "unfinished" in verdict[1].lower():
+        return fails
+    if unread:
+        n = len(unread)
+        fails.append(
+            f"{n} file{'' if n == 1 else 's'} Not read ({', '.join(unread)}): the "
+            "verdict says unfinished until each is read (F104)"
+        )
+    if not any(PROBE.search(line) for line in body.splitlines()):
+        fails.append(
+            "no probe run with its exit code in the Coverage section (`- `<command>` "
+            "exit=<n>`): the verdict says unfinished until one has run (F104)"
+        )
+    return fails
+
+
 def sin_finding(report: pathlib.Path, fid: str) -> str | None:
     """Return a seven-sins finding as a claim: where, what, the evidence.
 
@@ -460,6 +599,9 @@ def main(argv: Sequence[str] | None = None) -> int:
     _ = ap.add_argument(
         "--from", dest="report", metavar="SIN_REPORT", type=pathlib.Path
     )
+    _ = ap.add_argument(
+        "--repo", help="where a review's range is read (default: the decisions dir's)"
+    )
     a = ap.parse_args(argv, namespace=_Args())
     d = pathlib.Path(a.decisions_dir)
     if a.verifier:
@@ -475,6 +617,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     fails += dimensions(index)
     fails += [] if a.legacy else decisions(index)
     fails += dispositions(d, index, a.rung, ids)
+    fails += review_coverage(index, a.repo or str(d))
     for f in fails:
         print(f"FAIL  {f}")
     print(f"decision_check: {len(fails)} failure(s) in {d}")

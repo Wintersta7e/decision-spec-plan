@@ -169,24 +169,34 @@ def ledger_hold(event: Mapping[str, object], entry: RegistryEntry) -> str | None
         for i in sorted(d.glob("*/00-index.md"))
         if ledger.get(f"{phase}/{i.parent.name}", True)
     ]
-    held: list[str] = []
-    for r in rounds:
-        if not (r / "00-index.md").exists():
-            continue
-        out = io.StringIO()
-        with contextlib.redirect_stdout(out):
-            legacy = (
-                [] if ledger.get(f"{phase}#checks") == LEDGER_CHECKS else ["--legacy"]
-            )
-            code = decision_check.main(
-                [str(r), "--rung", str(marker.get("rung") or "M"), *legacy]
-            )
-        if code == 1:
-            held.append(
-                f"the decision ledger fails `{script} {r}` — fix each line, then "
-                "dispatch:\n" + out.getvalue().strip()
-            )
+    held = [
+        f"the decision ledger fails `{script} {r}` — fix each line, then dispatch:\n"
+        + fails
+        for r in rounds
+        if (r / "00-index.md").exists() and (fails := round_fails(r, marker))
+    ]
     return "\n".join(held) or None
+
+
+def round_fails(r: pathlib.Path, marker: Mapping[str, object]) -> str | None:
+    """Return decision_check.py's output on round r when it fails, else None.
+
+    A review's range is read in the route's repository (F104).
+    """
+    import decision_check
+
+    route = route_args(marker)
+    ledger = as_dict(marker.get("ledger")) or {}
+    legacy = (
+        [] if ledger.get(f"{route.phase}#checks") == LEDGER_CHECKS else ["--legacy"]
+    )
+    repo = ["--repo", route.repo] if route.repo else []
+    out = io.StringIO()
+    with contextlib.redirect_stdout(out):
+        code = decision_check.main(
+            [str(r), "--rung", str(marker.get("rung") or "M"), *legacy, *repo]
+        )
+    return out.getvalue().strip() if code == 1 else None
 
 
 def base_hold(

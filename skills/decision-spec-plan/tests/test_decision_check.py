@@ -572,5 +572,103 @@ class DecisionCheck(support.Route):
         )
 
 
+PROBE = "- `pytest -q tests/test_app.py` exit=1 — an empty name crashes the import\n"
+BOTH = "| `src/app.py` | Read in full |\n| `src/util.py` | **Diff read** |"
+
+
+def coverage(table: str, probes: str = PROBE) -> str:
+    """A Coverage section: one row per file read, then the probes run."""
+    return f"\n## Coverage\n| File | Read |\n|---|---|\n{table}\n\n{probes}"
+
+
+class ReviewCoverage(support.Sandbox):
+    """decision_check.py on a review's index: every changed file read, a probe run.
+
+    A lead posted a review whose verdict rested on files it never read and no probe it
+    ran (F104).
+    """
+
+    @override
+    @classmethod
+    def setUpClass(cls) -> None:
+        """A repository whose head commit changes code, tests, docs and a lockfile."""
+        super().setUpClass()
+        cls.R: Path = cls.init_repo(cls.T / "app", commits=("base",))
+        cls.BASE: str = cls.rev(cls.R)
+        for f in (
+            "src/app.py",
+            "src/util.py",
+            "tests/test_app.py",
+            "src/app.test.ts",
+            "recordings/login.har",
+            "README.md",
+            "docs/guide.rst",
+            "package-lock.json",
+        ):
+            _ = cls.write(cls.R / f, "x\n")
+        _ = cls.git("-C", cls.R, "add", ".")
+        _ = cls.git("-C", cls.R, "commit", "-q", "-m", "change")
+        cls.HEAD: str = cls.rev(cls.R)
+        cls.D: Path = cls.R / ".plan/decisions/phase1"
+        cls.D.mkdir(parents=True)
+
+    def review(self, verdict: str | None, body: str, span: str = "") -> None:
+        """The round's index: a review of span (default base..head) with body."""
+        span = span or f"{self.BASE}..{self.HEAD}"
+        head = f"> **Review**: `{span}` — a merge request into main\n"
+        if verdict is not None:
+            head += f"> **Verdict**: {verdict}\n"
+        text = index("| S1 | **x** | U2 |").replace("# Phase 1\n", f"# Phase 1\n{head}")
+        _ = self.write(self.D / "00-index.md", text + body)
+
+    def dcheck(self, want: int, rx: str, *args: object) -> str:
+        """decision_check.py on the round exits want, rx found in its output."""
+        r = self.py(CHECK, self.D, *args, merge=True)
+        self.ok(
+            f"decision_check {want} /{rx}/",
+            r.code == want and grep(r.out, rx, E=True),
+            f"got {r.code}: {r.out[:900]}",
+        )
+        return r.out
+
+    def test_review_coverage(self) -> None:
+        """A changed file is labelled and a probe ran, or the verdict is unfinished."""
+        self.review("approve", "")
+        _ = self.dcheck(1, "no Coverage section.*F104")
+        self.review("approve", coverage("| `src/app.py` | Read in full |"))
+        out = self.dcheck(1, "src/util.py changed in .* and has no Coverage row")
+        self.ok(
+            "tests, recordings, docs and lockfiles need no Coverage row",
+            not grep(out, r"test_app|app\.test|login\.har|README|guide|lock", E=True),
+            out,
+        )
+        self.review("approve", coverage(BOTH.replace("**Diff read**", "Skimmed")))
+        _ = self.dcheck(1, "src/util.py: 'Skimmed' is not Read in full, Diff read")
+        self.review("approve", coverage(BOTH))
+        _ = self.dcheck(0, "0 failure")
+        _ = self.dcheck(0, "0 failure", "--repo", self.R)
+        self.review("approve", coverage(BOTH), f"{self.BASE}...{self.HEAD}")
+        _ = self.dcheck(0, "0 failure")
+        self.review(None, coverage(BOTH))
+        _ = self.dcheck(1, "states no verdict")
+        # an unread file or no probe: the verdict says unfinished, or the check fails
+        not_read = BOTH.replace("**Diff read**", "Not read")
+        self.review("approve", coverage(not_read))
+        _ = self.dcheck(1, r"1 file Not read \(src/util.py\).*unfinished")
+        self.review("unfinished — src/util.py is not read yet", coverage(not_read))
+        _ = self.dcheck(0, "0 failure")
+        self.review("changes requested", coverage(BOTH, "- `pytest -q` ran\n"))
+        _ = self.dcheck(1, "no probe run with its exit code.*unfinished")
+        self.review("Unfinished: no probe yet", coverage(BOTH, ""))
+        _ = self.dcheck(0, "0 failure")
+        # a range the repository cannot list fails; a round that reviews nothing passes
+        self.review("approve", coverage(BOTH), f"{self.BASE}..{'0' * 40}")
+        _ = self.dcheck(1, "cannot list the files the review changed")
+        self.review("approve", coverage(BOTH))
+        _ = self.dcheck(1, "cannot list the files the review changed", "--repo", self.T)
+        _ = self.write(self.D / "00-index.md", index("| S1 | **x** | U2 |"))
+        _ = self.dcheck(0, "0 failure")
+
+
 if __name__ == "__main__":
     _ = unittest.main()
