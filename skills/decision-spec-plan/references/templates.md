@@ -48,6 +48,9 @@ Before writing the first number, **look at what the previous phase used** and fo
 > **Base**: `<main branch>` at `<sha>`
 > **Assumes**: `<remote>/<unmerged branch>` at `<sha>` — <what the round takes from it> (one line each;
 > `route_state.py` flags any that moved or merged after a `git fetch`, F91)
+> **Review**: `<base-sha>..<head-sha>` — <what it reviews: a merge request into `main`> (a review only;
+> its Coverage is checked against `git diff --name-only` of this range, F104)
+> **Verdict**: <approve | changes requested | unfinished — what is still unread or unprobed> (a review only)
 
 <charter paragraph; what joins the phase from earlier deferrals>
 
@@ -133,6 +136,20 @@ findings; a later review round in its own directory (`decisions/phase<P>/<round>
 arbiter closes its own index. `decision_check.py` checks all of it, and the hook holds `exec-`
 dispatches until it passes, for each round's index too. The briefs' reading lists name files S omits (arbiter,
 decision files, plan index): read this document in their place.
+
+**A review's index** — one with a `**Review**` line — also carries what its verdict rests on:
+
+    ## Coverage
+    | File | Read |
+    |---|---|
+    | `src/app.py` | Read in full · Diff read · Not read |
+
+    - `<probe command>` exit=<n> — <what it showed>
+
+Every file the range changes has a row, labelled exactly `Read in full`, `Diff read` or `Not read`;
+tests, recordings, documentation and lockfiles need none. Each probe is its command in backticks
+and the exit code it ended with, run in a tree of the review's own (`tasks.md`). While any file is
+Not read or no probe has run, the verdict says unfinished. `decision_check.py` checks it (F104).
 
 **Before dispatch, check the index against this list** — each item was a real framing error
 somewhere:
