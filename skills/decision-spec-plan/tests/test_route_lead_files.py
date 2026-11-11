@@ -58,7 +58,7 @@ class LeadFiles(support.Route):
         # `cp -rp` of the plugin: modes and mtimes kept
         _ = shutil.copytree(SCRIPTS.parent, t / "skill", symlinks=True)
         rs = t / "skill/scripts/route_state.py"
-        self.touch(t / "skill/references/execution.md")
+        _ = self.write(t / "skill/references/execution.md", "a changed rule\n", "a")
         self.unthrottle()
         _ = self.hook(
             r"/changed since this session read it: references\/execution.md \(in /",
@@ -67,6 +67,12 @@ class LeadFiles(support.Route):
         )
         self.unthrottle()
         _ = self.hook("silent", read, rs=rs)  # told once
+        # an upgrade rewrites every file (`git archive | tar -x`): a new mtime on the
+        # same text is no change to re-read
+        self.touch(t / "skill/SKILL.md")
+        self.touch(t / "skill/references/execution.md")
+        self.unthrottle()
+        _ = self.hook("silent", read, rs=rs)
         # the route ended (its marker deleted): a registered session's next route agent
         # waits for --activate
         mk = self.MK(r)

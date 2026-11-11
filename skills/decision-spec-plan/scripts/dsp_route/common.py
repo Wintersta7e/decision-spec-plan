@@ -67,6 +67,8 @@ class RegistryEntry(TypedDict):
     activated: float
     ledger: dict[str, int]
     skill_seen: NotRequired[float]
+    # each skill file's text, as the session's last change check hashed it
+    skill_digests: NotRequired[dict[str, str]]
 
 
 class RouteArgs(argparse.Namespace):
