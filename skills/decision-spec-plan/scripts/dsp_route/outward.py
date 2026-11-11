@@ -41,6 +41,12 @@ REVIEW_PATHS = {
 REVIEW_MUTATION = re.compile(
     r"\b(?:addComment|addPullRequestReview\w*|submitPullRequestReview)\b"
 )
+# The subset that posts a review itself, held even where no index records one (F104).
+REVIEW_SHAPES = {"gh": ("pr", {"review"})}
+REVIEW_SHAPE_PATHS = {"gh": re.compile(r"\bpulls/[^/\s]+/reviews\b")}
+REVIEW_SHAPE_MUTATION = re.compile(
+    r"\b(?:addPullRequestReview\w*|submitPullRequestReview)\b"
+)
 
 
 def publish_word(tool: str, w: shell_cmd.Word) -> bool:
@@ -147,28 +153,40 @@ def outward_cmd(cmd: shell_cmd.Cmd) -> bool:
     )
 
 
-def _api_posts(tool: str, rest: Sequence[str], verb: Sequence[str]) -> bool:
+def _api_posts(
+    tool: str, rest: Sequence[str], verb: Sequence[str], *, shaped: bool
+) -> bool:
     """Return whether a `gh api` or `glab api` call POSTs a review comment or note.
 
     A field makes the call a POST unless a method says otherwise; a graphql query
-    posts one when it names a review mutation.
+    posts one when it names a review mutation. Shaped, only a review itself counts.
     """
     method, fields = _api_call(rest)
     if (method or ("POST" if fields else "GET")) != "POST":
         return False
+    mutation, path = (
+        (REVIEW_SHAPE_MUTATION, REVIEW_SHAPE_PATHS[tool])
+        if shaped
+        else (REVIEW_MUTATION, REVIEW_PATHS[tool])
+    )
     if tool == "gh" and verb[1:2] == ["graphql"]:
-        return any(REVIEW_MUTATION.search(f) for f in fields)
+        return any(mutation.search(f) for f in fields)
     after = rest[rest.index("api") + 1 :]
     # a field's `key=value` is no path
     paths = [w for w in after if not re.match(r"[\w\[\]]+=", w)]
-    return any(REVIEW_PATHS[tool].search(w) for w in paths)
+    return any(path.search(w) for w in paths)
 
 
-def review_post_cmd(cmd: shell_cmd.Cmd) -> bool:
-    """Return whether cmd, from a `gh` or `glab` word on, posts a review comment."""
-    if cmd.name not in REVIEW_VERBS:
+def review_post_cmd(cmd: shell_cmd.Cmd, *, shaped: bool = False) -> bool:
+    """Return whether cmd, from a `gh` or `glab` word on, posts a review comment.
+
+    Shaped, whether it posts a review itself: `gh pr review`, a POST to a pull
+    request's reviews, a review mutation.
+    """
+    table = REVIEW_SHAPES if shaped else REVIEW_VERBS
+    if cmd.name not in table:
         return False
-    noun, verbs = REVIEW_VERBS[cmd.name]
+    noun, verbs = table[cmd.name]
     rest = cmd.argv[1:]
     verb = _positional(rest)
     if cmd.loose:
@@ -178,7 +196,7 @@ def review_post_cmd(cmd: shell_cmd.Cmd) -> bool:
             return True
     elif verb[:1] != ["api"]:
         return len(verb) > 1 and verb[0] == noun and verb[1] in verbs
-    return "api" in rest and _api_posts(cmd.name, rest, verb)
+    return "api" in rest and _api_posts(cmd.name, rest, verb, shaped=shaped)
 
 
 @functools.cache
@@ -222,21 +240,26 @@ def outward(event: Mapping[str, object], entry: Mapping[str, object]) -> str | N
     return excerpt if found == whole else f"{excerpt}` in `{whole}"
 
 
-def review_post(event: Mapping[str, object], entry: Mapping[str, object]) -> str | None:
+def review_post(
+    event: Mapping[str, object], entry: Mapping[str, object]
+) -> tuple[str, bool] | None:
     """Return the review comment an active route's tool call posts, if any (F104).
 
     A Bash command's `gh` or `glab` post, or an MCP tool whose name ends in
-    `create_note`.
+    `create_note`, with whether it posts a review itself (REVIEW_SHAPES), which the
+    excerpt then quotes.
     """
     name = str(event.get("tool_name") or "")
     if not _active(entry):
         return None
     if name.startswith("mcp__") and name.endswith("create_note"):
-        return name
+        return name, False
     if name != "Bash":
         return None
-    found = next(
-        (" ".join(c.argv) for c in _commands(*_bash(event)) if review_post_cmd(c)),
-        None,
-    )
-    return found[:EXCERPT] if found else None
+    cmds = _commands(*_bash(event))
+    for shaped in (True, False):
+        if found := next(
+            (" ".join(c.argv) for c in cmds if review_post_cmd(c, shaped=shaped)), None
+        ):
+            return found[:EXCERPT], shaped
+    return None

@@ -150,7 +150,8 @@ Every file the range changes has a row, labelled exactly `Read in full`, `Diff r
 tests, recordings, documentation and lockfiles need none. Each probe is its command in backticks
 and the exit code it ended with, run in a tree of the review's own (`tasks.md`). While any file is
 Not read or no probe has run, the verdict says unfinished. `decision_check.py` checks it, and the
-hook refuses posting a review comment to GitHub or GitLab while it fails (F104).
+hook refuses posting a review comment to GitHub or GitLab while it fails, and a review itself
+(`gh pr review`) while no index records its range (F104).
 
 **Before dispatch, check the index against this list** — each item was a real framing error
 somewhere:
