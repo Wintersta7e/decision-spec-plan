@@ -144,10 +144,11 @@ def ago(seconds: float) -> str:
     return f"{int(seconds)}s"
 
 
-def git(repo: StrPath, *args: str) -> tuple[int, str]:
-    """Run git in repo; its exit code and its stripped stdout."""
+def git(repo: StrPath, *args: str, stdin: str | None = None) -> tuple[int, str]:
+    """Run git in repo, fed stdin; its exit code and its stripped stdout."""
     r = subprocess.run(
         [shutil.which("git") or "git", "-C", str(repo), *args],
+        input=stdin,
         capture_output=True,
         text=True,
         check=False,

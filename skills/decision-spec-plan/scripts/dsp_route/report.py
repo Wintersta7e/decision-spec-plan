@@ -4,7 +4,10 @@
 Printed by the script and injected into the lead's context by the hook.
 """
 
+import contextlib
 import dataclasses
+import json
+import os
 import pathlib
 import re
 import time
@@ -14,6 +17,7 @@ from .common import (
     RouteArgs,
     StrPath,
     ago,
+    as_dict,
     default_branch,
     git,
     load_json,
@@ -32,6 +36,10 @@ RULINGS_MAX = 12_000
 PENDING_MAX = 8
 # the head of a gate log, where its `sha=` and `harness=` lines are read
 GATE_HEAD = 20
+# Each lane's `git cherry` answer, kept in the git common dir for one main tip: a
+# cherry walks main's trees since the lane's base, 4-5 s each on a slow drive. Not
+# `dsp-route*.json`, which push_guard.py reads as route markers.
+CHERRIES = "dsp-cherry.json"
 SHA = re.compile(r"\b[0-9a-f]{7,40}\b")
 FINAL_SHA = re.compile(
     r"^\W*Final SHA:\W*([0-9a-f]{7,40})\b", re.MULTILINE | re.IGNORECASE
@@ -451,17 +459,68 @@ class _Lanes:
     gates: list[GateLog]
     worktrees: dict[str, Worktree]
     records: dict[str, tuple[str, str, str]]
+    # each checkpoint SHA's full commit SHA, and every commit on main: one git call
+    # each for all lanes, where one per lane cost a hook 24 s at 47 lanes
+    commits: dict[str, str]
+    on_main: frozenset[str]
+    # {lane commit: whether main holds its every patch} at main's tip; _merged adds
+    cherries: dict[str, bool]
+
+
+def _cherries(repo: str, tip: str) -> tuple[pathlib.Path | None, dict[str, bool]]:
+    """Return the cherry cache's file and the answers it holds for main's tip."""
+    route = marker_path(repo)
+    if route is None:
+        return None, {}
+    path = route.with_name(CHERRIES)
+    held = as_dict(load_json(path).get(tip)) or {}
+    return path, {k: v for k, v in held.items() if isinstance(v, bool)}
+
+
+def _save_cherries(path: pathlib.Path, tip: str, cherries: dict[str, bool]) -> None:
+    """Replace the cherry cache whole, so a concurrent hook never reads half of it."""
+    tmp = path.with_name(f"{path.name}.{os.getpid()}")
+    # a cache: a read-only git dir costs the next report its cherries, nothing else
+    with contextlib.suppress(OSError):
+        _ = tmp.write_text(json.dumps({tip: cherries}))
+        _ = tmp.replace(path)
+
+
+def _commits(repo: str, shas: list[str]) -> dict[str, str]:
+    """Return {sha: its full commit SHA} for each sha the repository resolves."""
+    if not shas:
+        return {}
+    rc, out = git(
+        repo,
+        "cat-file",
+        "--batch-check=%(objectname)",
+        stdin="".join(f"{s}^{{commit}}\n" for s in shas),
+    )
+    if rc:
+        return {}
+    # an unresolved sha prints `<sha>^{commit} missing` (or `ambiguous`)
+    return {
+        s: line
+        for s, line in zip(shas, out.splitlines(), strict=True)
+        if " " not in line
+    }
 
 
 def _merged(lanes: _Lanes, repo: str, plan_id: str, full: str) -> tuple[bool, str]:
     """Return whether a lane's commit is on the main branch, and how it got there."""
     main = lanes.main
-    inside = git(repo, "merge-base", "--is-ancestor", full, main)[0] == 0
+    inside = full in lanes.on_main
     how = ""
     if not inside:
         # A rebased lane: every commit's patch is already on main.
-        rc, cherry = git(repo, "cherry", main, full)
-        inside = rc == 0 and not any(ln.startswith("+") for ln in cherry.splitlines())
+        held = lanes.cherries.get(full)
+        if held is None:
+            rc, cherry = git(repo, "cherry", main, full)
+            held = rc == 0 and not any(ln.startswith("+") for ln in cherry.splitlines())
+            # a failed cherry is asked again, never kept as an answer
+            if rc == 0:
+                lanes.cherries[full] = held
+        inside = held
         how = " (by patch)" if inside else ""
     rec = lanes.records.get(plan_id)
     if not inside and rec and full.startswith(rec[0]):
@@ -507,10 +566,10 @@ def _lane_state(
     if not lanes.repo:
         return sha, False, None
     repo = lanes.repo
-    rc, full = git(repo, "rev-parse", "--verify", "--quiet", f"{sha}^{{commit}}")
-    if rc:
+    full = lanes.commits.get(sha)
+    if full is None:
         rep.flag(f"{'checkpoint SHA not in the repo':<34} lanes/{name} ({sha})")
-        return f"{sha} unknown", False, full
+        return f"{sha} unknown", False, None
     inside, how = _merged(lanes, repo, plan_id, full)
     state = f"{sha} {'merged' + how if inside else 'not merged'}"
     if plan_id in lanes.worktrees:
@@ -521,16 +580,20 @@ def _lane_state(
     return state, inside, full
 
 
-def _checkpoint(
-    c: pathlib.Path, base: pathlib.Path, lanes: _Lanes, rep: Report
-) -> bool:
-    """Report one lane checkpoint; return whether its lane is merged."""
-    rep.file(c, base)
-    plan_id = c.name[: -len("-checkpoint.md")]
-    text = c.read_text(errors="replace")
+def _checkpoint_sha(text: str) -> tuple[str | None, bool]:
+    """Return a checkpoint's SHA, and whether a `Final SHA:` line gave it."""
     final = [m[1] for m in FINAL_SHA.finditer(text)]
     shas = final or [m[0] for m in SHA.finditer(text)]
-    sha = shas[-1] if shas else None
+    return (shas[-1] if shas else None), bool(final)
+
+
+def _checkpoint(
+    c: pathlib.Path, text: str, base: pathlib.Path, lanes: _Lanes, rep: Report
+) -> bool:
+    """Report one lane checkpoint, whose text is text; return whether it is merged."""
+    rep.file(c, base)
+    plan_id = c.name[: -len("-checkpoint.md")]
+    sha, final = _checkpoint_sha(text)
     if not final:
         rep.flag(
             f"{'no `Final SHA:` line':<34} lanes/{c.name} (last SHA in the text used)"
@@ -574,14 +637,25 @@ def _lanes_line(
     base = pathlib.Path(a.planning_dir)
     lanes_dir = base / "lanes"
     checkpoints = lane_checkpoints(lanes_dir, a.phase)
+    texts = {c: c.read_text(errors="replace") for c in checkpoints}
+    shas = sorted({s for t in texts.values() if (s := _checkpoint_sha(t)[0])})
+    # `--`: main names a revision even where a file of that name exists; newest first
+    on_main = git(a.repo, "rev-list", main, "--")[1].split() if a.repo and shas else []
+    tip = on_main[0] if on_main else ""
+    store, cherries = _cherries(a.repo, tip) if a.repo and tip else (None, {})
     lanes = _Lanes(
         repo=a.repo,
         main=main,
         gates=gates,
         worktrees=_worktrees(a.repo) if a.repo else {},
         records=_merge_records(lanes_dir),
+        commits=_commits(a.repo, shas) if a.repo else {},
+        on_main=frozenset(on_main),
+        cherries=dict(cherries),
     )
-    merged = sum(_checkpoint(c, base, lanes, rep) for c in checkpoints)
+    merged = sum(_checkpoint(c, texts[c], base, lanes, rep) for c in checkpoints)
+    if store and lanes.cherries != cherries:
+        _save_cherries(store, tip, lanes.cherries)
     lane_trees = sum(1 for b in lanes.worktrees if b != main)
     return f"lanes      {len(checkpoints)} checkpoints ({plans} plans)" + (
         f" · {merged} merged into {main} · {lane_trees} lane worktrees"
