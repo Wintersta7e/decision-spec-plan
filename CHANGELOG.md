@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.1.1](https://github.com/Wintersta7e/decision-spec-plan/compare/v1.1.0...v1.1.1) (2026-11-11)
+
+
+### Bug Fixes
+
+* **release:** drop the CI dispatch that failed the release run ([ca7dbef](https://github.com/Wintersta7e/decision-spec-plan/commit/ca7dbef817b36e43f274556673755a2bbea5bcbf))
+
 ## [1.1.0](https://github.com/Wintersta7e/decision-spec-plan/compare/v1.0.0...v1.1.0) (2026-11-11)
 
 
