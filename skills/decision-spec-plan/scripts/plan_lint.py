@@ -1,25 +1,28 @@
 #!/usr/bin/env python3
+# SPDX-License-Identifier: MIT
 """Structural lint for plan documents.
 
 Checks what makes a plan executable, so a truncated or malformed one fails:
-  - at least one task, counting BOTH `## Task` and `### Task` headings (plans use both depths; a
-    grep for one depth reports a healthy plan as empty)
-  - a column-0 `- Produces` line per task (one shortfall allowed: a final gate task may export
-    nothing) and `- Consumes` lines, the machine-readable form a registry extractor needs
+  - at least one task, counting BOTH `## Task` and `### Task` headings (plans use both
+    depths; a grep for one depth reports a healthy plan as empty)
+  - a column-0 `- Produces` line per task (one shortfall allowed: a final gate task may
+    export nothing) and `- Consumes` lines, the machine-readable form a registry
+    extractor needs
   - balanced code fences
   - checkbox steps (`- [ ]` or ticked `- [x]` — an executed plan is still a plan)
   - the required header fields
-  - a gate table, `| Gate | Command | Minutes | Runs |`: each gate's measured minutes and where it
-    runs — `group` (the task group runs it), `lead` (the lead's background job through gate.py; the
-    group reads its log) or `CI` (the project's pipeline; the group reads its run's log). A gate
-    over --group-minutes (default 30) never runs in a group: one local three-database gate cost
-    12.12M and 553 agent-minutes and never completed
+  - a gate table, `| Gate | Command | Minutes | Runs |`: each gate's measured minutes
+    and where it runs — `group` (the task group runs it), `lead` (the lead's background
+    job through gate.py; the group reads its log) or `CI` (the project's pipeline; the
+    group reads its run's log). A gate over --group-minutes (default 30) never runs in a
+    group: one local three-database gate cost 12.12M and 553 agent-minutes and never
+    completed
 
 Index files (`00-*.md`, `p<N>-00-*.md`) are skipped: an index is not a plan.
 
 Usage:
-    plan_lint.py <plans-dir> [--require '**Goal:**' --require '**Spec:**' ...] [--glob 'p4-*.md']
-        [--group-minutes 30]
+    plan_lint.py <plans-dir> [--require '**Goal:**' --require '**Spec:**' ...]
+        [--glob 'p4-*.md'] [--group-minutes 30]
 
 Exit 0 when every plan is ok, 1 when any has problems, 2 when no plan matched.
 """
@@ -33,12 +36,25 @@ DEFAULT_REQUIRED = ["**Goal:**", "**Spec:**", "**Depends on:**"]
 RUNS = ("group", "lead", "ci")
 GROUP_MINUTES = 30
 
+# (gate, minutes or None, runs) of one gate table row
+Gate = tuple[str, float | None, str]
 
-def cells(line):
+
+class _Args(argparse.Namespace):
+    """The parsed command line; argparse keeps these defaults, so they match its own."""
+
+    plans_dir: str = ""
+    glob: str = "*.md"
+    require: list[str] | None = None
+    group_minutes: float = GROUP_MINUTES
+
+
+def cells(line: str) -> list[str]:
+    """Return a table row's cells, stripped of spaces, backticks and bold."""
     return [c.strip().strip("`*").strip() for c in line.strip().strip("|").split("|")]
 
 
-def gates(text):
+def gates(text: str) -> list[Gate] | None:
     """[(gate, minutes or None, runs)] of the plan's gate table, or None without one."""
     lines = text.split("\n")
     for i, line in enumerate(lines):
@@ -48,7 +64,7 @@ def gates(text):
         ):
             continue
         g, m, r = (head.index(k) for k in ("gate", "minutes", "runs"))
-        out = []
+        out: list[Gate] = []
         for row in lines[i + 1 :]:
             if not row.lstrip().startswith("|"):
                 break
@@ -61,13 +77,14 @@ def gates(text):
     return None
 
 
-def gate_problems(text, group_minutes):
+def gate_problems(text: str, group_minutes: float) -> list[str]:
+    """Return the problems of the plan's gate table."""
     found = gates(text)
     if found is None:
         return ["no gate table (| Gate | Command | Minutes | Runs |)"]
     if not found:
         return ["the gate table lists no gate"]
-    problems = []
+    problems: list[str] = []
     for gate, minutes, runs in found:
         if minutes is None:
             problems.append(f"gate '{gate}' has no minutes")
@@ -75,20 +92,25 @@ def gate_problems(text, group_minutes):
             problems.append(f"gate '{gate}' runs '{runs}', not group, lead or CI")
         elif runs == "group" and minutes and minutes > group_minutes:
             problems.append(
-                f"gate '{gate}' takes {minutes:g} min in a group (over {group_minutes:g}): "
+                f"gate '{gate}' takes {minutes:g} min in a group "
+                f"(over {group_minutes:g}): "
                 "the lead's background job or CI runs it, and the group reads its log"
             )
     return problems
 
 
-def lint(text, required, group_minutes=GROUP_MINUTES):
+def lint(
+    text: str, required: list[str], group_minutes: float = GROUP_MINUTES
+) -> tuple[int, int, int, int, list[str]]:
+    """Return a plan's task, Produces, Consumes and step counts and its problems."""
     tasks = len(re.findall(r"^#{2,3} Task ", text, re.MULTILINE))
     produces = len(re.findall(r"^- Produces\b", text, re.MULTILINE))
     consumes = len(re.findall(r"^- Consumes", text, re.MULTILINE))
     steps = len(re.findall(r"^- \[[ xX]\]", text, re.MULTILINE))
-    # Indented too: a fence under a `- [ ]` step is one, and a plan cut off inside it is broken.
+    # Indented too: a fence under a `- [ ]` step is one, and a plan cut off inside it
+    # is broken.
     fences = len(re.findall(r"^[ \t]*```", text, re.MULTILINE))
-    problems = []
+    problems: list[str] = []
     if tasks == 0:
         problems.append("no tasks")
     if fences % 2:
@@ -99,30 +121,29 @@ def lint(text, required, group_minutes=GROUP_MINUTES):
         problems.append("no column-0 '- Produces' line")
     if tasks and produces and produces < tasks - 1:
         problems.append(f"{tasks} tasks but only {produces} Produces lines")
-    for field in required:
-        if field not in text:
-            problems.append(f"missing {field}")
+    problems.extend(f"missing {field}" for field in required if field not in text)
     problems += gate_problems(text, group_minutes)
     return tasks, produces, consumes, steps, problems
 
 
-def main():
+def main() -> int:
+    """Lint every plan in the directory and print one row each; the exit status."""
     ap = argparse.ArgumentParser(
         description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter
     )
-    ap.add_argument("plans_dir")
-    ap.add_argument("--glob", default="*.md")
-    ap.add_argument(
+    _ = ap.add_argument("plans_dir")
+    _ = ap.add_argument("--glob", default="*.md")
+    _ = ap.add_argument(
         "--require", action="append", help="header field that must appear (repeatable)"
     )
-    ap.add_argument(
+    _ = ap.add_argument(
         "--group-minutes",
         type=float,
         default=GROUP_MINUTES,
-        help="the longest gate a task group runs itself (default 30; the route's group ETA "
-        "once one has finished)",
+        help="the longest gate a task group runs itself (default 30; the route's group "
+        "ETA once one has finished)",
     )
-    args = ap.parse_args()
+    args = ap.parse_args(namespace=_Args())
     required = args.require or DEFAULT_REQUIRED
 
     files = [

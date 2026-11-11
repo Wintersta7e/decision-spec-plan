@@ -1,47 +1,52 @@
 #!/usr/bin/env python3
-"""Derive a phase's acceptance-criterion ids from the spec, and check that the plans map each one.
+# SPDX-License-Identifier: MIT
+"""Derive a phase's acceptance-criterion ids from its spec and check the plans map each.
 
-Spec (the Stage 2 gate). In each section file, take the LAST heading of level 1-3 whose text
-contains "cceptance", up to the next heading of level 1-3 (a `#` line inside a code fence is not a
-heading). A criterion is defined by a line that
-opens -- after an optional `N.`, `-` or `*` marker -- with bold `**AC-P<P>-<NN>-<n>` (backticks
-allowed), or by a table row whose first cell is that id. An ordered-list item that opens with `**`
-and carries no id is counted by its list number and reported. A regex over full ids anywhere in
-the file is NOT the method: one found 236 of 253 because a section listed its criteria without ids.
+Spec (the Stage 2 gate). In each section file, take the LAST heading of level 1-3 whose
+text contains "cceptance", up to the next heading of level 1-3 (a `#` line inside a code
+fence is not a heading). A criterion is defined by a line that opens -- after an
+optional `N.`, `-` or `*` marker -- with bold `**AC-P<P>-<NN>-<n>` (backticks allowed),
+or by a table row whose first cell is that id. An ordered-list item that opens with `**`
+and carries no id is counted by its list number and reported. A regex over full ids
+anywhere in the file is NOT the method: one found 236 of 253 because a section listed
+its criteria without ids.
 
-Plans (the Stage 4 gate, with --plans). A mapping row is a table row whose first cell names
-criteria, in a table whose header's second cell starts with "Task". Compact forms expand:
-`AC-P4-47-13, -14, -16` and `AC-P4-38-1 … -24`. A row maps its ids when its task cell names a
-task number and its test cell -- the first column after Task whose header names a test, else the
-third -- holds a backticked test path (`tests/x.rs`, `x.test.ts`, `file::test`; --test-re; a
-path in a notes column is no test), or a later cell says "manual" beside the ruling that allows it (`manual (R199)`;
---ruling-re, looked for after the cell's AC- ids are stripped). Every number the task cell names
-outside backticks must be a `## Task N` or `### Task N` heading in that plan, else "task not
-found"; backticked text is a reference (`p4-43`), struck text (`~~14~~`) is withdrawn and a
-ruling id (`R242`, --ruling-re) cites a ruling -- none is a task; a range (`9–13`) names every
-number in it. Every criterion the spec defines
-must be mapped by some plan; every manual one is printed with its ruling, for the lead to read.
+Plans (the Stage 4 gate, with --plans). A mapping row is a table row whose first cell
+names criteria, in a table whose header's second cell starts with "Task". Compact forms
+expand: `AC-P4-47-13, -14, -16` and `AC-P4-38-1 … -24`. A row maps its ids when its task
+cell names a task number and its test cell -- the first column after Task whose header
+names a test, else the third -- holds a backticked test path (`tests/x.rs`, `x.test.ts`,
+`file::test`; --test-re; a path in a notes column is no test), or a later cell says
+"manual" beside the ruling that allows it (`manual (R199)`; --ruling-re, looked for
+after the cell's AC- ids are stripped). Every number the task cell names outside
+backticks must be a `## Task N` or `### Task N` heading in that plan, else "task not
+found"; backticked text is a reference (`p4-43`), struck text (`~~14~~`) is withdrawn
+and a ruling id (`R242`, --ruling-re) cites a ruling -- none is a task; a range (`9–13`)
+names every number in it. Every criterion the spec defines must be mapped by some plan;
+every manual one is printed with its ruling, for the lead to read.
 
 Index files (`00-*.md`, `p<N>-00-*.md`) are skipped: an index is not a plan.
 
 Usage:
-    criteria_check.py <spec-dir> --phase P --sections 38-48 [--plans <plans-dir>] [--glob '*.md']
-        [--list] [--test-re RE] [--ruling-re RE] [--emit-register]
+    criteria_check.py <spec-dir> --phase P --sections 38-48 [--plans <plans-dir>]
+        [--glob '*.md'] [--list] [--test-re RE] [--ruling-re RE] [--emit-register]
 
-Section NN is the file `<spec-dir>/<NN>-<slug>.md` (leading zeros allowed: `07-…` is section 7).
---test-re and --ruling-re replace the defaults their help shows.
+Section NN is the file `<spec-dir>/<NN>-<slug>.md` (leading zeros allowed: `07-…` is
+section 7). --test-re and --ruling-re replace the defaults their help shows.
 
---emit-register prints the register's per-section table (count and ids as ranges) after the spec
-check, for the register folder to paste rather than re-derive.
+--emit-register prints the register's per-section table (count and ids as ranges) after
+the spec check, for the register folder to paste rather than re-derive.
 
-Exit 0 when every check holds, 1 on any problem, 2 when a section file is missing, no criterion
-was found, or --plans matched no plan.
+Exit 0 when every check holds, 1 on any problem, 2 when a section file is missing, no
+criterion was found, or --plans matched no plan.
 """
 
 import argparse
 import pathlib
 import re
 import sys
+from collections.abc import Iterator
+from typing import NamedTuple
 
 HEADING = re.compile(r"^(#{1,3})\s+(.*)$")
 FENCE = re.compile(r"^\s*(```|~~~)")
@@ -62,22 +67,59 @@ TOKEN = re.compile(
 )
 STRUCK = re.compile(r"~~.*?~~")
 TASK_RANGE = re.compile(r"(?<![\w-])(\d+)\s*[–-]\s*(\d+)(?![\w-])")
+# a mapping table's columns: Id, Task and a test
+MAPPING_COLUMNS = 3
+# a group's ids are listed in full up to this many, or always with --list
+SHOWN_IDS = 20
+
+Criterion = tuple[int, int]
+# (id, task, test, rulings) of one mapping row
+Mapping = tuple[Criterion, bool | None, bool, tuple[str, ...]]
+# (section, numbered ids, suffixed ids) of one section
+Section = tuple[int, list[int], list[str]]
 
 
-def task_numbers(cell, ruling_re):
-    """The task numbers a task cell names. Backticked text is a reference, struck text is
-    withdrawn and a ruling id (`R242`) cites a ruling -- none is a task. A range names each
-    number in it, so a missing middle task is caught."""
+class Patterns(NamedTuple):
+    """The test-path and ruling-id patterns a mapping row is read with."""
+
+    test: re.Pattern[str]
+    ruling: re.Pattern[str]
+
+
+class _Args(argparse.Namespace):
+    """The command line."""
+
+    spec_dir: str = ""
+    phase: int = 0
+    sections: str = ""
+    plans: str | None = None
+    glob: str = "*.md"
+    list: bool = False
+    emit_register: bool = False
+    test_re: str = TEST_RE
+    ruling_re: str = RULING_RE
+
+
+def task_numbers(cell: str, ruling_re: re.Pattern[str]) -> set[int]:
+    """Return the task numbers a task cell names.
+
+    Backticked text is a reference, struck text is withdrawn and a ruling id (`R242`)
+    cites a ruling -- none is a task. A range names each number in it, so a missing
+    middle task is caught.
+    """
     text = ruling_re.sub("", STRUCK.sub("", SPAN.sub("", cell)))
-    nums = set()
-    for lo, hi in TASK_RANGE.findall(text):
-        nums.update(range(int(lo), int(hi) + 1))
-    return nums | {int(n) for n in re.findall(r"\d+", TASK_RANGE.sub("", text))}
+    nums: set[int] = set()
+    for m in TASK_RANGE.finditer(text):
+        nums.update(range(int(m.group(1)), int(m.group(2)) + 1))
+    rest = TASK_RANGE.sub("", text)
+    return nums | {int(m.group(0)) for m in re.finditer(r"\d+", rest)}
 
 
-def headings(lines):
-    """(index, HEADING match) of every heading outside a code fence: a `# comment` in a fenced
-    shell block is not a heading."""
+def headings(lines: list[str]) -> Iterator[tuple[int, re.Match[str]]]:
+    """Yield (index, HEADING match) of every heading outside a code fence.
+
+    A `# comment` in a fenced shell block is not a heading.
+    """
     fenced = False
     for i, line in enumerate(lines):
         if FENCE.match(line):
@@ -86,7 +128,8 @@ def headings(lines):
             yield i, m
 
 
-def acceptance_block(text):
+def acceptance_block(text: str) -> list[str] | None:
+    """Return the lines under the last acceptance heading, None when there is none."""
     lines = text.split("\n")
     found = list(headings(lines))
     starts = [i for i, m in found if "cceptance" in m.group(2)]
@@ -96,13 +139,16 @@ def acceptance_block(text):
     return lines[starts[-1] + 1 : end]
 
 
-def definitions(block, p, nn):
+def definitions(block: list[str], p: int, nn: int) -> tuple[list[int], list[str], int]:
+    """Return a block's numbered ids, suffixed ids and count of items with no id."""
     ided = re.compile(
         rf"^(?:(?:\d+[a-z]?\.|[-*])\s+)?(?:\*\*`?|\|\s*`?\*{{0,2}}`?)"
         rf"AC-P{p}-{nn}-(\d+)([a-z]?(?:-[A-Za-z]\w*)*)"
     )
     idless = re.compile(r"^(\d+)\.\s+\*\*(?!`?AC-)")
-    nums, suffixed, implied = [], [], 0
+    nums: list[int] = []
+    suffixed: list[str] = []
+    implied = 0
     for line in block:
         m = ided.match(line)
         if m and m.group(2):
@@ -115,9 +161,11 @@ def definitions(block, p, nn):
     return nums, suffixed, implied
 
 
-def expand(cell, p):
-    """The (section, n) ids of phase p that one table cell names, compact forms expanded."""
-    out, cur, last = set(), None, 0
+def expand(cell: str, p: int) -> set[Criterion]:
+    """Return the (section, n) ids of phase p one cell names, compact forms expanded."""
+    out: set[Criterion] = set()
+    cur: Criterion | None = None
+    last = 0
     for m in TOKEN.finditer(cell):
         if m.group(1):
             cur, last = (int(m.group(1)), int(m.group(2))), int(m.group(3))
@@ -133,14 +181,18 @@ def expand(cell, p):
     return out
 
 
-def mappings(text, p, test_re, ruling_re):
-    """(id, task, test, rulings) for every mapping row in one plan. task is None when the task
-    cell names no number, False when a number it names has no `## Task N` heading in this plan;
-    rulings are the ruling ids beside "manual" when no test path is given."""
-    tasks = {
-        int(n) for n in TASK_HEADING.findall(re.sub(r"(?ms)^```.*?^```", "", text))
-    }
-    out, header, col = [], None, 2
+def mappings(text: str, p: int, res: Patterns) -> list[Mapping]:
+    """Return (id, task, test, rulings) for every mapping row in one plan.
+
+    task is None when the task cell names no number, False when a number it names has
+    no `## Task N` heading in this plan; rulings are the ruling ids beside "manual"
+    when no test path is given.
+    """
+    unfenced = re.sub(r"(?ms)^```.*?^```", "", text)
+    tasks = {int(m.group(1)) for m in TASK_HEADING.finditer(unfenced)}
+    out: list[Mapping] = []
+    header: list[str] | None = None
+    col = 2
     for line in text.split("\n"):
         if not line.startswith("|"):
             header = None
@@ -151,28 +203,31 @@ def mappings(text, p, test_re, ruling_re):
             # The test cell of `| Id | Task | Test file |`; more columns may follow it.
             col = next((k for k, h in enumerate(c) if k > 1 and "test" in h.lower()), 2)
             continue
-        if len(header) < 3 or not header[1].lower().startswith("task"):
+        if len(header) < MAPPING_COLUMNS or not header[1].lower().startswith("task"):
             continue
-        named = task_numbers(c[1], ruling_re) if len(c) > 1 else set()
+        named = task_numbers(c[1], res.ruling) if len(c) > 1 else set[int]()
         task = named <= tasks if named else None
-        test = col < len(c) and any(test_re.search(s) for s in SPAN.findall(c[col]))
-        rulings = ()
+        test = col < len(c) and any(
+            res.test.search(m.group(1)) for m in SPAN.finditer(c[col])
+        )
+        rulings: tuple[str, ...] = ()
         if not test:
             rulings = tuple(
                 m.group(0)
                 for x in c[2:]
                 if MANUAL.search(x)
-                for m in ruling_re.finditer(AC_ID.sub("", x))
+                for m in res.ruling.finditer(AC_ID.sub("", x))
             )
         out += [(i, task, test, rulings) for i in expand(c[0], p)]
     return out
 
 
-def register(table, p):
-    """The register's table: per section the count and the ids, as ranges `expand` reads back."""
+def register(table: list[Section], p: int) -> None:
+    """Print the register's table: per section the count and the ids, as ranges."""
     print("\n| § | Criteria | Ids |\n|---|---|---|")
     for nn, nums, suffixed in table:
-        runs, ids = [], sorted(set(nums))
+        runs: list[list[int]] = []
+        ids = sorted(set(nums))
         for n in ids:
             if runs and n == runs[-1][1] + 1:
                 runs[-1][1] = n
@@ -187,24 +242,42 @@ def register(table, p):
     print(f"| **Total** | **{sum(len(n) + len(s) for _, n, s in table)}** | |")
 
 
-def check_spec(spec_dir, p, secs, table=None):
-    defined, total, problems, missing = set(), 0, 0, False
+def read_section(
+    files: list[pathlib.Path], p: int, nn: int
+) -> tuple[list[int], list[str], int]:
+    """Return the numbered ids, suffixed ids and id-less items of a section's files."""
+    nums: list[int] = []
+    suffixed: list[str] = []
+    implied = 0
+    for f in files:
+        block = acceptance_block(f.read_text(errors="replace"))
+        if block is not None:
+            n, s, i = definitions(block, p, nn)
+            nums, suffixed, implied = nums + n, suffixed + s, implied + i
+    return nums, suffixed, implied
+
+
+def check_spec(
+    spec_dir: pathlib.Path, p: int, secs: list[int], table: list[Section] | None = None
+) -> tuple[set[Criterion], int, bool]:
+    """Print each section's criteria and problems.
+
+    Returns:
+        The defined ids, the problem count, and whether a section file is missing.
+    """
+    defined: set[Criterion] = set()
+    total, problems, missing = 0, 0, False
     print(f"{'section':<8} {'criteria':>8} {'max':>4}  problems")
     print("-" * 72)
     for nn in secs:
         files = [
             f for f in sorted(spec_dir.glob("*.md")) if re.match(rf"0*{nn}-", f.name)
         ]
-        nums, suffixed, implied = [], [], 0
-        for f in files:
-            block = acceptance_block(f.read_text(errors="replace"))
-            if block is not None:
-                n, s, i = definitions(block, p, nn)
-                nums, suffixed, implied = nums + n, suffixed + s, implied + i
+        nums, suffixed, implied = read_section(files, p, nn)
         top = max(nums, default=0)
         gaps = sorted(set(range(1, top + 1)) - set(nums))
         dups = sorted({n for n in nums if nums.count(n) > 1})
-        issues = []
+        issues: list[str] = []
         if not files:
             issues.append("no section file")
             missing = True
@@ -224,17 +297,26 @@ def check_spec(spec_dir, p, secs, table=None):
         if table is not None:
             table.append((nn, nums, suffixed))
         print(
-            f"§{nn:<7} {len(nums) + len(suffixed):>8} {top:>4}  {'; '.join(issues) or 'ok'}"
+            f"§{nn:<7} {len(nums) + len(suffixed):>8} {top:>4}  "
+            f"{'; '.join(issues) or 'ok'}"
         )
     print(f"\n{total} criteria defined in {len(secs)} sections, {problems} problems")
     return defined, problems, missing
 
 
-def check_plans(plans, p, defined, show_all, test_re, ruling_re):
+def check_plans(
+    plans: list[pathlib.Path],
+    p: int,
+    defined: set[Criterion],
+    *,
+    show_all: bool,
+    res: Patterns,
+) -> int:
+    """Print how the plans map the defined criteria; the number of problems."""
     rows = [
         (f.name, *r)
         for f in plans
-        for r in mappings(f.read_text(errors="replace"), p, test_re, ruling_re)
+        for r in mappings(f.read_text(errors="replace"), p, res)
     ]
     named = {r[1] for r in rows}
     tasked = {r[1] for r in rows if r[2] is not None}
@@ -242,7 +324,8 @@ def check_plans(plans, p, defined, show_all, test_re, ruling_re):
     mapped = {r[1] for r in rows if r[2] is not None and (r[3] or r[4])}
     tested = {r[1] for r in rows if r[2] is not None and r[3]}
     whole = {r[1] for r in rows if r[2] and (r[3] or r[4])}
-    manual, untested = {}, defined - tested
+    manual: dict[Criterion, dict[str, None]] = {}
+    untested = defined - tested
     for plan, i, task, _, rulings in rows:
         if i in untested and task is not None and rulings:
             manual.setdefault(i, {})[f"{', '.join(rulings)} ({plan})"] = None
@@ -254,50 +337,51 @@ def check_plans(plans, p, defined, show_all, test_re, ruling_re):
         ("NOT DEFINED", sorted(named - defined)),
     ]
     print(
-        f"\n{len(plans)} plans scanned; {len(defined & whole)} of {len(defined)} criteria mapped"
-        f" to a task and a test ({len(manual)} manual); "
+        f"\n{len(plans)} plans scanned; {len(defined & whole)} of {len(defined)} "
+        f"criteria mapped to a task and a test ({len(manual)} manual); "
         + "; ".join(f"{len(ids)} {label.lower()}" for label, ids in groups)
     )
     for label, ids in groups:
-        if ids and (show_all or len(ids) <= 20):
+        if ids and (show_all or len(ids) <= SHOWN_IDS):
             print(f"  {label}: {', '.join(f'AC-P{p}-{s}-{n}' for s, n in ids)}")
     for (s, n), cites in sorted(manual.items()):
         print(f"  MANUAL: AC-P{p}-{s}-{n} — {'; '.join(cites)}")
     return sum(len(ids) for _, ids in groups)
 
 
-def main():
+def main() -> int:
+    """Check the spec's criteria, and with --plans their mapping; the exit status."""
     ap = argparse.ArgumentParser(
         description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter
     )
-    ap.add_argument("spec_dir")
-    ap.add_argument("--phase", type=int, required=True)
-    ap.add_argument("--sections", required=True, help="e.g. 38-48 or 38,40-41")
-    ap.add_argument("--plans")
-    ap.add_argument("--glob", default="*.md")
-    ap.add_argument("--list", action="store_true")
-    ap.add_argument(
+    _ = ap.add_argument("spec_dir")
+    _ = ap.add_argument("--phase", type=int, required=True)
+    _ = ap.add_argument("--sections", required=True, help="e.g. 38-48 or 38,40-41")
+    _ = ap.add_argument("--plans")
+    _ = ap.add_argument("--glob", default="*.md")
+    _ = ap.add_argument("--list", action="store_true")
+    _ = ap.add_argument(
         "--emit-register",
         action="store_true",
         help="print the register's per-section table for the register folder to paste",
     )
-    ap.add_argument(
+    _ = ap.add_argument(
         "--test-re",
         default=TEST_RE,
         help="a backticked test path must match this (default: %(default)s)",
     )
-    ap.add_argument(
+    _ = ap.add_argument(
         "--ruling-re",
         default=RULING_RE,
         help="a manual cell must cite a ruling id matching this (default: %(default)s)",
     )
-    a = ap.parse_args()
-    secs = []
+    a = ap.parse_args(namespace=_Args())
+    secs: list[int] = []
     for part in a.sections.split(","):
         lo, _, hi = part.partition("-")
         secs += range(int(lo), int(hi or lo) + 1)
 
-    table = [] if a.emit_register else None
+    table: list[Section] | None = [] if a.emit_register else None
     defined, problems, missing = check_spec(
         pathlib.Path(a.spec_dir), a.phase, secs, table
     )
@@ -318,9 +402,8 @@ def main():
             plans,
             a.phase,
             defined,
-            a.list,
-            re.compile(a.test_re),
-            re.compile(a.ruling_re),
+            show_all=a.list,
+            res=Patterns(re.compile(a.test_re), re.compile(a.ruling_re)),
         )
     return 1 if problems else 0
 

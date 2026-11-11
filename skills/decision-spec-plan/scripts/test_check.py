@@ -1,60 +1,81 @@
 #!/usr/bin/env python3
+# SPDX-License-Identifier: MIT
 """List the tests a commit range takes away: what a lane gave up to turn its gate green.
 
-A lane's gate passes as easily by testing less as by fixing the code, and the review of its diff
-reads the code it changed, not the tests it no longer runs. On impossible tasks, Claude-family
-agents that cheated did it mostly by editing the tests. This lists five kinds of change in
-`<base>..<head>` (in `--repo`, default `.`):
+A lane's gate passes as easily by testing less as by fixing the code, and the review of
+its diff reads the code it changed, not the tests it no longer runs. On impossible
+tasks, Claude-family agents that cheated did it mostly by editing the tests. This lists
+five kinds of change in `<base>..<head>` (in `--repo`, default `.`):
 
-    DELETED  <file>              a test file the range deletes or renames out of the test paths
-    REMOVED  <test>  <file>      a test whose defining line the range removes and adds nowhere
+    DELETED  <file>              a test file the range deletes or renames out of the
+                                 test paths
+    REMOVED  <test>  <file>      a test whose defining line the range removes and adds
+                                 nowhere
     SKIP     <file>:<line> <text>  a skip, only or ignore marker the range adds
-    FEWER    <file>  <n> fewer assertions   a test file of the range that ends with fewer
-    EDITED   <file>  <commit>…   an acceptance test file one of whose assertions or tests a
-                                 commit changes or removes after it was written
+    FEWER    <file>  <n> fewer assertions   a test file of the range that ends with
+                                 fewer
+    EDITED   <file>  <commit>…   an acceptance test file one of whose assertions or
+                                 tests a commit changes or removes after it was written
 
-An acceptance test file is a test file a row of a plan's mapping table (`| Id | Task | Test file |`,
-read as criteria_check.py reads it) maps an `AC-` id to (a source file holding the test changes
-with its code); a rename inside the test paths carries it along. Its assertions and
-tests are read-only once written — by the base, or by the range's first commit that touches it —
-and later commits may only add beside them: an assertion loosened in place keeps every count the
-same.
+An acceptance test file is a test file a row of a plan's mapping table
+(`| Id | Task | Test file |`, read as criteria_check.py reads it) maps an `AC-` id to (a
+source file holding the test changes with its code); a rename inside the test paths
+carries it along. Its assertions and tests are read-only once written — by the base, or
+by the range's first commit that touches it — and later commits may only add beside
+them: an assertion loosened in place keeps every count the same.
 
-A test file is a path under `test/`, `tests/`, `__tests__/` or `spec/`, or named `test_*.py`,
-`*_test.py`, `*_test.go`, `*.test.js`/`*.spec.ts` (and the jsx/tsx/mjs/cjs kin), `*Test.java`,
-`*Tests.cs`, `*Test.kt` or `*_spec.rb`. A test is a Python `def test*`, a Go `func Test*`, a JS/TS
-`it('...')` or `test('...')`, or the function after a `#[test]`, `@Test`, `[Fact]`, `[Test]` or
-`[TestMethod]` line. The tests of a deleted file are its DELETED line, not REMOVED lines. An
-assertion is a line of a test file opening with `assert` or calling `assert*(`, `assert*!(`,
-`expect(`, `Assert.*(`, `t.Error(`, `t.Fatal(` or `require.*(`; one the range adds back anywhere
-moved, one rewritten in place offsets the line it replaced, and a removed test's own are its
+A test file is a path under `test/`, `tests/`, `__tests__/` or `spec/`, or named
+`test_*.py`, `*_test.py`, `*_test.go`, `*.test.js`/`*.spec.ts` (and the jsx/tsx/mjs/cjs
+kin), `*Test.java`, `*Tests.cs`, `*Test.kt` or `*_spec.rb`. A test is a Python
+`def test*`, a Go `func Test*`, a JS/TS `it('...')` or `test('...')`, or the function
+after a `#[test]`, `@Test`, `[Fact]`, `[Test]` or `[TestMethod]` line. The tests of a
+deleted file are its DELETED line, not REMOVED lines. An assertion is a line of a test
+file opening with `assert` or calling `assert*(`, `assert*!(`, `expect(`, `Assert.*(`,
+`t.Error(`, `t.Fatal(` or `require.*(`; one the range adds back anywhere moved, one
+rewritten in place offsets the line it replaced, and a removed test's own are its
 REMOVED line.
 
-A DELETED or REMOVED line passes when a plan matching `--glob` names it: the path, or the test's
-name standing alone. A SKIP, FEWER or EDITED line, or a deleted acceptance test file, never passes: the lead rules each one, since a
-plan that names a skip does not say the test it hides was meant to fail. Not caught: an assertion
-loosened in place outside an acceptance test file, a test body emptied there, assertions dropped
-from a test inside a source file (a Rust `mod tests`), a test excluded by the runner's
+A DELETED or REMOVED line passes when a plan matching `--glob` names it: the path, or
+the test's name standing alone. A SKIP, FEWER or EDITED line, or a deleted acceptance
+test file, never passes: the lead rules each one, since a plan that names a skip does
+not say the test it hides was meant to fail. Not caught: an assertion loosened in place
+outside an acceptance test file, a test body emptied there, assertions dropped from a
+test inside a source file (a Rust `mod tests`), a test excluded by the runner's
 configuration.
 
 Usage:
-    test_check.py <plans-dir> --diff <base>..<head> [--repo <repo>] [--glob 'p1-03-*.md']
+    test_check.py <plans-dir> --diff <base>..<head> [--repo <repo>]
+        [--glob 'p1-03-*.md']
 
-Exit 0 when nothing is unnamed and nothing went to the lead, 1 otherwise, 2 when the range changed
-nothing or git failed.
+Exit 0 when nothing is unnamed and nothing went to the lead, 1 otherwise, 2 when the
+range changed nothing or git failed.
 """
 
 import argparse
 import codecs
 import pathlib
 import re
+import shutil
 import subprocess
 import sys
+from typing import cast
+
+# a test, (its name, its file); a skip, (file, line, text)
+Name = tuple[str, str]
+Skip = tuple[str, int, str]
+# (sign, file, text, the removed test it sits in)
+Assertion = tuple[str, str, str, str | None]
+# the cell a mapping table's test file sits in when no header after Task names a test
+TEST_COL = 2
+COMMENT = ("//", "#", "*", "/*")
 
 
-def header_path(rest):
-    """The path of a diff's `--- ` or `+++ ` line, None for /dev/null. Git C-quotes a path with a
-    `"`, a backslash or a control character, and ends one holding a space with a tab."""
+def header_path(rest: str) -> str | None:
+    """The path of a diff's `--- ` or `+++ ` line, None for /dev/null.
+
+    Git C-quotes a path with a `"`, a backslash or a control character, and ends one
+    holding a space with a tab.
+    """
     rest = rest.rstrip("\t")
     if rest == "/dev/null":
         return None
@@ -78,21 +99,23 @@ AFTER_ATTR = re.compile(r"\bfn\s+(\w+)|\b(\w+)\s*\(")
 # the attributes a line opens with: `@Test fun name()` names its test on the same line
 ATTRS = re.compile(r"^\s*(?:(?:@[\w.]+(?:\([^)]*\))?|#?\[[^\]]*\])\s*)+")
 SKIP = re.compile(
-    r"\b(?:it|test|describe|context|suite)\.(?:skip|only|todo|fixme)\b|\bx(?:it|describe|test)\s*\("
+    r"\b(?:it|test|describe|context|suite)\.(?:skip|only|todo|fixme)\b"
+    r"|\bx(?:it|describe|test)\s*\("
     r"|\bpytest\.mark\.(?:skip|skipif|xfail)\b|@unittest\.(?:skip\w*|expectedFailure)\b"
     r"|\bpytest\.(?:skip|xfail)\s*\(|\.skipTest\s*\(|#\[ignore\b|\bt\.Skip(?:Now|f)?\s*\("
     r"|@Disabled\b|@Ignore\b|\[Ignore\b|\bSkip\s*=\s*\""
 )
 ASSERT = re.compile(
-    r"^\s*assert\b|\b(?:assert\w*!?|assert\.\w+|(?<![.\w])expect|Assert\.\w+|t\.(?:Error|Fatal)f?"
-    r"|require\.\w+)\s*\("
+    r"^\s*assert\b|\b(?:assert\w*!?|assert\.\w+|(?<![.\w])expect|Assert\.\w+"
+    r"|t\.(?:Error|Fatal)f?|require\.\w+)\s*\("
 )
 HUNK = re.compile(r"^@@ -\d+(?:,\d+)? \+(\d+)")
 
 
-def git(repo, *args):
+def git(repo: str, *args: str) -> str:
+    """Run git in repo; its stdout, or print its error and exit 2."""
     out = subprocess.run(
-        ["git", "-C", repo, "-c", "core.quotePath=false", *args],
+        [shutil.which("git") or "git", "-C", repo, "-c", "core.quotePath=false", *args],
         capture_output=True,
         text=True,
         check=False,
@@ -103,86 +126,134 @@ def git(repo, *args):
     return out.stdout
 
 
-def scan(diff):
-    """(names on removed lines, names on added lines, added skip lines, {test file: assertion
-    lines removed minus added}) of a -U0 diff; a name is (test, file), a skip (file, line, text).
-    An assertion removed after a removed test's defining line in one hunk is that test's, which
-    its REMOVED line (or its move) already covers — unless the range adds a test of that name."""
-    names = {"-": set(), "+": set()}
-    added, asserts, gone, came = [], [], set(), set()
-    old = new = path = None
-    line, header, armed, inside = 0, False, {"-": False, "+": False}, None
-    for raw in diff.splitlines():
+def defined_test(text: str, sign: str, armed: dict[str, bool]) -> str | None:
+    """The test a diff line's text defines, None for none.
+
+    `armed[sign]` says a test marker came before it on that side, and is updated.
+    """
+    name, rest = None, None
+    if ATTR.match(text) or (armed[sign] and ATTRS.match(text)):
+        # the test marker, or another attribute between it and its function
+        armed[sign], rest = True, ATTRS.sub("", text, count=1)
+    elif m := NAME.match(text):
+        name = m[1] or m[2] or m[4]
+    elif armed[sign]:
+        rest = text
+    if rest and (m := AFTER_ATTR.search(rest)):
+        name, armed[sign] = m[1] or m[2], False
+    return name
+
+
+class Scan:
+    """What scan() reads of a -U0 diff, one line at a time."""
+
+    def __init__(self) -> None:
+        """Start before the diff's first line."""
+        self.names: dict[str, set[Name]] = {"-": set(), "+": set()}
+        self.added: list[Skip] = []
+        self.asserts: list[Assertion] = []
+        self.gone: set[str] = set()
+        self.came: set[str] = set()
+        self.old: str | None = None
+        self.new: str | None = None
+        self.path: str | None = None
+        self.line: int = 0
+        self.header: bool = False
+        self.armed: dict[str, bool] = {"-": False, "+": False}
+        self.inside: str | None = None
+
+    def read(self, raw: str) -> None:
+        """Read one line of the diff."""
         if raw.startswith("diff --git "):
-            header, old, new = True, None, None
-            continue
-        if header:
-            # a deleted file's lines belong to its old path, every other file's to its new one
-            if raw.startswith("--- "):
-                old = header_path(raw[4:])
-            elif raw.startswith("+++ "):
-                new = header_path(raw[4:])
-                path = new or old
-            elif m := HUNK.match(raw):
-                line, header, armed = int(m[1]), False, {"-": False, "+": False}
-                inside = None
-            continue
-        if m := HUNK.match(raw):
-            line, armed, inside = int(m[1]), {"-": False, "+": False}, None
-            continue
-        sign, text = raw[:1], raw[1:]
-        if sign not in ("+", "-"):
-            continue
-        name, rest = None, None
-        if ATTR.match(text) or (armed[sign] and ATTRS.match(text)):
-            # the test marker, or another attribute between it and its function
-            armed[sign], rest = True, ATTRS.sub("", text, count=1)
-        elif m := NAME.match(text):
-            name = m[1] or m[2] or m[4]
-        elif armed[sign]:
-            rest = text
-        if rest and (m := AFTER_ATTR.search(rest)):
-            name, armed[sign] = m[1] or m[2], False
-        if name:
-            names[sign].add((name, path))
+            self.header, self.old, self.new = True, None, None
+        elif self.header:
+            self.read_header(raw)
+        elif m := HUNK.match(raw):
+            self.line = int(m[1])
+            self.armed = {"-": False, "+": False}
+            self.inside = None
+        elif raw[:1] in ("+", "-"):
+            self.read_change(raw[:1], raw[1:])
+
+    def read_header(self, raw: str) -> None:
+        """Read a line of a file's header, up to its first hunk."""
+        # a deleted file's lines belong to its old path, every other file's to its new
+        # one
+        if raw.startswith("--- "):
+            self.old = header_path(raw[4:])
+        elif raw.startswith("+++ "):
+            self.new = header_path(raw[4:])
+            self.path = self.new or self.old
+        elif m := HUNK.match(raw):
+            self.line = int(m[1])
+            self.header = False
+            self.armed = {"-": False, "+": False}
+            self.inside = None
+
+    def read_change(self, sign: str, text: str) -> None:
+        """Read a removed (`-`) or added (`+`) line of a hunk."""
+        # a hunk comes after its file's ---/+++ lines
+        path = cast("str", self.path)
+        if name := defined_test(text, sign, self.armed):
+            self.names[sign].add((name, path))
             if sign == "-":
-                inside = name
-        assert path is not None  # a hunk comes after its file's ---/+++ lines
+                self.inside = name
         if (
             TEST_PATH.search(path)
             and ASSERT.search(text)
-            and not text.lstrip().startswith(("//", "#", "*", "/*"))
+            and not text.lstrip().startswith(COMMENT)
         ):
-            asserts.append((sign, path, text.strip(), inside if sign == "-" else None))
+            owner = self.inside if sign == "-" else None
+            self.asserts.append((sign, path, text.strip(), owner))
         if sign == "+":
             if SKIP.search(text):
-                added.append((path, line, text.strip()))
-            came.add(text.strip())
-            line += 1
+                self.added.append((path, self.line, text.strip()))
+            self.came.add(text.strip())
+            self.line += 1
         else:
-            gone.add(text.strip())
-    # an assertion whose line the range adds back anywhere moved; one rewritten in place offsets
-    # the line it replaced
-    fewer, readded = {}, {n for n, _ in names["+"]}
-    for sign, p, t, owner in asserts:
+            self.gone.add(text.strip())
+
+
+def scan(diff: str) -> tuple[set[Name], set[Name], list[Skip], dict[str, int]]:
+    """Read a -U0 diff's tests, skips and assertions.
+
+    Returns (names on removed lines, names on added lines, added skip lines,
+    {test file: assertion lines removed minus added}); a name is (test, file), a skip
+    (file, line, text). An assertion removed after a removed test's defining line in one
+    hunk is that test's, which its REMOVED line (or its move) already covers — unless
+    the range adds a test of that name.
+    """
+    s = Scan()
+    for raw in diff.splitlines():
+        s.read(raw)
+    # an assertion whose line the range adds back anywhere moved; one rewritten in place
+    # offsets the line it replaced
+    fewer: dict[str, int] = {}
+    readded = {n for n, _ in s.names["+"]}
+    for sign, p, t, owner in s.asserts:
         if owner and owner not in readded:
             continue  # the removed test's REMOVED line covers it
-        if t not in (came if sign == "-" else gone):
+        if t not in (s.came if sign == "-" else s.gone):
             fewer[p] = fewer.get(p, 0) + (1 if sign == "-" else -1)
-    skips = [s for s in added if s[2] not in gone]
-    return names["-"], names["+"], skips, fewer
+    skips = [k for k in s.added if k[2] not in s.gone]
+    return s.names["-"], s.names["+"], skips, fewer
 
 
-def named(text, word):
+def named(text: str, word: str) -> re.Match[str] | None:
+    """Find word in text standing alone, not inside a longer path or name."""
     return re.search(rf"(?<![\w./-]){re.escape(word)}(?![\w/-]|\.\w)", text)
 
 
-def acceptance_files(plans):
-    """The test files a mapping table's rows map, `::test` cut off, read as criteria_check reads
-    them: a table whose header's second cell starts with "Task", its test cell the first column
-    after Task whose header names a test, else the third. A source file holding the test changes
-    with the code, so it is never one."""
-    files, header, col = set(), None, 2
+def acceptance_files(plans: str) -> set[str]:
+    """The test files a mapping table's rows map, `::test` cut off.
+
+    Read as criteria_check reads them: a table whose header's second cell starts with
+    "Task", its test cell the first column after Task whose header names a test, else
+    the third. A source file holding the test changes with the code, so it is never one.
+    """
+    files: set[str] = set()
+    header: list[str] | None = None
+    col = TEST_COL
     for line in plans.splitlines():
         if not line.startswith("|"):
             header = None
@@ -191,24 +262,29 @@ def acceptance_files(plans):
         if header is None:
             header = cells
             col = next(
-                (k for k, h in enumerate(cells) if k > 1 and "test" in h.lower()), 2
+                (k for k, h in enumerate(cells) if k > 1 and "test" in h.lower()),
+                TEST_COL,
             )
         elif (
-            len(header) > 2
+            len(header) > TEST_COL
             and header[1].lower().startswith("task")
             and col < len(cells)
         ):
-            for f in re.findall(r"`([^`]+)`", cells[col]):
-                if TEST_PATH.search(path := f.split("::")[0]):
+            for m in re.finditer(r"`([^`]+)`", cells[col]):
+                if TEST_PATH.search(path := m[1].split("::")[0]):
                     files.add(path)
     return files
 
 
-def edited(repo, rng, path, now=None):
-    """The commits of the range, oldest first, that change or remove an assertion or a test's
-    defining line of `path` after it was written: a file the base lacks is written by its first
-    commit, which is never one. An import widened for a test added beside it is not. `now` is
-    the path the range renames it to inside the test paths: the rename itself changes nothing."""
+def edited(repo: str, rng: str, path: str, now: str | None = None) -> list[str]:
+    """The commits of the range, oldest first, that rewrite `path`'s tests once written.
+
+    A commit counts when it changes or removes an assertion or a test's defining line of
+    `path` after it was written: a file the base lacks is written by its first commit,
+    which is never one. An import widened for a test added beside it is not. `now` is
+    the path the range renames it to inside the test paths: the rename itself changes
+    nothing.
+    """
     base = rng.partition("..")[0]
     paths = [path, now] if now else [path]
     commits = git(
@@ -217,29 +293,39 @@ def edited(repo, rng, path, now=None):
     commits = commits.split()[::-1]
     if not git(repo, "ls-tree", base, "--", path).strip():
         commits = commits[1:]
-    out = []
+    out: list[str] = []
     for c in commits:
         diff = git(repo, "diff", "-U0", "-M", f"{c}^", c, "--", *paths).splitlines()
         if any(
             ln.startswith("-")
             and not ln.startswith("--- ")
             and (ASSERT.search(ln[1:]) or NAME.match(ln[1:]) or ATTR.match(ln[1:]))
-            and not ln[1:].lstrip().startswith(("//", "#", "*", "/*"))
+            and not ln[1:].lstrip().startswith(COMMENT)
             for ln in diff
         ):
             out.append(c)
     return out
 
 
-def main():
+class Args(argparse.Namespace):
+    """The command line, as main() parses it."""
+
+    plans_dir: str = ""
+    diff: str = ""
+    repo: str = "."
+    glob: str = "*.md"
+
+
+def main() -> int:
+    """Print the tests the range takes away that need a ruling; the exit status."""
     ap = argparse.ArgumentParser(
         description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter
     )
-    ap.add_argument("plans_dir")
-    ap.add_argument("--diff", metavar="RANGE", required=True)
-    ap.add_argument("--repo", default=".")
-    ap.add_argument("--glob", default="*.md")
-    args = ap.parse_args()
+    _ = ap.add_argument("plans_dir")
+    _ = ap.add_argument("--diff", metavar="RANGE", required=True)
+    _ = ap.add_argument("--repo", default=".")
+    _ = ap.add_argument("--glob", default="*.md")
+    args = ap.parse_args(namespace=Args())
     plans = "\n".join(
         f.read_text(errors="replace")
         for f in sorted(pathlib.Path(args.plans_dir).glob(args.glob))
@@ -249,9 +335,12 @@ def main():
     if not [s for s in status if s]:
         print(f"{args.diff} changed nothing")
         return 2
-    # a test file renamed out of the test paths no longer runs: it is deleted, and its new path's
-    # lines are its DELETED line's, like a deleted file's
-    deleted, retired, moved, i = set(), set(), {}, 0
+    # a test file renamed out of the test paths no longer runs: it is deleted, and its
+    # new path's lines are its DELETED line's, like a deleted file's
+    deleted: set[str] = set()
+    retired: set[str] = set()
+    moved: dict[str, str] = {}
+    i = 0
     while i < len(status) - 1:
         kind = status[i]
         if kind == "D":
@@ -296,8 +385,8 @@ def main():
     for b in bad:
         print(b)
     print(
-        f"{len(bad)} deleted test files, removed tests, added skips, dropped assertions or "
-        "edited acceptance tests need a ruling"
+        f"{len(bad)} deleted test files, removed tests, added skips, dropped "
+        "assertions or edited acceptance tests need a ruling"
     )
     return 1 if bad else 0
 

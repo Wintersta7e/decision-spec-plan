@@ -1,117 +1,220 @@
-"""What the parts of route_state.py share: the route's marker and the session registry, git, the
-arguments a marker records, and the hook's output."""
+# SPDX-License-Identifier: MIT
+"""What the parts of route_state.py share.
+
+The route's marker and the session registry, git, the arguments a marker records, the
+hook's output, and the narrowing of parsed JSON to typed values.
+"""
 
 import argparse
 import hashlib
 import json
+import os
 import pathlib
 import re
+import shutil
 import subprocess
+from collections.abc import Callable, Mapping
+from typing import Literal, NotRequired, TypedDict, TypeVar, TypeVarTuple, cast
 
 MARKER = "dsp-route.json"
 REGISTRY = pathlib.Path.home() / ".claude" / "dsp-routes"
-# The entry point the messages name: hooks.json and the docs call it, never this package.
+# The entry point the messages name: hooks.json and the docs call it, never this
+# package.
 SCRIPT = pathlib.Path(__file__).resolve().parents[1] / "route_state.py"
 SKILL_DIR = SCRIPT.parents[1]
 SKILL = SKILL_DIR / "SKILL.md"
-# How an agent's return opens the lead's turn as a prompt. A teammate's message does not fire
-# UserPromptSubmit (measured, Claude Code 2.1.296-2.1.299); the lead's next tool call reports it.
+# How an agent's return opens the lead's turn as a prompt. A teammate's message does not
+# fire UserPromptSubmit (measured, Claude Code 2.1.296-2.1.299); the lead's next tool
+# call reports it.
 RETURNS = ("<agent-message", "<teammate-message", "<task-notification")
-# Stage 5 agents are named `exec-<plan-id>-<group>` (execution.md); an agent's id is `a<name>-<hash>`.
+# Stage 5 agents are named `exec-<plan-id>-<group>` (execution.md); an agent's id is
+# `a<name>-<hash>`.
 EXEC = "exec-"
 SLACK = 1.25
-# the decision_check version a phase is bound under; 2 added the decisions table's Serves column
+# the decision_check version a phase is bound under; 2 added the decisions table's
+# Serves column
 LEDGER_CHECKS = 2
 PLAN_ID = re.compile(r"p\d+-\d+[a-z]?(?=-|$)")
-# The route's budgets live in its planning dir, which a hand-over carries: kept per lead session in
-# the marker, both were asked again after a lead moved to another machine (F74).
+# The route's budgets live in its planning dir, which a hand-over carries: kept per lead
+# session in the marker, both were asked again after a lead moved to another machine
+# (F74).
 BUDGETS = "route-budget.json"
 
+StrPath = str | os.PathLike[str]
+T = TypeVar("T")
+Ts = TypeVarTuple("Ts")
 
-def budgets(planning_dir, marker, phase):
-    """The phase's recorded budgets, oldest first: the planning dir's, else a marker's from
-    before they moved there."""
-    found = load_json(pathlib.Path(planning_dir) / BUDGETS).get(
-        "budgets"
-    ) or marker.get("budgets", [])
+
+class Budget(TypedDict):
+    """One record of the route's budget file, as `--budget` writes it."""
+
+    label: str
+    estimate: float
+    phase: str
+    at: str
+    session: str
+    groups: NotRequired[int]
+    base: NotRequired[str]
+    moved: NotRequired[list[str]]
+    answered: NotRequired[str]
+
+
+class RegistryEntry(TypedDict):
+    """A registered session's entry in REGISTRY, as `--activate` writes it."""
+
+    marker: str
+    planning_dir: str
+    activated: float
+    ledger: dict[str, int]
+    skill_seen: NotRequired[float]
+
+
+class RouteArgs(argparse.Namespace):
+    """The route's arguments, as parser() parses them.
+
+    One attribute per dest of parser() (`help` stores none). Each value is the option's
+    default: argparse leaves a value the namespace already has until the option is
+    given, and checks the required ones (planning_dir, --phase) itself.
+    """
+
+    planning_dir: str = ""
+    phase: str = ""
+    repo: str | None = None
+    main: str | None = None
+    sections: str | None = None
+    spec_dir: str | None = None
+    all: bool = False
+    rung: Literal["S", "M", "L"] | None = None
+    sins: Literal["on", "off"] | None = None
+    ci_harness: str | None = None
+    activate: bool = False
+
+
+def parse_json(text: str | bytes) -> object:
+    """Parse JSON text into an untyped value, for the caller to narrow."""
+    return cast("object", json.loads(text))
+
+
+def as_dict(value: object) -> dict[str, object] | None:
+    """Return value as a JSON object, or None when it is none."""
+    return cast("dict[str, object]", value) if isinstance(value, dict) else None
+
+
+def as_list(value: object) -> list[object] | None:
+    """Return value as a JSON array, or None when it is none."""
+    return cast("list[object]", value) if isinstance(value, list) else None
+
+
+def _budget_list(value: object) -> list[Budget]:
+    """Return the budget records of a JSON array, an empty list for anything else."""
+    return [cast("Budget", b) for b in as_list(value) or [] if as_dict(b) is not None]
+
+
+def budgets(
+    planning_dir: StrPath, marker: Mapping[str, object], phase: str
+) -> list[Budget]:
+    """Return the phase's recorded budgets, oldest first.
+
+    The planning dir's, else a marker's from before they moved there.
+    """
+    found = _budget_list(
+        load_json(pathlib.Path(planning_dir) / BUDGETS).get("budgets")
+    ) or _budget_list(marker.get("budgets", []))
     return [b for b in found if b.get("phase") == phase]
 
 
-def save_budget(planning_dir, marker, record):
+def save_budget(
+    planning_dir: StrPath, marker: Mapping[str, object], record: Budget
+) -> None:
     """Append or update (by its `at`) one budget record in the planning dir's file."""
     path = pathlib.Path(planning_dir) / BUDGETS
-    found = load_json(path).get("budgets") or list(marker.get("budgets", []))
+    found = _budget_list(load_json(path).get("budgets")) or _budget_list(
+        marker.get("budgets", [])
+    )
     found = [b for b in found if b.get("at") != record["at"]] + [record]
     found.sort(key=lambda b: b.get("at") or "")
-    path.write_text(json.dumps({"budgets": found}, indent=1) + "\n")
+    _ = path.write_text(json.dumps({"budgets": found}, indent=1) + "\n")
 
 
-def ago(seconds):
+def ago(seconds: float) -> str:
+    """Return a duration as its largest whole unit: `3d`, `2h`, `5m`, `40s`."""
     for unit, size in (("d", 86400), ("h", 3600), ("m", 60)):
         if seconds >= size:
             return f"{int(seconds // size)}{unit}"
     return f"{int(seconds)}s"
 
 
-def git(repo, *args):
+def git(repo: StrPath, *args: str) -> tuple[int, str]:
+    """Run git in repo; its exit code and its stripped stdout."""
     r = subprocess.run(
-        ["git", "-C", str(repo), *args], capture_output=True, text=True, check=False
+        [shutil.which("git") or "git", "-C", str(repo), *args],
+        capture_output=True,
+        text=True,
+        check=False,
     )
     return r.returncode, r.stdout.strip()
 
 
-def parser(description=None):
-    """The route's arguments; route_state.py passes its docstring, the --help leads read."""
+def parser(description: str | None = None) -> argparse.ArgumentParser:
+    """Return the route's arguments; route_state.py passes its docstring as --help."""
     ap = argparse.ArgumentParser(
         description=description, formatter_class=argparse.RawDescriptionHelpFormatter
     )
-    ap.add_argument("planning_dir")
-    ap.add_argument("--phase", required=True)
-    ap.add_argument("--repo")
-    ap.add_argument(
+    _ = ap.add_argument("planning_dir")
+    _ = ap.add_argument("--phase", required=True)
+    _ = ap.add_argument("--repo")
+    _ = ap.add_argument(
         "--main", help="the main branch (default: the repository's default)"
     )
-    ap.add_argument(
+    _ = ap.add_argument(
         "--sections", help="the phase's spec sections, e.g. 38-48, or 38- for §38 on"
     )
-    ap.add_argument(
+    _ = ap.add_argument(
         "--spec-dir", help="where the spec sections live (default <planning-dir>/spec)"
     )
-    ap.add_argument("--all", action="store_true")
-    ap.add_argument(
+    _ = ap.add_argument("--all", action="store_true")
+    _ = ap.add_argument(
         "--rung",
         choices=("S", "M", "L"),
         help="with --activate: the route's rung",
     )
-    ap.add_argument(
+    _ = ap.add_argument(
         "--sins",
         choices=("on", "off"),
-        help="with --activate: on — push_guard.py holds each push until a seven-sins verdict "
-        "covers it: at rung L for the phase's last push, at any rung when the user asked for "
-        "the review. Kept across re-activations; `off` clears it",
+        help="with --activate: on — push_guard.py holds each push until a seven-sins "
+        "verdict covers it: at rung L for the phase's last push, at any rung when the "
+        "user asked for the review. Kept across re-activations; `off` clears it",
     )
-    ap.add_argument(
+    _ = ap.add_argument(
         "--ci-harness",
         metavar="LABEL",
-        help="with --activate: a suite CI runs that the local full gate does not (another "
-        "database, container tests); push_guard.py then also requires a gate log with "
-        "`harness=<LABEL>` for each pushed commit. Kept across re-activations; `none` clears it",
+        help="with --activate: a suite CI runs that the local full gate does not "
+        "(another database, container tests); push_guard.py then also requires a gate "
+        "log with `harness=<LABEL>` for each pushed commit. Kept across "
+        "re-activations; `none` clears it",
     )
-    ap.add_argument(
+    _ = ap.add_argument(
         "--activate",
         action="store_true",
-        help="also write these arguments to <git-common-dir>/dsp-route-<id>.json (one per "
-        "planning dir) and register this session",
+        help="also write these arguments to <git-common-dir>/dsp-route-<id>.json (one "
+        "per planning dir) and register this session",
     )
     return ap
 
 
-def marker_path(directory, planning=None):
-    """The route's marker, one per planning dir (`planning`), else the old one per repository.
+def route_args(marker: Mapping[str, object]) -> RouteArgs:
+    """Return the route's arguments a marker records; KeyError without any."""
+    args = as_list(marker["args"]) or []
+    return parser().parse_args([str(a) for a in args], namespace=RouteArgs())
 
-    Why: two routes in one repository shared one marker, so the second's --activate replaced the
-    first's phase and budgets and the hold counted both routes' spend: three false holds in one
-    lane (F93)."""
+
+def marker_path(directory: StrPath, planning: str | None = None) -> pathlib.Path | None:
+    """Return the route's marker, one per planning dir, else the old one per repository.
+
+    Why: two routes in one repository shared one marker, so the second's --activate
+    replaced the first's phase and budgets and the hold counted both routes' spend:
+    three false holds in one lane (F93).
+    """
     rc, common = git(
         directory, "rev-parse", "--path-format=absolute", "--git-common-dir"
     )
@@ -119,12 +222,12 @@ def marker_path(directory, planning=None):
         return None
     if planning is None:
         return pathlib.Path(common) / MARKER
-    slug = hashlib.sha1(planning.encode()).hexdigest()[:10]
+    slug = hashlib.sha1(planning.encode(), usedforsecurity=False).hexdigest()[:10]
     return pathlib.Path(common) / f"dsp-route-{slug}.json"
 
 
-def default_branch(repo):
-    """origin's HEAD, else the main worktree's branch, else main or master, whichever exists."""
+def default_branch(repo: StrPath) -> str:
+    """Return origin's HEAD, else the main worktree's branch, else main or master."""
     rc, ref = git(
         repo, "symbolic-ref", "--quiet", "--short", "refs/remotes/origin/HEAD"
     )
@@ -141,38 +244,47 @@ def default_branch(repo):
     return "main"
 
 
-def routes(skip_session=None):
-    """(session id, registry entry) of every registered session whose marker still exists."""
-    out = []
+def routes(skip_session: str | None = None) -> list[tuple[str, RegistryEntry]]:
+    """Return (session id, registry entry) of each registered session with a marker."""
+    out: list[tuple[str, RegistryEntry]] = []
     for f in sorted(REGISTRY.glob("*.json")):
         try:
-            entry = json.loads(f.read_text())
+            parsed = parse_json(f.read_text())
         except ValueError:
             continue
-        # A `<session>.waits.json` sidecar has no marker, and Path("") is "." (always exists).
+        entry = as_dict(parsed)
+        if entry is None:
+            continue
+        # A `<session>.waits.json` sidecar has no marker, and Path("") is "." (always
+        # exists).
         marker = entry.get("marker")
-        if f.stem != skip_session and marker and pathlib.Path(marker).exists():
-            out.append((f.stem, entry))
+        if f.stem != skip_session and marker and pathlib.Path(str(marker)).exists():
+            out.append((f.stem, cast("RegistryEntry", parsed)))
     return out
 
 
-def load_json(path):
+def load_json(path: pathlib.Path) -> dict[str, object]:
+    """Return the JSON object in a file, or an empty one when it holds none."""
     try:
-        return json.loads(path.read_text())
+        return as_dict(parse_json(path.read_text())) or {}
     except (OSError, ValueError):
         return {}
 
 
-def checked(check, *args):
-    """`check(*args)`, or None when it fails: a broken check never blocks the call, nor skips the
-    checks after it — a ledger check that raised once let a dispatch past the budget hold."""
+def checked(check: Callable[[*Ts], T], *args: *Ts) -> T | None:
+    """Return `check(*args)`, or None when it fails.
+
+    A broken check never blocks the call, nor skips the checks after it — a ledger check
+    that raised once let a dispatch past the budget hold.
+    """
     try:
         return check(*args)
     except (Exception, SystemExit):  # noqa: BLE001
         return None
 
 
-def deny(reason, decision="deny"):
+def deny(reason: str, decision: str = "deny") -> int:
+    """Print the PreToolUse hook output that denies (or asks about) the call; 0."""
     print(
         json.dumps(
             {
@@ -187,7 +299,8 @@ def deny(reason, decision="deny"):
     return 0
 
 
-def emit(name, text):
+def emit(name: str, text: str) -> None:
+    """Print the hook output that adds text to the context of hook event `name`."""
     print(
         json.dumps(
             {"hookSpecificOutput": {"hookEventName": name, "additionalContext": text}}
