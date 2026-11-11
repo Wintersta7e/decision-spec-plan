@@ -383,5 +383,62 @@ class WaitsOnItsJob(Route):
         _ = cast("object", json.loads(stop(active)))  # the event stays valid JSON
 
 
+class MonitorOutputUnderTempRoot(Route):
+    """A monitor's output, with no shell to say where, is read under the temp root.
+
+    Claude Code's temp root is $CLAUDE_CODE_TMPDIR, else the system temp dir ($TMPDIR),
+    joined with claude-<uid>.
+    """
+
+    def _idle(self, idle: str, var: str, root: Path) -> support.Result:
+        """The hook on idle, with var naming root."""
+        return self.py(
+            support.RS,
+            "--hook",
+            input=idle + "\n",
+            merge=True,
+            env={var: str(root)},
+        )
+
+    def test_temp_root(self) -> None:
+        """Each variable names the root a monitor's output is found under."""
+        for n, var in enumerate(("CLAUDE_CODE_TMPDIR", "TMPDIR")):
+            with self.subTest(var=var):
+                root = self.T / f"root-{n}"
+                tasks = root / f"claude-{os.getuid()}" / "p" / "s1" / "tasks"
+                tasks.mkdir(parents=True)
+                name = f"exec-p1-03-{n}"
+                agent = f"a{name}-0123456789abcdef"
+                tm = self.SUB / f"agent-{agent}.jsonl"
+                _ = self.write(tm, "")
+                self.append(
+                    tm,
+                    *call(
+                        "m1",
+                        "Monitor",
+                        {"command": "tail -f g.log", "description": "gate"},
+                        "Monitor started (task bmx1, expires in 30m unless the source "
+                        "ends "
+                        "first).",
+                    ),
+                )
+                idle = ev(
+                    "TeammateIdle",
+                    "s1",
+                    f'"teammate_name":"{name}","agent_id":"{agent}",'
+                    f'"transcript_path":"{self.LEAD}"',
+                )
+                _ = self.write(tasks / "bmx1.output", "x\n")
+                r = self._idle(idle, var, root)
+                self.ok(
+                    f"{var}: running",
+                    r.code == SENT_BACK and "F92" in r.out,
+                    r.out[:600],
+                )
+                _ = self.write(tasks / "bmx1.output", "x\n[exited with code 0]\n")
+                r = self._idle(idle, var, root)
+                self.ok(f"{var}: ended", r.code == 0 and not r.out.strip(), r.out[:600])
+
+
 if __name__ == "__main__":
     _ = unittest.main()

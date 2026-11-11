@@ -12,6 +12,7 @@ import json
 import os
 import pathlib
 import re
+import tempfile
 from collections.abc import Callable, Container, Iterable, Iterator, Mapping
 from typing import TypedDict
 
@@ -663,10 +664,16 @@ def tasks_dir(transcript: pathlib.Path, session: str) -> pathlib.Path:
     """Return where an agent's monitors write their output when no shell of its said.
 
     A monitor's output sits beside the shells', mostly in
-    /tmp/claude-<uid>/<project>/<session>/tasks — one team's sat under another id.
+    <temp root>/claude-<uid>/<project>/<session>/tasks — one team's sat under another
+    id. Claude Code's temp root is $CLAUDE_CODE_TMPDIR, else the system temp dir
+    ($TMPDIR, else /tmp): a fixed /tmp missed both.
     """
     return pathlib.Path(
-        f"/tmp/claude-{os.getuid()}/{transcript.parents[2].name}/{session}/tasks"
+        os.environ.get("CLAUDE_CODE_TMPDIR") or tempfile.gettempdir(),
+        f"claude-{os.getuid()}",
+        transcript.parents[2].name,
+        session,
+        "tasks",
     )
 
 
