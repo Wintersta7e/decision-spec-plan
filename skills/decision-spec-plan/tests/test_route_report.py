@@ -5,6 +5,7 @@ Lanes and how each merged, spec sections, base drift, odd inputs, lanes that mov
 their merged SHA (F41), and the hook's delta on a changed lane line.
 """
 
+import shutil
 import unittest
 
 from typing_extensions import override
@@ -375,6 +376,84 @@ class BaseDriftMergedAndUpstream(support.Sandbox):
             "base drift: the base's upstream moved, fetched not pulled",
             grep(out, f"main@{{upstream}} 1 commits past {c0[:9]}", F=True),
             out,
+        )
+
+
+class LaneGitCalls(support.Sandbox):
+    """The report's git calls do not grow with its merged lanes.
+
+    The hook runs the report after a tool call; at two git calls a lane, a route with
+    47 lane checkpoints on a slow drive spent 24 s in each.
+    """
+
+    def test_git_calls(self) -> None:
+        """Eight merged lanes cost the report as many git calls as two."""
+        tg = self.T / "calls"
+        repo, log, wrapper = tg / "r", tg / "git.log", tg / "bin/git"
+        _ = self.init_repo(repo, commits=("base",))
+        _ = self.write(
+            wrapper,
+            f'#!/bin/sh\necho x >> "{log}"\nexec "{shutil.which("git")}" "$@"\n',
+        )
+        self.chmod_x(wrapper)
+        env = {"PATH": f"{wrapper.parent}:{self.env['PATH']}"}
+
+        def calls(lanes: range) -> tuple[int, str]:
+            for i in lanes:
+                _ = self.git("-C", repo, "commit", "-q", "--allow-empty", "-m", f"l{i}")
+                _ = self.write(
+                    tg / f"plan/lanes/p1-{i:02d}-checkpoint.md",
+                    f"Final SHA: {self.rev(repo)}\n",
+                )
+            _ = self.write(log, "")
+            out = self.py(RS, tg / "plan", "--phase", "1", "--repo", repo, env=env).out
+            return len(log.read_text().splitlines()), out
+
+        two, _ = calls(range(2))
+        eight, out = calls(range(2, 8))
+        self.ok(
+            f"report: 8 merged lanes take as many git calls as 2 ({eight} vs {two})",
+            eight == two and grep(out, "8 checkpoints .* 8 merged into main"),
+            out,
+        )
+
+    def test_cherry_cache(self) -> None:
+        """A lane's patch check runs once per main tip, and again once main moves."""
+        tc = self.T / "cherry"
+        repo, log, wrapper = tc / "r", tc / "git.log", tc / "bin/git"
+        _ = self.init_repo(repo, commits=("base",))
+        _ = self.write(
+            wrapper,
+            f'#!/bin/sh\necho "$*" >> "{log}"\nexec "{shutil.which("git")}" "$@"\n',
+        )
+        self.chmod_x(wrapper)
+        env = {"PATH": f"{wrapper.parent}:{self.env['PATH']}"}
+        _ = self.git("-C", repo, "switch", "-q", "-c", "lane")
+        _ = self.write(repo / "x", "x\n")
+        _ = self.git("-C", repo, "add", "x")
+        _ = self.git("-C", repo, "commit", "-q", "-m", "lane")
+        lane = self.rev(repo)
+        _ = self.git("-C", repo, "switch", "-q", "main")
+        # main moved on: the pick below is a new commit, never the lane's own SHA
+        _ = self.git("-C", repo, "commit", "-q", "--allow-empty", "-m", "main2")
+        _ = self.write(tc / "plan/lanes/p1-01-checkpoint.md", f"Final SHA: {lane}\n")
+
+        def run() -> tuple[int, str]:
+            _ = self.write(log, "")
+            out = self.py(
+                RS, tc / "plan", "--phase", "1", "--repo", repo, "--all", env=env
+            ).out
+            return sum(" cherry " in ln for ln in log.read_text().splitlines()), out
+
+        (first, _), (again, out) = run(), run()
+        _ = self.git("-C", repo, "cherry-pick", lane)
+        moved, picked = run()
+        self.ok(
+            f"report: one patch check per main tip ({first}, {again}, {moved})",
+            (first, again, moved) == (1, 0, 1)
+            and grep(out, "p1-01 .* not merged")
+            and grep(picked, "p1-01 .* merged (by patch)"),
+            f"{out}\n{picked}",
         )
 
 
