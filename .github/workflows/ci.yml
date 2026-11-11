@@ -4,8 +4,6 @@ on:
   push:
     branches: [main]
   pull_request:
-  # the release workflow dispatches CI on its release PR, which GITHUB_TOKEN's PR events never start
-  workflow_dispatch:
 
 permissions: {}
 
