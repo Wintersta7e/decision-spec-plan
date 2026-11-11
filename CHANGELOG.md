@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.1.2](https://github.com/Wintersta7e/decision-spec-plan/compare/v1.1.1...v1.1.2) (2026-11-11)
+
+
+### Performance Improvements
+
+* **route-state:** batch lane git calls and cache patch checks ([84f480c](https://github.com/Wintersta7e/decision-spec-plan/commit/84f480c552c01edc3d153255ae1d95b363ba2510))
+
 ## [1.1.1](https://github.com/Wintersta7e/decision-spec-plan/compare/v1.1.0...v1.1.1) (2026-11-11)
 
 

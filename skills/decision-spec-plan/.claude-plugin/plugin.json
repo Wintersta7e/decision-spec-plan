@@ -1,7 +1,7 @@
 {
   "$schema": "https://anthropic.com/claude-code/plugin.schema.json",
   "name": "decision-spec-plan",
-  "version": "1.1.1",
+  "version": "1.1.2",
   "description": "Evidence-based gates for multi-agent Claude Code work: a push held until a gate log proves the commit, removed tests listed, budgets and outward actions asked for, and a decision → spec → plan route that uses them.",
   "author": {
     "name": "Wintersta7e",
