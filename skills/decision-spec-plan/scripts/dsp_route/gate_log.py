@@ -4,7 +4,7 @@
 It is refused to the lead and its agents alike (F97).
 """
 
-import os
+import pathlib
 import re
 from collections.abc import Callable, Iterable, Mapping, Sequence
 
@@ -219,7 +219,8 @@ def gate_log_edit(event: Mapping[str, object]) -> str | None:
     given = as_dict(event.get("tool_input")) or {}
     if tool in EDIT_TOOLS:
         path = str(given.get("file_path") or given.get("notebook_path") or "")
-        return f"{tool} on {path}" if GATE_LOG.search(path) else None
+        # a Path drops the `//` and `/./` that name the same file
+        return f"{tool} on {path}" if GATE_LOG.search(str(pathlib.Path(path))) else None
     command = str(given.get("command") or "") if tool == "Bash" else ""
     if "gate" not in command:
         return None
@@ -237,7 +238,7 @@ def gate_log_edit(event: Mapping[str, object]) -> str | None:
     dirs += [text(c.words[1]) for c in found if c.name == "cd" and c.words[1:]]
 
     def is_log(t: str) -> bool:
-        return any(GATE_LOG.search(os.path.join(d, t)) for d in dirs)
+        return any(GATE_LOG.search(str(pathlib.Path(d, t))) for d in dirs)
 
     return _code_or_inplace(found, command, text, is_log) or _spelled_into(
         command, text, is_log

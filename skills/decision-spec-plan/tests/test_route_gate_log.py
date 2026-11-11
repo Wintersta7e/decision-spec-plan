@@ -388,5 +388,46 @@ class GateLogWrites(support.Route):
         )  # a session with no route
 
 
+class GateLogSpellings(support.Route):
+    """A gate log named through `//` or `/./` is the same file and is held alike."""
+
+    def lead(self, tool_input: dict[str, str]) -> str:
+        """Return a lead's PreToolUse event for the tool input, as a JSON line.
+
+        Args:
+            tool_input: The `tool_input` object; a `command` makes it a Bash call, else
+                a Write call.
+
+        Returns:
+            The event as `jq -nc` writes it.
+        """
+        return jline(
+            {
+                "hook_event_name": "PreToolUse",
+                "session_id": "s1",
+                "cwd": str(self.T),
+                "tool_name": "Bash" if "command" in tool_input else "Write",
+                "tool_input": tool_input,
+            }
+        )
+
+    def test_spellings(self) -> None:
+        """A doubled slash, a `./` segment or a `cd` to `lanes//` names the log."""
+        lanes = f"{self.P}/lanes"
+        for command in (
+            f"echo exit=0 > {lanes}//p1-01-gate.log",
+            "echo exit=0 > lanes//p1-01-gate.log",
+            f"echo exit=0 > {lanes}/.//p1-01-gate.log",
+            f"cd {lanes}// && echo exit=0 > p1-01-gate.log",
+            f"cd {lanes}/ && echo exit=0 > p1-01-gate.log",
+            f"echo exit=0 > {lanes}/./p1-01-gate.log",
+            f"sed -i s/1/0/ {lanes}//p1-01-gate.log",
+            f"echo done; echo exit=0 | tee {lanes}//p1-01-gate.log",
+        ):
+            _ = self.hook(DENY, self.lead({"command": command}))
+        _ = self.hook(DENY, self.lead({"file_path": f"{lanes}//p1-01-gate.log"}))
+        _ = self.hook("silent", self.lead({"file_path": f"{lanes}//p1-01-rulings.md"}))
+
+
 if __name__ == "__main__":
     _ = unittest.main()
