@@ -1,3 +1,16 @@
 # Development tools only; the plugin itself needs nothing beyond Python 3.11+.
-ruff==0.17.3
-pyright==1.1.414
+# Exact pins: ruff's ALL and basedpyright's "all" gain checks on upgrade, so an upgrade is its own
+# commit with its fixes.
+ruff==0.17.4
+basedpyright==1.40.2
+pytest==9.2.0
+pytest-randomly==5.1.0
+coverage==7.17.2
+diff-cover==11.0.1
+import-linter==2.16
+deptry==0.25.1
+vulture==2.16
+zizmor==1.32.0
+actionlint-py==1.7.12.25
+# typing.override is 3.12+; the test modules import it from here
+typing-extensions==4.16.0

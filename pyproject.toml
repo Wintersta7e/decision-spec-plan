@@ -1,12 +1,102 @@
 # Tool configuration only: the plugin is a set of standard-library scripts, not a package.
-# Pinned tool versions live in requirements-dev.txt.
+# Pinned tool versions live in requirements-dev.txt; `make check` runs every gate below.
 
 [tool.ruff]
 target-version = "py311"
-src = ["skills/decision-spec-plan/scripts"]
+src = ["skills/decision-spec-plan/scripts", "skills/decision-spec-plan/tests"]
 
-[tool.pyright]
-include = ["skills/decision-spec-plan/scripts"]
-extraPaths = ["skills/decision-spec-plan/scripts"]
+[tool.ruff.lint]
+select = ["ALL"]
+# The printed reports use these on purpose (`3 × 20 s`, `11:40–12:30`); every other confusable still fails.
+allowed-confusables = ["×", "–"]
+ignore = [
+  # Conflicts with `ruff format` (ruff docs, "Conflicting lint rules"); 0 hits once formatted.
+  "COM812",
+  # Fires on every argv-list subprocess call, the form S602 asks for; no code change clears it
+  # (ruff docs: "this rule is an audit rule"). 13 hits at 3c70cb6.
+  "S603",
+]
+
+[tool.ruff.lint.per-file-ignores]
+# Each script is a CLI whose stdout is its interface (hook output, reports, --help); 105 hits at
+# 3c70cb6. Tests stay under T201.
+"skills/decision-spec-plan/scripts/**" = ["T201"]
+# pytest's assert is the test mechanism.
+"skills/decision-spec-plan/tests/**" = ["S101"]
+
+[tool.ruff.lint.pydocstyle]
+convention = "google"
+
+[tool.ruff.lint.mccabe]
+max-complexity = 10
+
+[tool.ruff.lint.pylint]
+max-args = 5
+max-branches = 12
+max-returns = 6
+max-statements = 50
+
+[tool.ruff.lint.flake8-copyright]
+notice-rgx = "(?i)SPDX-License-Identifier: MIT"
+
+[tool.basedpyright]
+include = ["skills/decision-spec-plan/scripts", "skills/decision-spec-plan/tests"]
+extraPaths = ["skills/decision-spec-plan/scripts", "skills/decision-spec-plan/tests"]
 pythonVersion = "3.11"
-typeCheckingMode = "standard"
+typeCheckingMode = "all"
+# Contradicts ruff ISC003, which requires implicit concatenation where explicit `+` joins
+# literals, and the formatter's string splitting; 189 hits at 3c70cb6.
+reportImplicitStringConcatenation = false
+
+[tool.pytest]
+strict = true
+# no cache provider: .pytest_cache is not in .gitignore
+addopts = ["-ra", "--import-mode=importlib", "-p", "no:cacheprovider"]
+filterwarnings = ["error"]
+testpaths = ["skills/decision-spec-plan/tests"]
+# sys.path comes from tests/conftest.py, which an installed copy (no pyproject.toml) also has
+
+[tool.coverage.run]
+branch = true
+source = ["skills/decision-spec-plan/scripts"]
+# The suite drives most scripts as subprocesses (tests/support.py); measure those too.
+patch = ["subprocess"]
+parallel = true
+
+[tool.coverage.report]
+show_missing = true
+skip_covered = true
+
+[tool.importlinter]
+root_package = "dsp_route"
+
+[[tool.importlinter.contracts]]
+name = "dsp_route layers: the hook on top, common at the bottom"
+type = "layers"
+containers = ["dsp_route"]
+exhaustive = true
+layers = [
+  "hook",
+  "activate | agent | budget | gate_log | holds | inject | jobs | lead_edits | outward",
+  "commands | report | transcript",
+  "common",
+]
+
+[tool.deptry]
+requirements_files = ["requirements.txt"]
+requirements_files_dev = ["requirements-dev.txt"]
+known_first_party = [
+  "apply_markers", "criteria_check", "decision_check", "dsp_route", "gate", "plan_lint",
+  "push_guard", "route_state", "scope_check", "shell_cmd", "support", "test_check",
+  "usage_report",
+]
+
+[tool.ruff.lint.flake8-tidy-imports]
+# The hook runs on every tool call; these load only on the path that needs them (importing all of them
+# up front made the no-route hook call 70% slower). TID253 keeps them lazy; PLC0415 accepts them.
+banned-module-level-imports = [
+  "dsp_route.activate", "dsp_route.agent", "dsp_route.budget", "dsp_route.gate_log",
+  "dsp_route.holds", "dsp_route.hook", "dsp_route.inject", "dsp_route.jobs",
+  "dsp_route.lead_edits", "dsp_route.outward", "dsp_route.report",
+  "decision_check", "plan_lint", "push_guard", "usage_report",
+]

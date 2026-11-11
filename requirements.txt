@@ -1,0 +1,2 @@
+# The plugin's runtime dependencies: none. Every script uses the Python 3.11+ standard library only;
+# deptry (make check) fails on any third-party import.

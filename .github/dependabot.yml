@@ -1,10 +1,20 @@
 version: 2
 updates:
-  - package-ecosystem: pip
-    directory: /
-    schedule:
-      interval: monthly
   - package-ecosystem: github-actions
     directory: /
     schedule:
-      interval: monthly
+      interval: weekly
+    cooldown:
+      default-days: 7
+    groups:
+      actions:
+        patterns: ["*"]
+  - package-ecosystem: pip
+    directory: /
+    schedule:
+      interval: weekly
+    cooldown:
+      default-days: 7
+    groups:
+      dev-tools:
+        patterns: ["*"]
