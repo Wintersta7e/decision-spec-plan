@@ -1,5 +1,5 @@
 # SPDX-License-Identifier: MIT
-"""The `git` and `gh` commands a Bash tool call runs.
+"""The `git`, `gh` and `glab` commands a Bash tool call runs.
 
 Read as bash reads it (shell_cmd.py), with a word-by-word fallback for text the reader
 cannot follow.
@@ -49,7 +49,9 @@ PUBLISHERS = {
 }
 # How many script files deep a command's scripts are read.
 SCRIPT_DEPTH = 3
-# How many words after a `git`, `gh` or publisher's word text_commands reads.
+# The hosts' command-line tools: `glab`'s review notes are held like `gh`'s (F104).
+HOSTS = ("gh", "glab")
+# How many words after a `git`, `gh`, `glab` or publisher's word text_commands reads.
 TEXT_WORDS = 40
 
 
@@ -187,16 +189,16 @@ def _dir_after(c: shell_cmd.Cmd, here: str | None) -> str | None:
 
 
 def _tools(c: shell_cmd.Cmd) -> list[shell_cmd.Cmd] | None:
-    """Return each `git` command in c and its first `gh` or publisher, from that word.
+    """Return each `git` command in c and its first host tool or publisher, from there.
 
     None when a git subcommand is computed. Every `git` word counts (`sudo -u git git
-    push`); only the first `gh` or publisher, whose check reads all the words after it
-    (each later one took the line to quadratic time).
+    push`); only the first `gh`, `glab` or publisher, whose check reads all the words
+    after it (each later one took the line to quadratic time).
     """
     out: list[shell_cmd.Cmd] = []
     names = [_basename(w) for w in c.argv]
     for i, name in enumerate(names):
-        if name == "git" or (name in ("gh", *PUBLISHERS) and name not in names[:i]):
+        if name == "git" or (name in (*HOSTS, *PUBLISHERS) and name not in names[:i]):
             cmd = shell_cmd.Cmd([], c.words[i:])
             if (g := shell_cmd.git_args(cmd)) and g[1] is None:
                 return None
@@ -207,7 +209,7 @@ def _tools(c: shell_cmd.Cmd) -> list[shell_cmd.Cmd] | None:
 def bash_commands(
     command: str, cwd: str | None = None, depth: int = 0
 ) -> list[shell_cmd.Cmd] | None:
-    """Return each `git`, `gh` and PUBLISHERS command the Bash command runs.
+    """Return each `git`, `gh`, `glab` and PUBLISHERS command the Bash command runs.
 
     Each is read from that word on (`sudo git commit`), as bash reads the command
     (shell_cmd.py): regexes over the text missed wrapped and quoted forms and
@@ -258,7 +260,7 @@ def bash_commands(
 
 
 def text_commands(command: str) -> list[shell_cmd.Cmd]:
-    """Return each `git`, `gh` and PUBLISHERS command in text the reader cannot follow.
+    """Return each `git`, HOSTS and PUBLISHERS command in text the reader cannot follow.
 
     Read word by word: from that word to the next such word, at most 40 words. A regex
     over the text for `gh` or `push` held a stub `gh` on PATH, a JS `.push(` and a plain
@@ -276,11 +278,12 @@ def text_commands(command: str) -> list[shell_cmd.Cmd]:
     names = [_basename(re.sub(r"^[A-Za-z_]\w*=", "", t)) for t in texts]
     out: list[shell_cmd.Cmd] = []
     for i, name in enumerate(names):
-        if name in ("git", "gh", *PUBLISHERS):
-            # only a git or gh word ends one: a publisher's may be a value
+        if name in ("git", *HOSTS, *PUBLISHERS):
+            # only a git, gh or glab word ends one: a publisher's may be a value
             # (`gh -R npm pr merge`)
             end = min(len(names), i + TEXT_WORDS + 1)
-            end = next((k for k in range(i + 1, end) if names[k] in ("git", "gh")), end)
+            ends = ("git", *HOSTS)
+            end = next((k for k in range(i + 1, end) if names[k] in ends), end)
             cmd = shell_cmd.Cmd(
                 [], [shell_cmd.literal(t) for t in [name, *texts[i + 1 : end]]]
             )

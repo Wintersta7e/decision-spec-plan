@@ -101,8 +101,13 @@ def _pre_tool_use(
 ) -> int:
     """Run the PreToolUse checks of a registered session."""
     from .gate_log import gate_log_edit
-    from .outward import outward
+    from .outward import outward, review_post
 
+    if post := checked(review_post, event, entry):
+        from .holds import review_hold
+
+        if held := checked(review_hold, entry):
+            return deny(f"`{post}` posts a review comment; {held}")
     if how := checked(gate_log_edit, event):
         return deny(
             f"{how}: a gate log holds only what the gate printed — it is the evidence "
@@ -291,16 +296,18 @@ def hook() -> int:
     PreToolUse holds the lead's `exec-` dispatches to the recorded budget, gives each
     one it allows an ETA from the route's finished groups and, inside an `exec-` agent,
     applies the context stop and the rulings check; it asks the user before the lead's
-    outward action on the hosted repository and refuses an agent's. The other events
-    put the round's state into the lead's context, never a subagent's or teammate's
-    (agent_id): PostToolUse checks at most every THROTTLE_S and, like an agent's return
-    as a prompt, injects only the lines that changed since the last injection — nothing
-    when none did. SessionStart (compact, resume) injects the whole report and what to
-    re-read. Each names the skill's files changed since the session read them. After
-    an AskUserQuestion, unthrottled, PostToolUse tallies whether each answer took the
-    recommended option, and says so past TAKE_RATE of the last TAKE_WINDOW. After the
-    lead's own edit of the repository once the phase has a budget, unthrottled, it says
-    at the second and every tenth after that execution is a fresh group's (F68).
+    outward action on the hosted repository and refuses an agent's, and refuses a review
+    comment while the review's decision document fails its check (F104). The other
+    events put the round's state into the lead's context, never a subagent's or
+    teammate's (agent_id): PostToolUse checks at most every THROTTLE_S and, like an
+    agent's return as a prompt, injects only the lines that changed since the last
+    injection — nothing when none did. SessionStart (compact, resume) injects the whole
+    report and what to re-read. Each names the skill's files changed since the session
+    read them. After an AskUserQuestion, unthrottled, PostToolUse tallies whether each
+    answer took the recommended option, and says so past TAKE_RATE of the last
+    TAKE_WINDOW. After the lead's own edit of the repository once the phase has a
+    budget, unthrottled, it says at the second and every tenth after that execution is a
+    fresh group's (F68).
 
     Returns:
         The hook's exit code: 2 sends an agent back to its running job, else 0.

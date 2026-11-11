@@ -22,7 +22,8 @@ A review of a change, at S, rests its verdict on what it read and ran (F104):
 3. Label each changed file in the Coverage section as you go: `Read in full`, `Diff read` or
    `Not read`. Tests, recordings, documentation and lockfiles are exempt.
 4. The verdict says unfinished while any file is Not read or no probe has run;
-   `decision_check.py` fails the index otherwise.
+   `decision_check.py` fails the index otherwise, and the hook refuses posting the review's
+   comments while it fails.
 
 Every shape keeps the route's verification:
 - each code claim is re-verified before a ruling;

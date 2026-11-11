@@ -50,6 +50,15 @@
             "command": "python3 \"${CLAUDE_PLUGIN_ROOT}/scripts/route_state.py\" --hook"
           }
         ]
+      },
+      {
+        "matcher": "^mcp__.*create_note$",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python3 \"${CLAUDE_PLUGIN_ROOT}/scripts/route_state.py\" --hook"
+          }
+        ]
       }
     ],
     "SubagentStop": [
