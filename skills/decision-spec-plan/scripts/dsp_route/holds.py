@@ -178,24 +178,47 @@ def ledger_hold(event: Mapping[str, object], entry: RegistryEntry) -> str | None
     return "\n".join(held) or None
 
 
-def review_hold(entry: RegistryEntry) -> str | None:
-    """Return why the route holds a review comment, else None (F104).
-
-    Each round of the phase whose index records a review (`**Review**`) must pass
-    decision_check.py. A route that records no review holds nothing: its comments
-    answer a ticket or a reviewer, and a guard on every comment teaches agents to route
-    around it (F96).
-    """
+def _reviews(entry: RegistryEntry) -> tuple[dict[str, object], list[pathlib.Path]]:
+    """Return the route's marker and its phase's rounds whose index records a review."""
     import decision_check
 
     marker = as_dict(parse_json(pathlib.Path(entry["marker"]).read_text())) or {}
     phase = route_args(marker).phase
     d = pathlib.Path(entry["planning_dir"]) / "decisions" / f"phase{phase}"
-    reviews = [
+    return marker, [
         i.parent
         for i in [d / "00-index.md", *sorted(d.glob("*/00-index.md"))]
         if i.exists() and decision_check.REVIEW.search(i.read_text(errors="replace"))
     ]
+
+
+def unrecorded_review(entry: RegistryEntry) -> str | None:
+    """Return why the route holds a review that no index records, else None (F104).
+
+    A review itself (`gh pr review`, a POST to a pull request's reviews, a review
+    mutation) needs a decision document for its check to read.
+    """
+    marker, reviews = _reviews(entry)
+    if reviews:
+        return None
+    return (
+        f"no decision document of phase {route_args(marker).phase} records the review. "
+        "Record its range (`> **Review**: `<base-sha>..<head-sha>`` in the round's "
+        "index, templates.md §1) with its verdict and Coverage, then post (F104)."
+    )
+
+
+def review_hold(entry: RegistryEntry) -> str | None:
+    """Return why the route holds a review comment, else None (F104).
+
+    Each round of the phase whose index records a review (`**Review**`) must pass
+    decision_check.py. Where none records one, only a review itself is held
+    (unrecorded_review): other comments answer a ticket or a reviewer, and a guard on
+    every comment teaches agents to route around it (F96).
+    """
+    import decision_check
+
+    marker, reviews = _reviews(entry)
     script = pathlib.Path(decision_check.__file__).resolve()
     held = [
         f"the review's decision document fails `{script} {r}` — fix each line, then "

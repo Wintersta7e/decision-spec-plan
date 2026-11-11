@@ -232,6 +232,17 @@ POSTS = (
     "gh api graphql -f query='mutation { addPullRequestReview(input: {}) { id } }'",
     "C='gh pr comment 5 -b ok'; bash -c \"$C\"",
 )
+# Each submits a review, not a comment that may answer one: held with no review on
+# record.
+REVIEWS = (
+    POSTS[1],
+    POSTS[2],
+    POSTS[7],
+    POSTS[8],
+    "gh api repos/o/r/pulls/5/reviews/9/events -f event=APPROVE",
+    "gh api graphql -f query='mutation { submitPullRequestReview(input: {}) { id } }'",
+    "C='gh pr review 5 --approve'; bash -c \"$C\"",
+)
 # ...and none of these does
 READS = (
     "gh pr view 5 --comments",
@@ -270,12 +281,23 @@ class ReviewPosts(support.Route):
     def test_review_posts(self) -> None:
         """Every form of a post is held until the review's Coverage passes."""
         # a route that records no review holds no comment: it answers a ticket or a
-        # reviewer
+        # reviewer; a review submitted there has no document behind it
         _ = self.write(
             self.P / "decisions/phase1/00-index.md",
             decision_index("| S1 | **x** | U2 |"),
         )
-        _ = self.hook("silent", tool("Bash", POSTS[0]))
+        for command in REVIEWS:
+            _ = self.hook(
+                r"deny:posts a review; no decision document of phase 1 records the "
+                r"review.*\*\*Review\*\*.*templates.md §1.*F104",
+                tool("Bash", command),
+            )
+        for command in (POSTS[0], POSTS[3], POSTS[9]):
+            _ = self.hook("silent", tool("Bash", command))
+        _ = self.hook("ask:gh api", tool("Bash", POSTS[6]))
+        _ = self.hook(
+            "ask:gh api", tool("Bash", "gh api repos/o/r/pulls/5/comments -f body=ok")
+        )
         _ = self.hook("silent", tool("mcp__gitlab__create_note"))
         self.index("\n## Coverage\n| File | Read |\n|---|---|\n")
         for command in POSTS:

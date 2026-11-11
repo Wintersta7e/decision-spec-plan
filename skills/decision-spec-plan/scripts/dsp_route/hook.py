@@ -96,18 +96,30 @@ def _lead_dispatch(event: Mapping[str, object], entry: RegistryEntry) -> int:
     return 0
 
 
+def _review(event: Mapping[str, object], entry: RegistryEntry) -> int | None:
+    """Return the deny of a review post the route holds, else None (F104)."""
+    from .holds import review_hold, unrecorded_review
+    from .outward import review_post
+
+    if not (post := checked(review_post, event, entry)):
+        return None
+    act, shaped = post
+    if held := checked(review_hold, entry):
+        return deny(f"`{act}` posts a review comment; {held}")
+    if shaped and (why := checked(unrecorded_review, entry)):
+        return deny(f"`{act}` posts a review; {why}")
+    return None
+
+
 def _pre_tool_use(
     event: Mapping[str, object], session: str, entry: RegistryEntry
 ) -> int:
     """Run the PreToolUse checks of a registered session."""
     from .gate_log import gate_log_edit
-    from .outward import outward, review_post
+    from .outward import outward
 
-    if post := checked(review_post, event, entry):
-        from .holds import review_hold
-
-        if held := checked(review_hold, entry):
-            return deny(f"`{post}` posts a review comment; {held}")
+    if (refused := _review(event, entry)) is not None:
+        return refused
     if how := checked(gate_log_edit, event):
         return deny(
             f"{how}: a gate log holds only what the gate printed — it is the evidence "
