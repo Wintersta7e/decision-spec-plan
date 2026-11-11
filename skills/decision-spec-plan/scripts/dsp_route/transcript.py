@@ -633,7 +633,12 @@ def started_jobs(
     stops: dict[object, object] = {}
     ended: set[str] = set()
     jobs: list[Job] = []
-    for r in read_records(transcript):
+    # An api-request-blob record repeats earlier results without their toolUseResult:
+    # read as its own, a printed start message started a job, and a real one twice.
+    written = (
+        r for r in read_records(transcript) if r.get("type") != "api-request-blob"
+    )
+    for r in written:
         ended |= notified(r)
         message = as_dict(r.get("message"))
         content = as_list(message.get("content")) if message is not None else None
