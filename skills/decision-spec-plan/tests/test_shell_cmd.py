@@ -1,28 +1,31 @@
-"""shell_cmd.py's reading of a command line, checked against bash itself where bash can say.
+# SPDX-License-Identifier: MIT
+"""shell_cmd.py's reading of a command line, checked against bash where bash can say.
 
-- Words: a simple command's words, quotes and escapes read, against bash's `set --` of the same
-  text.
-- Lists: the simple commands a line of `&&`, `||`, `;`, `|`, groups, subshells, comments,
-  continuations and heredocs runs, against the commands bash runs: with PATH empty every command
-  falls to command_not_found_handle, which records its words.
-- Where shell_cmd differs from bash on purpose (it expands nothing, and reads a CR as a blank),
-  the difference is asserted as expected, and bash is run to show it is one.
-- Unwrapping (`env`, `timeout`, `bash -c`, `eval`) bash cannot show: expected events, by hand.
+- Words: a simple command's words, quotes and escapes read, against bash's `set --` of
+  the same text.
+- Lists: the simple commands a line of `&&`, `||`, `;`, `|`, groups, subshells,
+  comments, continuations and heredocs runs, against the commands bash runs: with PATH
+  empty every command falls to command_not_found_handle, which records its words.
+- Where shell_cmd differs from bash on purpose (it expands nothing, and reads a CR as a
+  blank), the difference is asserted as expected, and bash is run to show it is one.
+- Unwrapping (`env`, `timeout`, `bash -c`, `eval`) bash cannot show: expected events,
+  by hand.
 
 The bash checks skip when bash is absent.
 """
 
-import os
 import shutil
 import subprocess
 import tempfile
 import unittest
+from pathlib import Path
+from typing import ClassVar
 
-import support  # noqa: F401  (puts the scripts on sys.path)
+from typing_extensions import override
 
 import shell_cmd
 
-BASH = shutil.which("bash")
+BASH = shutil.which("bash") or ""
 # a backslash: the `$'\u…'` cases are built with it, so no `\u` sits in a string literal
 BS = chr(92)
 
@@ -61,8 +64,9 @@ WORDS = [
     r"echo $'\q' $'\x' $'p\ush'",
 ]
 
-# Lines of several commands, every word static and no command a builtin: the commands bash runs,
-# in order. `fail` is a command whose handler returns 1, so `||` runs what follows it.
+# Lines of several commands, every word static and no command a builtin: the commands
+# bash runs, in order. `fail` is a command whose handler returns 1, so `||` runs what
+# follows it.
 LISTS = [
     "git a && git b",
     "git a;git b",
@@ -90,7 +94,8 @@ LISTS = [
     "git a & git b",
 ]
 
-# What shell_cmd reads where bash reads otherwise on purpose: (text, shell_cmd's words, static).
+# What shell_cmd reads where bash reads otherwise on purpose: (text, shell_cmd's words,
+# static).
 EXPECTED_DIFFERENCES = [
     ("echo $HOME", ["echo", "$HOME"], False),
     ("echo ${HOME}/x", ["echo", "${HOME}/x"], False),
@@ -103,8 +108,18 @@ EXPECTED_DIFFERENCES = [
 ]
 
 
-def bash_words(text, cwd):
-    """bash's words of a simple command, as `set --` reads it."""
+def token_text(token: shell_cmd.Token) -> str:
+    """A word's text, or an operator token as it is."""
+    return token.text if isinstance(token, shell_cmd.Word) else token
+
+
+def commands(text: str) -> list[shell_cmd.Cmd]:
+    """The simple commands among the events of text."""
+    return [e[1] for e in shell_cmd.events(text) if e[0] == "cmd"]
+
+
+def bash_words(text: str, cwd: str) -> list[str]:
+    """Bash's words of a simple command, as `set --` reads it."""
     r = subprocess.run(
         [
             BASH,
@@ -133,19 +148,22 @@ command_not_found_handle() {
 """
 
 
-def bash_runs(text, cwd):
-    """The argv of each command bash runs for text that it cannot find (every non-builtin)."""
-    out = os.path.join(cwd, "runs")
-    subprocess.run(
+def bash_runs(text: str, cwd: str) -> list[list[str]]:
+    """The argv of each command bash runs for text that it cannot find.
+
+    That is every command that is not a builtin.
+    """
+    out = Path(cwd) / "runs"
+    _ = subprocess.run(
         [BASH, "--norc", "--noprofile", "-c", HANDLER, "_", text, out],
         cwd=cwd,
         env={"PATH": "/nonexistent-dsp", "HOME": cwd, "LANG": "C.UTF-8"},
         capture_output=True,
         check=False,
     )
-    with open(out, "rb") as f:
-        fields = f.read().decode("utf-8", "surrogateescape").split("\0")[:-1]
-    runs, cur = [], []
+    fields = out.read_bytes().decode("utf-8", "surrogateescape").split("\0")[:-1]
+    runs: list[list[str]] = []
+    cur: list[str] = []
     for field in fields:
         if field == "\1":
             runs.append(cur)
@@ -156,10 +174,19 @@ def bash_runs(text, cwd):
 
 
 class ShellCmdAgainstBash(unittest.TestCase):
+    """The words and commands shell_cmd reads, against the ones bash reads."""
+
+    _tmp: ClassVar[tempfile.TemporaryDirectory[str]]
+    cwd: ClassVar[str]
+    builtins: ClassVar[set[str]]
+
+    @override
     @classmethod
-    def setUpClass(cls):
+    def setUpClass(cls) -> None:
+        """Skip without bash; else make a working directory and list bash's builtins."""
         if not BASH:
-            raise unittest.SkipTest("bash is not installed")
+            msg = "bash is not installed"
+            raise unittest.SkipTest(msg)
         cls._tmp = tempfile.TemporaryDirectory(prefix="dsp-sh-")
         cls.cwd = cls._tmp.name
         r = subprocess.run(
@@ -170,48 +197,53 @@ class ShellCmdAgainstBash(unittest.TestCase):
         )
         cls.builtins = set(r.stdout.split())
 
+    @override
     @classmethod
-    def tearDownClass(cls):
+    def tearDownClass(cls) -> None:
+        """Remove the working directory."""
         cls._tmp.cleanup()
 
-    def test_words(self):
+    def test_words(self) -> None:
+        """A simple command's words are the ones bash's `set --` reads."""
         for text in WORDS:
             with self.subTest(text):
-                tokens = shell_cmd._scan(text)[0]
-                self.assertTrue(
-                    all(isinstance(t, shell_cmd.Word) and t.static for t in tokens),
-                    f"corpus case is not one static simple command: {tokens}",
-                )
-                self.assertEqual([t.text for t in tokens], bash_words(text, self.cwd))
+                tokens = shell_cmd.scan(text)[0]
+                assert all(
+                    isinstance(t, shell_cmd.Word) and t.static for t in tokens
+                ), f"corpus case is not one static simple command: {tokens}"
+                words = [t for t in tokens if isinstance(t, shell_cmd.Word)]
+                assert [w.text for w in words] == bash_words(text, self.cwd)
 
-    def test_lists(self):
+    def test_lists(self) -> None:
+        """A line's simple commands are the ones bash runs, in order."""
         for text in LISTS:
             with self.subTest(text):
-                cmds = [c for kind, c in shell_cmd.events(text) if kind == "cmd"]
-                self.assertTrue(
-                    all(w.static for c in cmds for w in c.words),
-                    "corpus case has a computed word",
+                cmds = commands(text)
+                assert all(w.static for c in cmds for w in c.words), (
+                    "corpus case has a computed word"
                 )
                 mine = [c.argv for c in cmds if c.words and c.name not in self.builtins]
                 theirs = bash_runs(text, self.cwd)
                 if any(op in text for op in ("|", "&")) and "&&" not in text:
                     # a pipeline's and a background job's commands run at once
                     mine, theirs = sorted(mine), sorted(theirs)
-                self.assertEqual(mine, theirs)
+                assert mine == theirs
 
-    def test_expected_differences(self):
+    def test_expected_differences(self) -> None:
+        """Where shell_cmd reads otherwise on purpose, bash does read otherwise."""
         for text, words, static in EXPECTED_DIFFERENCES:
             with self.subTest(text):
-                tokens = shell_cmd._scan(text)[0]
-                self.assertEqual([t.text for t in tokens], words)
-                self.assertEqual(all(t.static for t in tokens), static)
-                self.assertNotEqual(
-                    bash_words(text, self.cwd), words, "bash reads it alike"
+                tokens = shell_cmd.scan(text)[0]
+                assert [token_text(t) for t in tokens] == words
+                assert (
+                    all(isinstance(t, shell_cmd.Word) and t.static for t in tokens)
+                    == static
                 )
+                assert bash_words(text, self.cwd) != words, "bash reads it alike"
 
 
 # (text, [(argv, assignment names, the operator before it)] of its commands)
-UNWRAP_CASES = [
+UNWRAP_CASES: list[tuple[str, list[tuple[list[str], list[str], str | None]]]] = [
     ("env FOO=1 BAR=2 git push", [(["git", "push"], ["FOO", "BAR"], None)]),
     ("timeout 60 git push origin", [(["git", "push", "origin"], [], None)]),
     ("nice -n 5 nohup git push", [(["git", "push"], [], None)]),
@@ -243,28 +275,34 @@ UNWRAP_CASES = [
 
 
 class Unwrapping(unittest.TestCase):
-    """What the reader makes of wrappers, nested shells and `cd` chains, which no bash run shows."""
+    """What the reader makes of wrappers, nested shells and `cd` chains.
 
-    def test_events(self):
+    No bash run shows these.
+    """
+
+    def test_events(self) -> None:
+        """A wrapper, nested shell or `cd` chain yields the commands it runs."""
         for text, want in UNWRAP_CASES:
             with self.subTest(text):
                 got = [
                     (c.argv, [name for name, _ in c.assigns], c.after)
-                    for kind, c in shell_cmd.events(text)
-                    if kind == "cmd"
+                    for c in commands(text)
                 ]
-                self.assertEqual(got, want)
+                assert got == want
 
-    def test_opaque(self):
+    def test_opaque(self) -> None:
+        """Text a shell runs that cannot be read is an opaque event."""
         for text in ("bash script.sh", "source ./env.sh", 'eval "$X"', "echo x | bash"):
             with self.subTest(text):
                 kinds = [kind for kind, _ in shell_cmd.events(text)]
-                self.assertIn("opaque", kinds)
+                assert "opaque" in kinds
 
-    def test_escape_past_unicode_reads(self):
-        tokens = shell_cmd._scan(r"echo $'\UFFFFFFFF' $'\U110000'")[0]
-        self.assertEqual(len(tokens), 3)
+    def test_escape_past_unicode_reads(self) -> None:
+        r"""A `\U` escape past the last code point is read, not raised on."""
+        tokens = shell_cmd.scan(r"echo $'\UFFFFFFFF' $'\U110000'")[0]
+        want = 3  # echo and its two words
+        assert len(tokens) == want
 
 
 if __name__ == "__main__":
-    unittest.main()
+    _ = unittest.main()

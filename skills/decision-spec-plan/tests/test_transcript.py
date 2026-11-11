@@ -1,10 +1,15 @@
-"""`route_state.py --activate`'s transcript shape check, run as the hooks run: a subprocess with
-HOME pointed at a throwaway directory, so no real session or registry is read.
+# SPDX-License-Identifier: MIT
+"""`route_state.py --activate`'s transcript shape check, run as the hooks run.
 
-Each test also checks the quiet side: a transcript carrying every shape the hooks read prints
-nothing, so a check that flags everything fails here too."""
+It runs as a subprocess with HOME pointed at a throwaway directory, so no real session
+or registry is read.
+
+Each test also checks the quiet side: a transcript carrying every shape the hooks read
+prints nothing, so a check that flags everything fails here too.
+"""
 
 import copy
+import dataclasses
 import json
 import os
 import pathlib
@@ -12,17 +17,46 @@ import subprocess
 import sys
 import tempfile
 import unittest
+from typing import Required, TypedDict
+
+from typing_extensions import override
 
 SCRIPT = pathlib.Path(__file__).resolve().parents[1] / "scripts" / "route_state.py"
 SESSION = "s-shape"
 PREFIX = "transcript format:"
 
 
-def lead_records():
-    """A lead's transcript at --activate: the user's prompt, the skill's load and its result,
-    then the --activate call itself, whose result is not written yet."""
+class _Message(TypedDict, total=False):
+    """A record's message, as the lead's transcript holds it."""
 
-    def assistant(n, call, stamp):
+    role: Required[str]
+    content: Required[str | list[dict[str, object]]]
+    id: str
+    model: str
+    stop_reason: str
+    usage: dict[str, int]
+
+
+class _Record(TypedDict, total=False):
+    """One record of the lead's transcript."""
+
+    type: Required[str]
+    entrypoint: Required[str]
+    timestamp: Required[str]
+    message: Required[_Message]
+    requestId: str
+    origin: dict[str, str]
+    toolUseResult: dict[str, bool]
+
+
+def lead_records() -> list[_Record]:
+    """A lead's transcript at --activate.
+
+    The user's prompt, the skill's load and its result, then the --activate call itself,
+    whose result is not written yet.
+    """
+
+    def assistant(n: int, call: dict[str, object], stamp: str) -> _Record:
         return {
             "type": "assistant",
             "entrypoint": "cli",
@@ -88,48 +122,71 @@ def lead_records():
     ]
 
 
+@dataclasses.dataclass(frozen=True)
+class _Fixture:
+    """One test's throwaway HOME, its repository, environment and lead transcript."""
+
+    home: pathlib.Path
+    repo: pathlib.Path
+    env: dict[str, str]
+    transcript: pathlib.Path
+
+
 class ActivateShapeCheck(unittest.TestCase):
-    def setUp(self):
-        self.tmp = tempfile.TemporaryDirectory()  # under $TMPDIR when it is set
-        root = pathlib.Path(self.tmp.name)
-        self.home = root / "home"
-        self.home.mkdir()
-        self.repo = root / "repo"
+    """--activate's transcript shape check on transcripts each missing one shape."""
+
+    _fx: _Fixture | None = None
+
+    @override
+    def setUp(self) -> None:
+        """Create HOME and a repository with one commit, and name the transcript."""
+        tmp = tempfile.TemporaryDirectory()  # under $TMPDIR when it is set
+        self.addCleanup(tmp.cleanup)
+        root = pathlib.Path(tmp.name)
+        home = root / "home"
+        home.mkdir()
+        repo = root / "repo"
         # no user or system git config: their hooks and identity are not this test's
-        self.env = {
+        env = {
             "PATH": os.environ["PATH"],
-            "HOME": str(self.home),
+            "HOME": str(home),
             "GIT_CONFIG_NOSYSTEM": "1",
         }
         git = ["git", "-c", "user.name=t", "-c", "user.email=t@t"]
         for args in (
-            ["init", "-q", "-b", "main", str(self.repo)],
-            ["-C", str(self.repo), "commit", "-q", "--allow-empty", "-m", "one"],
+            ["init", "-q", "-b", "main", str(repo)],
+            ["-C", str(repo), "commit", "-q", "--allow-empty", "-m", "one"],
         ):
-            subprocess.run([*git, *args], env=self.env, check=True)
-        (self.repo / ".plan" / "decisions" / "phase1").mkdir(parents=True)
-        self.transcript = self.home / ".claude" / "projects" / "p" / f"{SESSION}.jsonl"
+            _ = subprocess.run([*git, *args], env=env, check=True)
+        (repo / ".plan" / "decisions" / "phase1").mkdir(parents=True)
+        transcript = home / ".claude" / "projects" / "p" / f"{SESSION}.jsonl"
+        self._fx = _Fixture(home, repo, env, transcript)
 
-    def tearDown(self):
-        self.tmp.cleanup()
+    @property
+    def fx(self) -> _Fixture:
+        """The fixture setUp created."""
+        if self._fx is None:
+            self.fail("setUp did not run")
+        return self._fx
 
-    def activate(self, records=None):
+    def activate(self, records: list[_Record] | None = None) -> tuple[int, list[str]]:
         """(exit status, the shape check's lines) of --activate with this transcript."""
+        fx = self.fx
         if records is None:
-            self.transcript.unlink(missing_ok=True)
+            fx.transcript.unlink(missing_ok=True)
         else:
-            self.transcript.parent.mkdir(parents=True, exist_ok=True)
-            self.transcript.write_text("".join(json.dumps(r) + "\n" for r in records))
-        env = {**self.env, "CLAUDE_CODE_SESSION_ID": SESSION}
+            fx.transcript.parent.mkdir(parents=True, exist_ok=True)
+            _ = fx.transcript.write_text("".join(json.dumps(r) + "\n" for r in records))
+        env = {**fx.env, "CLAUDE_CODE_SESSION_ID": SESSION}
         r = subprocess.run(
             [
                 sys.executable,
                 str(SCRIPT),
-                str(self.repo / ".plan"),
+                str(fx.repo / ".plan"),
                 "--phase",
                 "1",
                 "--repo",
-                str(self.repo),
+                str(fx.repo),
                 "--activate",
             ],
             env=env,
@@ -137,110 +194,131 @@ class ActivateShapeCheck(unittest.TestCase):
             text=True,
             check=False,
         )
-        self.assertIn("hooks registered for session", r.stdout, r.stdout + r.stderr)
+        if "hooks registered for session" not in r.stdout:
+            self.fail(r.stdout + r.stderr)
         return r.returncode, [
             ln for ln in r.stdout.splitlines() if ln.startswith(PREFIX)
         ]
 
-    def assert_flags(self, records, *checks):
-        """A full transcript is quiet; `records` gets one line naming each of `checks`, and
-        --activate exits as it does with the full one."""
+    def assert_flags(self, records: list[_Record], *checks: str) -> str:
+        """A full transcript is quiet; records gets one line naming each of checks.
+
+        --activate exits as it does with the full one.
+        """
         quiet_code, quiet = self.activate(lead_records())
-        self.assertEqual(quiet, [])
+        if quiet != []:
+            self.fail(f"{quiet!r} != []")
         code, lines = self.activate(records)
-        self.assertEqual(len(lines), 1, lines)
+        if len(lines) != 1:
+            self.fail(f"{len(lines)} != 1 : {lines!r}")
         for check in checks:
-            self.assertIn(check, lines[0])
-        self.assertEqual(code, quiet_code)
+            if check not in lines[0]:
+                self.fail(f"{check!r} not found in {lines[0]!r}")
+        if code != quiet_code:
+            self.fail(f"{code} != {quiet_code}")
         return lines[0]
 
-    def test_no_transcript_yet_is_quiet(self):
+    def test_no_transcript_yet_is_quiet(self) -> None:
+        """No transcript is quiet; one without usage turns off the budget hold."""
         code, lines = self.activate(None)
-        self.assertEqual((code, lines), (0, []))
+        assert (code, lines) == (0, [])
         broken = lead_records()
         for r in broken:
-            r["message"].pop("usage", None)
-        self.assert_flags(broken, "the budget hold")
+            _ = r["message"].pop("usage", None)
+        _ = self.assert_flags(broken, "the budget hold")
 
-    def test_no_reply_yet_is_quiet(self):
+    def test_no_reply_yet_is_quiet(self) -> None:
+        """No reply yet is quiet; a reply under a renamed type turns its checks off."""
         # --activate typed by the user (`!`) before the model's first reply
-        self.assertEqual(self.activate(lead_records()[:1])[1], [])
+        assert self.activate(lead_records()[:1])[1] == []
         # a reply under a renamed record type is a reply: every check reading it is off
         records = lead_records()
         for r in records:
             if r["type"] == "assistant":
                 r["type"] = "model"
-        self.assert_flags(records, "the budget hold", "ETAs", "the context stop")
+        _ = self.assert_flags(records, "the budget hold", "ETAs", "the context stop")
 
-    def test_usage_missing_turns_off_spend_and_context_stop(self):
+    def test_usage_missing_turns_off_spend_and_context_stop(self) -> None:
+        """Without usage the budget hold and the context stop are off."""
         records = lead_records()
         for r in records:
-            r["message"].pop("usage", None)
+            _ = r["message"].pop("usage", None)
         line = self.assert_flags(records, "the budget hold", "the context stop")
-        self.assertIn("usage", line)
+        assert "usage" in line
 
-    def test_message_id_missing_turns_off_spend(self):
-        # usage_report counts each (message.id, requestId) once: without the id every turn after
-        # the first would count as the first
+    def test_message_id_missing_turns_off_spend(self) -> None:
+        """Without message ids the budget hold is off."""
+        # usage_report counts each (message.id, requestId) once: without the id every
+        # turn after the first would count as the first
         records = lead_records()
         for r in records:
-            r["message"].pop("id", None)
-        self.assert_flags(records, "the budget hold")
+            _ = r["message"].pop("id", None)
+        _ = self.assert_flags(records, "the budget hold")
 
-    def test_unparseable_timestamps_turn_off_etas(self):
+    def test_unparseable_timestamps_turn_off_etas(self) -> None:
+        """Unparseable timestamps turn off ETAs, the rulings check and the hold."""
         records = lead_records()
         for r in records:
             r["timestamp"] = "yesterday"
-        self.assert_flags(records, "ETAs", "the rulings check", "the budget hold")
+        _ = self.assert_flags(records, "ETAs", "the rulings check", "the budget hold")
 
-    def test_stop_reason_missing_turns_off_etas(self):
+    def test_stop_reason_missing_turns_off_etas(self) -> None:
+        """Without stop_reason ETAs are off."""
         records = lead_records()
         for r in records:
-            r["message"].pop("stop_reason", None)
-        self.assert_flags(records, "ETAs")
+            _ = r["message"].pop("stop_reason", None)
+        _ = self.assert_flags(records, "ETAs")
 
-    def test_tool_use_blocks_renamed(self):
+    def test_tool_use_blocks_renamed(self) -> None:
+        """Renamed tool_use blocks turn off the checks that read calls."""
         records = lead_records()
         for r in records:
-            for block in r["message"]["content"] if r["type"] == "assistant" else []:
+            content = r["message"]["content"] if r["type"] == "assistant" else []
+            for block in content:
+                assert isinstance(block, dict), block
                 block["type"] = "tool_call"
-        self.assert_flags(
+        _ = self.assert_flags(
             records, "the budget hold", "the rulings check", "the own-jobs wait"
         )
 
-    def test_tool_result_missing_after_an_earlier_call(self):
+    def test_tool_result_missing_after_an_earlier_call(self) -> None:
+        """A call whose result never came is a gap."""
         records = [r for r in lead_records() if "toolUseResult" not in r]
-        self.assert_flags(records, "the own-jobs wait", "the budget hold")
+        _ = self.assert_flags(records, "the own-jobs wait", "the budget hold")
 
-    def test_activate_as_the_first_call_has_no_result_to_check(self):
+    def test_activate_as_the_first_call_has_no_result_to_check(self) -> None:
+        """--activate as the first call is quiet; after an unanswered call it is not."""
         first = [lead_records()[0], lead_records()[3]]
-        self.assertEqual(self.activate(first)[1], [])
+        assert self.activate(first)[1] == []
         # the same call after one whose result never came is a gap
         records = [r for r in lead_records() if "toolUseResult" not in r]
-        self.assert_flags(records, "the own-jobs wait")
+        _ = self.assert_flags(records, "the own-jobs wait")
 
-    def test_tool_use_result_missing(self):
+    def test_tool_use_result_missing(self) -> None:
+        """A tool result without toolUseResult turns off the own-jobs wait."""
         records = lead_records()
-        records[2].pop("toolUseResult")
-        self.assert_flags(records, "the own-jobs wait", "--budget")
+        _ = records[2].pop("toolUseResult")
+        _ = self.assert_flags(records, "the own-jobs wait", "--budget")
 
-    def test_human_prompt_missing_in_an_interactive_session(self):
+    def test_human_prompt_missing_in_an_interactive_session(self) -> None:
+        """No typed prompt is a gap interactively, none headless."""
         records = copy.deepcopy(lead_records())
-        records[0].pop("origin")
-        self.assert_flags(records, "the budget hold")
+        _ = records[0].pop("origin")
+        _ = self.assert_flags(records, "the budget hold")
         # a headless session has no typed prompt to find
         for r in records:
             r["entrypoint"] = "sdk-cli"
-        self.assertEqual(self.activate(records)[1], [])
+        assert self.activate(records)[1] == []
 
-    def test_several_gaps_share_one_line(self):
+    def test_several_gaps_share_one_line(self) -> None:
+        """Several gaps are named on one line, each once."""
         records = lead_records()
         for r in records:
-            r["message"].pop("usage", None)
-            r["message"].pop("stop_reason", None)
+            _ = r["message"].pop("usage", None)
+            _ = r["message"].pop("stop_reason", None)
         line = self.assert_flags(records, "ETAs", "the context stop")
-        self.assertEqual(line.count("the budget hold"), 1)
+        assert line.count("the budget hold") == 1
 
 
 if __name__ == "__main__":
-    unittest.main()
+    _ = unittest.main()

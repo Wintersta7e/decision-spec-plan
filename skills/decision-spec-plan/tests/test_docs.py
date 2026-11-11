@@ -1,17 +1,43 @@
-"""The plugin's own files agree with each other: the agent tiers' role rules, the hook wiring,
-the files SKILL.md names, the failure-mode rows cited as evidence, every script's --help and
-SKILL.md's size."""
+# SPDX-License-Identifier: MIT
+"""The plugin's own files agree with each other.
+
+The agent tiers' role rules, the hook wiring, the files SKILL.md names, the
+failure-mode rows cited as evidence, every script's --help and SKILL.md's size.
+"""
 
 import ast
 import json
 import re
 import unittest
+from pathlib import Path
+from typing import ClassVar, Required, TypedDict, cast
 
 import support
 from support import PLUGIN, SCRIPTS
 
+SKILL_LIMIT = 19000  # characters of SKILL.md, under the 20,000 a compaction keeps
 
-def role_rules(path):
+
+class _Hook(TypedDict):
+    """One command of a hooks.json entry."""
+
+    command: str
+
+
+class _Entry(TypedDict, total=False):
+    """One hooks.json entry: an optional matcher and its commands."""
+
+    matcher: str
+    hooks: Required[list[_Hook]]
+
+
+class _HooksFile(TypedDict):
+    """hooks/hooks.json: the entries of each event."""
+
+    hooks: dict[str, list[_Entry]]
+
+
+def role_rules(path: Path) -> str:
     """An agent file from its `Your final message` line to the end."""
     lines = path.read_text(encoding="utf-8").split("\n")
     start = next(
@@ -21,26 +47,36 @@ def role_rules(path):
 
 
 class PluginFiles(support.Sandbox):
-    no_hooks = False
+    """Checks of the plugin's shipped files against each other."""
 
-    def test_mechanical_tier_carries_the_deep_tiers_rules(self):
-        # a lane moved to the mechanical tier once ran with no one-group limit, context stop,
-        # rulings, no-progress or heavy-run rule
+    no_hooks: ClassVar[bool] = False
+
+    def test_mechanical_tier_carries_the_deep_tiers_rules(self) -> None:
+        """dsp-mechanical's role rules are dsp-deep's."""
+        # a lane moved to the mechanical tier once ran with no one-group limit, context
+        # stop, rulings, no-progress or heavy-run rule
         deep = role_rules(PLUGIN / "agents/dsp-deep.md")
         mech = role_rules(PLUGIN / "agents/dsp-mechanical.md")
         self.ok(
             "dsp-mechanical carries dsp-deep's role rules", deep != "" and deep == mech
         )
 
-    def test_wiring(self):
-        # its hooks run this plugin's scripts on every event the route needs, and a dispatch names
-        # the agent as the plugin qualifies it (a bare `dsp-deep` resolves to no agent)
-        manifest = json.loads((PLUGIN / ".claude-plugin/plugin.json").read_text())
+    def test_wiring(self) -> None:
+        """The manifest's name, the hook registrations and the qualified agent names."""
+        # its hooks run this plugin's scripts on every event the route needs, and a
+        # dispatch names the agent as the plugin qualifies it (a bare `dsp-deep`
+        # resolves to no agent)
+        manifest = cast(
+            "dict[str, object]",
+            json.loads((PLUGIN / ".claude-plugin/plugin.json").read_text()),
+        )
         self.ok(
             "plugin.json names the plugin decision-spec-plan",
             manifest.get("name") == "decision-spec-plan",
         )
-        hooks = json.loads((PLUGIN / "hooks/hooks.json").read_text())["hooks"]
+        hooks = cast(
+            "_HooksFile", json.loads((PLUGIN / "hooks/hooks.json").read_text())
+        )["hooks"]
         reg = sorted(
             f"{event} {entry.get('matcher') or ''} {h['command']}"
             for event, entries in hooks.items()
@@ -50,7 +86,10 @@ class PluginFiles(support.Sandbox):
         route = 'python3 "${CLAUDE_PLUGIN_ROOT}/scripts/route_state.py" --hook'
         want = [
             f"PostToolUse * {route}",
-            f"PreToolUse Agent|Bash|Write|Edit|MultiEdit|NotebookEdit|SendMessage {route}",
+            (
+                "PreToolUse Agent|Bash|Write|Edit|MultiEdit|NotebookEdit|SendMessage "
+                f"{route}"
+            ),
             'PreToolUse Bash python3 "${CLAUDE_PLUGIN_ROOT}/scripts/push_guard.py"',
             f"SessionStart compact|resume {route}",
             f"SubagentStop  {route}",
@@ -58,7 +97,8 @@ class PluginFiles(support.Sandbox):
             f"UserPromptSubmit  {route}",
         ]
         self.ok(
-            "hooks.json registers route_state.py and push_guard.py on the route's 7 hooks",
+            "hooks.json registers route_state.py and push_guard.py on the route's "
+            "7 hooks",
             reg == want,
             "\n".join(reg),
         )
@@ -75,26 +115,35 @@ class PluginFiles(support.Sandbox):
             "every dispatch names decision-spec-plan:dsp-*", not hits, "\n".join(hits)
         )
 
-    def test_named_files_and_cited_rows_exist(self):
-        # SKILL.md's pointer to the ask format once named a file the skill never shipped
+    def test_named_files_and_cited_rows_exist(self) -> None:
+        """Every file SKILL.md names and every failure-mode row a file cites exists."""
+        # SKILL.md's pointer to the ask format once named a file the skill never
+        # shipped
         skill = (PLUGIN / "SKILL.md").read_text(encoding="utf-8")
-        names = sorted(set(re.findall(r"`([A-Za-z0-9_./-]+\.md)`", skill)))
+        found = cast("list[str]", re.findall(r"`([A-Za-z0-9_./-]+\.md)`", skill))
+        names = sorted(set(found))
         shipped = {p.name for p in PLUGIN.rglob("*")}
         gone = [n for n in names if n.rsplit("/", 1)[-1] not in shipped]
         self.ok("every file SKILL.md names exists", not gone, " ".join(gone))
         # ...and every failure-mode row a file cites as a rule's evidence exists
         modes = PLUGIN / "references/failure-modes.md"
-        rows = set(re.findall(r"^\| (F[0-9]+) ", modes.read_text(), re.MULTILINE))
+        rows = set(
+            cast(
+                "list[str]",
+                re.findall(r"^\| (F[0-9]+) ", modes.read_text(), re.MULTILINE),
+            )
+        )
         sources = [PLUGIN / "SKILL.md"]
         for d in ("references", "agents", "scripts"):
             sources += [
                 p
                 for p in (PLUGIN / d).rglob("*")
-                if p.is_file() and p.suffix in (".md", ".py") and p.name != modes.name
+                if p.is_file() and p.suffix in {".md", ".py"} and p.name != modes.name
             ]
-        cited = set()
+        cited: set[str] = set()
         for p in sources:
-            cited |= set(re.findall(r"\bF[0-9]+\b", p.read_text(errors="replace")))
+            text = p.read_text(errors="replace")
+            cited |= set(cast("list[str]", re.findall(r"\bF[0-9]+\b", text)))
         gone = sorted(cited - rows)
         self.ok(
             "every failure-mode row a file cites exists",
@@ -102,9 +151,10 @@ class PluginFiles(support.Sandbox):
             " ".join(gone),
         )
 
-    def test_help_is_the_whole_interface(self):
-        # shown only its docstring's first line, a lead read ~20k characters of the scripts'
-        # source to learn their options (F84)
+    def test_help_is_the_whole_interface(self) -> None:
+        """Every script's --help prints its whole docstring."""
+        # shown only its docstring's first line, a lead read ~20k characters of the
+        # scripts' source to learn their options (F84)
         for s in (
             "route_state.py",
             "push_guard.py",
@@ -138,11 +188,12 @@ class PluginFiles(support.Sandbox):
             support.grep(crit, "__tests__", F=True),
         )
 
-    def test_skill_fits_a_compaction(self):
+    def test_skill_fits_a_compaction(self) -> None:
+        """SKILL.md stays under the size a compaction re-attaches."""
         # a compaction re-attaches SKILL.md cut at 20,000 characters (failure-modes F61)
         n = len((PLUGIN / "SKILL.md").read_text(encoding="utf-8"))
-        self.ok(f"SKILL.md is {n} characters (limit 19000)", n <= 19000)
+        self.ok(f"SKILL.md is {n} characters (limit {SKILL_LIMIT})", n <= SKILL_LIMIT)
 
 
 if __name__ == "__main__":
-    unittest.main()
+    _ = unittest.main()

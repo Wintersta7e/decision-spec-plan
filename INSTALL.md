@@ -62,6 +62,7 @@ the agent falls back to `timeout` + `setsid`.
 `agents/dsp-*.md` list no MCP tools — add any you want the route's agents to have (a documentation
 server, say) to their `tools:` line.
 
-Before editing the skill, and after: `python3 -m unittest discover -s ~/.claude/skills/decision-spec-plan/tests`
+Before editing the skill, and after: `python3 -m pytest ~/.claude/skills/decision-spec-plan/tests`
 (it tests the copy it sits in; throwaway repos only; fails if SKILL.md grows past 19,000 characters
-— a compaction cuts it at 20,000).
+— a compaction cuts it at 20,000). The suite needs `pytest` and `typing-extensions`, which the plugin
+itself never imports: `pip install pytest typing-extensions`.

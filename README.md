@@ -220,7 +220,7 @@ skills/decision-spec-plan/
 ├── references/           briefs, prompts, templates, costs, execution, the failure-mode log
 ├── scripts/              hooks and stage checkers (Python, standard library only)
 ├── hooks/hooks.json      hook wiring
-└── tests/                unittest files (standard library only), run against throwaway repositories
+└── tests/                pytest suite (dev-only packages), run against throwaway repositories
 ```
 
 [`references/failure-modes.md`](skills/decision-spec-plan/references/failure-modes.md) records each
@@ -230,10 +230,9 @@ evidence for that rule is in this log.
 ## Development
 
 ```
-python3 -m unittest discover -s skills/decision-spec-plan/tests   # tests the copy it sits in
-ruff check skills/decision-spec-plan/scripts skills/decision-spec-plan/tests
-ruff format --check skills/decision-spec-plan/scripts skills/decision-spec-plan/tests
-pyright
+pip install -r requirements-dev.txt   # the pinned tools; the plugin itself needs none
+make check                            # format, lint, types, architecture, dead code, tests
+python3 -m pytest skills/decision-spec-plan/tests   # the suite alone; tests the copy it sits in
 ```
 
 The suite builds throwaway repositories and points `HOME` at a temp directory, so it never touches
