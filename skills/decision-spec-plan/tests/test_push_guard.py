@@ -656,11 +656,19 @@ class GuardGateLogs(support.Route):
         self.ok(
             "a bare git -C is no guard crash", not grep(out, "the guard failed"), out
         )
-        # every command is read now, so a long line of git commands stays fast
+        # every command is read now, so a long line of git commands stays fast. Timed
+        # untraced: coverage's tracer, which reaches each script through the COVERAGE_
+        # variables, tripled the guard's time on 3.11 and failed CI
+        event = {"tool_input": {"command": "git x; " * 3000}, "cwd": str(wt)}
+        untraced = [k for k in self.env if k.startswith("COVERAGE_")]
         start = time.monotonic()
-        _ = g(0, wt, "git x; " * 3000)
-        took = int(time.monotonic() - start)
-        self.ok(f"3,000 git commands in one line are read in {took} s", took < FAST)
+        r = self.py(support.GUARD, input=json.dumps(event), merge=True, unset=untraced)
+        took = time.monotonic() - start
+        self.ok(
+            f"3,000 git commands in one line are read in {took:.1f} s",
+            r.code == 0 and not r.out and took < FAST,
+            f"exit {r.code}: {r.out[:600]}",
+        )
         # a CI harness's log is no full gate; a marker that names no planning dir holds
         _ = self.write(
             lanes / "f-it-gate.log",
