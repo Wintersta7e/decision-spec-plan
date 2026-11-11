@@ -10,7 +10,7 @@ import unittest
 from typing_extensions import override
 
 import support
-from support import ev
+from support import decision_index, ev, jstr
 
 
 def leadbash(session: str, command: str) -> str:
@@ -210,6 +210,107 @@ class OutwardActions(support.Route):
             leadbash("s1", f"bash {t}/scripts/merge.sh"),
         )
         _ = self.hook("silent", leadbash("s1", f"bash {t}/scripts/env.sh"))
+
+
+def tool(name: str, command: str = "", agent: str = "") -> str:
+    """A PreToolUse event of tool name: a Bash command, or an MCP tool's note."""
+    inp = f'{{"command":{jstr(command)}}}' if command else '{"body":"looks fine"}'
+    who = f',"agent_id":"{agent}"' if agent else ""
+    return ev("PreToolUse", "s1", f'"tool_name":"{name}","tool_input":{inp}{who}')
+
+
+# Each posts a review comment or note to GitHub or GitLab.
+POSTS = (
+    "gh pr comment 5 --body ok",
+    "gh pr review 5 --approve",
+    "gh -R o/r pr review 5 --comment -b ok",
+    "glab mr note 5 -m ok",
+    "glab api projects/1/merge_requests/5/notes -f body=ok",
+    "glab api -X POST projects/1/merge_requests/5/discussions --raw-field body=ok",
+    "gh api repos/o/r/issues/5/comments -f body=ok",
+    "gh api --method POST repos/o/r/pulls/5/reviews -f event=APPROVE",
+    "gh api graphql -f query='mutation { addPullRequestReview(input: {}) { id } }'",
+    "C='gh pr comment 5 -b ok'; bash -c \"$C\"",
+)
+# ...and none of these does
+READS = (
+    "gh pr view 5 --comments",
+    "glab mr view 5",
+    "glab api projects/1/merge_requests/5/notes",
+    "gh api repos/o/r/pulls/5/reviews",
+    "gh api graphql -f query='query { viewer { login } }'",
+    "echo 'gh pr comment 5'",
+)
+
+
+class ReviewPosts(support.Route):
+    """A review comment posted while the review's decision document fails (F104)."""
+
+    @override
+    @classmethod
+    def setUpClass(cls) -> None:
+        """Branch mr of R, one commit past main, changes src/app.py."""
+        super().setUpClass()
+        _ = cls.git("-C", cls.R, "checkout", "-q", "-b", "mr")
+        _ = cls.write(cls.R / "src/app.py", "x\n")
+        _ = cls.git("-C", cls.R, "add", "src/app.py")
+        _ = cls.git("-C", cls.R, "commit", "-q", "-m", "change")
+        cls.HEAD: str = cls.rev(cls.R)
+        _ = cls.git("-C", cls.R, "checkout", "-q", "main")
+
+    def index(self, extra: str, phase_dir: str = "") -> None:
+        """Phase 1's decision index (or a round's), a review of main..mr with extra."""
+        head = f"> **Review**: `{self.MAIN}..{self.HEAD}` — a merge request\n"
+        text = decision_index("| S1 | **x** | U2 |").replace(
+            "# Phase 1\n", f"# Phase 1\n{head}"
+        )
+        d = self.P / "decisions/phase1" / phase_dir
+        _ = self.write(d / "00-index.md", text + extra)
+
+    def test_review_posts(self) -> None:
+        """Every form of a post is held until the review's Coverage passes."""
+        # a route that records no review holds no comment: it answers a ticket or a
+        # reviewer
+        _ = self.write(
+            self.P / "decisions/phase1/00-index.md",
+            decision_index("| S1 | **x** | U2 |"),
+        )
+        _ = self.hook("silent", tool("Bash", POSTS[0]))
+        _ = self.hook("silent", tool("mcp__gitlab__create_note"))
+        self.index("\n## Coverage\n| File | Read |\n|---|---|\n")
+        for command in POSTS:
+            _ = self.hook(
+                r"deny:posts a review comment; the review's decision document fails"
+                r"(.|\n)*src/app.py changed in",
+                tool("Bash", command),
+            )
+        for command in READS:
+            _ = self.hook("silent", tool("Bash", command))
+        held = r"deny:`mcp__gitlab__create_note` posts a review comment"
+        _ = self.hook(held, tool("mcp__gitlab__create_note"))
+        _ = self.hook("silent", tool("mcp__gitlab__get_notes"))
+        _ = self.hook(
+            "deny:posts a review comment", tool("Bash", POSTS[0], "aexec-x-1")
+        )
+        # a review round in its own directory is checked by its own index
+        _ = self.write(
+            self.P / "decisions/phase1/00-index.md",
+            decision_index("| S1 | **x** | U2 |"),
+        )
+        self.index("", "mr-review")
+        _ = self.hook(
+            "deny:mr-review(.|\n)*no Coverage section", tool("Bash", POSTS[3])
+        )
+        self.rm(self.P / "decisions/phase1/mr-review")
+        # read in full and probed: the post goes ahead (gh api's write still asks, F81)
+        self.index(
+            "> **Verdict**: approve\n\n## Coverage\n| File | Read |\n|---|---|\n"
+            "| `src/app.py` | Read in full |\n\n- `pytest -q` exit=0 — it imports\n"
+        )
+        for command in (POSTS[0], POSTS[3], POSTS[9]):
+            _ = self.hook("silent", tool("Bash", command))
+        _ = self.hook("ask:gh api", tool("Bash", POSTS[6]))
+        _ = self.hook("silent", tool("mcp__gitlab__create_note"))
 
 
 if __name__ == "__main__":

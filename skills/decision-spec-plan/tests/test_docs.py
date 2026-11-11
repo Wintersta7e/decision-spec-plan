@@ -91,6 +91,9 @@ class PluginFiles(support.Sandbox):
                 f"{route}"
             ),
             'PreToolUse Bash python3 "${CLAUDE_PLUGIN_ROOT}/scripts/push_guard.py"',
+            # an MCP tool's review note, held like `glab mr note` (F104); a matcher with
+            # `^` or `$` is an unanchored regex, so both anchors are needed
+            f"PreToolUse ^mcp__.*create_note$ {route}",
             f"SessionStart compact|resume {route}",
             f"SubagentStop  {route}",
             f"TeammateIdle  {route}",
@@ -98,7 +101,7 @@ class PluginFiles(support.Sandbox):
         ]
         self.ok(
             "hooks.json registers route_state.py and push_guard.py on the route's "
-            "7 hooks",
+            "8 hooks",
             reg == want,
             "\n".join(reg),
         )
