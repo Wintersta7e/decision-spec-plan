@@ -6,6 +6,7 @@ re-read, the budget, a prompt naming the route in a session that never loaded it
 the answer tally (F89).
 """
 
+import hashlib
 import json
 import pathlib
 import re
@@ -34,14 +35,30 @@ NAMED = re.compile(r"\bdsp\b(?!-)|\bdecision-spec-plan\b")
 
 
 def skill_changes(entry_path: pathlib.Path, entry: RegistryEntry) -> list[str]:
-    """Return the skill's files written since this session last read them; mark them."""
+    """Return the skill's files changed since this session last read them; mark them.
+
+    A file written since is changed only when its text is: an upgrade (`git archive |
+    tar -x`) rewrites every file, and told every running lead to re-read all of them.
+    """
     seen = entry.get("skill_seen", entry.get("activated", 0))
-    files = [SKILL, *sorted((SKILL_DIR / "references").rglob("*.md"))]
-    changed = [f for f in files if f.stat().st_mtime > seen]
-    if changed:
-        entry["skill_seen"] = max(f.stat().st_mtime for f in changed)
-        _ = entry_path.write_text(json.dumps(entry) + "\n")
-    return [str(f.relative_to(SKILL_DIR)) for f in changed]
+    files = {
+        str(f.relative_to(SKILL_DIR)): f
+        for f in [SKILL, *sorted((SKILL_DIR / "references").rglob("*.md"))]
+    }
+    held = as_dict(entry.get("skill_digests"))
+    newer = [rel for rel, f in files.items() if f.stat().st_mtime > seen]
+    if not newer and held is not None:
+        return []
+    digests = {
+        rel: hashlib.sha256(f.read_bytes()).hexdigest()[:16] for rel, f in files.items()
+    }
+    # an entry from before the digests: the mtime alone decides, this once
+    changed = [rel for rel in newer if held is None or held.get(rel) != digests[rel]]
+    if newer:
+        entry["skill_seen"] = max(files[rel].stat().st_mtime for rel in newer)
+    entry["skill_digests"] = digests
+    _ = entry_path.write_text(json.dumps(entry) + "\n")
+    return changed
 
 
 def stage_docs(a: RouteArgs, rung: object) -> tuple[int, str]:
