@@ -6,11 +6,19 @@ after it last read it (F59).
 """
 
 import pathlib
-import re
 from collections.abc import Mapping
 
 from .commands import makes_commit
-from .common import EXEC, PLAN_ID, REGISTRY, RegistryEntry, as_dict, deny, emit
+from .common import (
+    EXEC,
+    PLAN_ID,
+    REGISTRY,
+    RegistryEntry,
+    as_dict,
+    deny,
+    emit,
+    id_name,
+)
 from .transcript import agent_name, agent_transcript, context, dispatch_text, last_reads
 
 CONTEXT_STOP = 200_000
@@ -64,7 +72,7 @@ def agent_pre(event: Mapping[str, object], session: str, entry: RegistryEntry) -
         return 0
     name = agent_name(transcript)
     # An agent's id is `a<name>-<hash>` when the meta file lacks the name.
-    name = str(name or re.sub(r"-[0-9a-f]{8,}$", "", agent.removeprefix("a")))
+    name = str(name or id_name(agent))
     if not name.startswith(EXEC):
         return 0
     command = str((as_dict(event.get("tool_input")) or {}).get("command") or "")

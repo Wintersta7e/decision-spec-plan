@@ -281,6 +281,30 @@ def route_args(marker: Mapping[str, object]) -> RouteArgs:
     return parser().parse_args([str(a) for a in args], namespace=RouteArgs())
 
 
+def route_slug(planning: str) -> str:
+    """Return the route's slug: the first 10 hex digits of its planning dir's sha1.
+
+    Args:
+        planning: The planning dir as the marker's arguments name it.
+
+    Returns:
+        The slug the marker's file name and the monitor's route key share.
+    """
+    return hashlib.sha1(planning.encode(), usedforsecurity=False).hexdigest()[:10]
+
+
+def id_name(agent_id: str) -> str:
+    """Return the name in an agent id `a<name>-<hash>`, for a meta file without one.
+
+    Args:
+        agent_id: The agent id a hook event carries.
+
+    Returns:
+        The id without its leading `a` and its trailing hash of 8 or more hex digits.
+    """
+    return re.sub(r"-[0-9a-f]{8,}$", "", agent_id.removeprefix("a"))
+
+
 def marker_path(directory: StrPath, planning: str | None = None) -> pathlib.Path | None:
     """Return the route's marker, one per planning dir, else the old one per repository.
 
@@ -295,7 +319,7 @@ def marker_path(directory: StrPath, planning: str | None = None) -> pathlib.Path
         return None
     if planning is None:
         return pathlib.Path(common) / MARKER
-    slug = hashlib.sha1(planning.encode(), usedforsecurity=False).hexdigest()[:10]
+    slug = route_slug(planning)
     return pathlib.Path(common) / f"dsp-route-{slug}.json"
 
 
