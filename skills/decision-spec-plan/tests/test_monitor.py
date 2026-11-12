@@ -616,3 +616,381 @@ class MarkerReader(support.MonitorSandbox):
         items = cast("list[dict[str, object]]", detail.get("attention", []))
         names = [i["subject"] for i in items]
         self.ok("an unreadable item names it", names == [a.marker.name], items)
+
+
+# one event of a fold case: its kind, its seconds after T0 and its fields
+Step = tuple[str, float, dict[str, object]]
+W = support.WORKER
+T0 = float(int(time.time()) - 1000)
+DISPATCH: Step = ("dispatch", 0, {"tuid": "t-1", "name": "worker-1"})
+LAUNCH: Step = (
+    "launch",
+    1,
+    {"tuid": "t-1", "child": W, "mode": "background", "name": "worker-1"},
+)
+START: Step = ("start", 2, {"agent": W})
+BASH: Step = ("pre", 3, {"agent": W, "tool": "Bash", "tuid": "t-2"})
+RUNNING = ("dispatched", "launched", "active")
+MATE: list[Step] = [
+    ("dispatch", 0, {"tuid": "t-1", "name": "mate-1"}),
+    (
+        "launch",
+        1,
+        {"tuid": "t-1", "child": W, "mode": "teammate", "name": "mate-1", "team": "tm"},
+    ),
+    START,
+    ("stop", 3, {"agent": W}),
+]
+# case: (its lines, the one agent's expected fields or None for no agent, unjoined)
+FOLD: dict[str, tuple[list[Step], dict[str, object] | None, int]] = {
+    "unnamed dispatch, start, pre, launch: one active agent": (
+        [
+            ("dispatch", 0, {"tuid": "t-1"}),
+            START,
+            BASH,
+            ("launch", 4, {"tuid": "t-1", "child": W, "mode": "background"}),
+        ],
+        {"state": "active", "mode": "background", "open_tool": "Bash"},
+        0,
+    ),
+    "dispatch, launch, then start: still active": (
+        [DISPATCH, LAUNCH, START],
+        {"state": "active", "name": "worker-1", "mode": "background"},
+        0,
+    ),
+    "a bare stop opens no agent": ([("stop", 0, {"agent": W})], None, 1),
+    "a background stop: returned at its ts": (
+        [DISPATCH, LAUNCH, START, BASH, ("stop", 10, {"agent": W})],
+        {
+            "state": "returned",
+            "ended_at": dsp_monitor.iso(T0 + 10),
+            "duration_s": 10.0,
+            "final_tokens": None,
+            "open_tool": None,
+        },
+        0,
+    ),
+    "TaskStop by name: stopped, its call closed": (
+        [
+            DISPATCH,
+            LAUNCH,
+            START,
+            BASH,
+            ("post", 9, {"tool": "TaskStop", "tuid": "t-3", "target": "worker-1"}),
+        ],
+        {"state": "stopped", "ended_at": dsp_monitor.iso(T0 + 9), "open_tool": None},
+        0,
+    ),
+    "TaskStop by task id: unjoined, nothing changes": (
+        [
+            DISPATCH,
+            LAUNCH,
+            START,
+            BASH,
+            ("post", 9, {"tool": "TaskStop", "tuid": "t-3", "target": "b0tsk1"}),
+        ],
+        {"state": "active", "ended_at": None, "open_tool": "Bash"},
+        1,
+    ),
+    "a denied dispatch: held, no mode": (
+        [("dispatch", 0, {"tuid": "t-1", "name": "worker-1", "decision": "deny"})],
+        {"state": "held", "mode": None},
+        0,
+    ),
+    "a dispatch, then the lead's turn-end: interrupted": (
+        [DISPATCH, ("turn-end", 1, {})],
+        {"state": "interrupted"},
+        0,
+    ),
+    "a return with no launch: foreground, its figures": (
+        [
+            DISPATCH,
+            START,
+            (
+                "return",
+                5,
+                {
+                    "tuid": "t-1",
+                    "child": W,
+                    "name": "worker-1",
+                    "ms": 4000,
+                    "tools": 3,
+                    "final_tokens": 900,
+                },
+            ),
+        ],
+        {
+            "state": "returned",
+            "mode": "foreground",
+            "duration_s": 4.0,
+            "tools": 3,
+            "final_tokens": 900,
+        },
+        0,
+    ),
+    "a teammate's stop: stopped": (MATE, {"state": "stopped", "mode": "teammate"}, 0),
+    "a teammate restarted, then idle by name and team": (
+        [
+            *MATE,
+            ("start", 4, {"agent": W}),
+            ("idle", 5, {"teammate": "mate-1", "team": "tm"}),
+        ],
+        {"state": "idle"},
+        0,
+    ),
+    "session-end: ended with the session": (
+        [DISPATCH, LAUNCH, START, ("session-end", 5, {"reason": "other"})],
+        {"state": "ended-with-session"},
+        0,
+    ),
+    "resume: lost": (
+        [DISPATCH, LAUNCH, START, ("session", 4, {"source": "resume"})],
+        {"state": "lost"},
+        0,
+    ),
+    "resume, then its pre: active again": (
+        [
+            DISPATCH,
+            LAUNCH,
+            START,
+            ("session", 4, {"source": "resume"}),
+            ("pre", 5, {"agent": W, "tool": "Read", "tuid": "t-5"}),
+        ],
+        {"state": "active", "last_tool": "Read"},
+        0,
+    ),
+    "a later pre after a later post closes the open call": (
+        [
+            DISPATCH,
+            LAUNCH,
+            START,
+            BASH,
+            ("post", 4, {"agent": W, "tool": "Read", "tuid": "t-4"}),
+            ("pre", 5, {"agent": W, "tool": "Edit", "tuid": "t-5"}),
+        ],
+        {"open_tool": "Edit", "open_since": dsp_monitor.iso(T0 + 5)},
+        0,
+    ),
+    "api-error: failed until a later start": (
+        [DISPATCH, LAUNCH, START, ("api-error", 3, {"agent": W})],
+        {"state": "failed"},
+        0,
+    ),
+    "api-error, then a start: active": (
+        [
+            DISPATCH,
+            LAUNCH,
+            START,
+            ("api-error", 3, {"agent": W}),
+            ("start", 4, {"agent": W}),
+        ],
+        {"state": "active"},
+        0,
+    ),
+}
+
+
+def model_of(m: support.Machine) -> dsp_monitor.Model:
+    """One in-process scan of m and the model it gives."""
+    now = time.time()
+    scanner = dsp_monitor.Scanner(m.registry, m.registry / "events")
+    return dsp_monitor.discover(scanner.scan(now), None, now)
+
+
+def detail_of(
+    model: dsp_monitor.Model, r: support.FixtureRoute, run: str | None = None
+) -> dict[str, object]:
+    """The RunDetail of r's run (default its own) in model."""
+    route = model.routes[r.key]
+    found = next(x for x in route.runs if x.key == r.run_key(run))
+    return dsp_monitor.run_detail(route, found)
+
+
+class Events(support.MonitorSandbox):
+    """The event logs: tailing, the agent fold and recording states (§4.5, §3.6.4)."""
+
+    def test_event_log_tolerance(self) -> None:
+        """Skips counted, a partial line waits, a replaced log restarts, dupes once."""
+        m = support.Machine(self.T / self._testMethodName)
+        a = m.fixture_route("route-a", repo=False)
+        _ = m.put_entry("s1", a)
+        pre = m.line(a, "s1", "pre", T0, tool="Bash", tuid="t-1")
+        bare = m.line(a, "s1", "post", T0 + 1, tool="Read")
+        lines = [
+            support.jline(pre),
+            '{"v": 1, "ts": ',
+            support.jline({**pre, "v": 99, "tuid": "t-9"}),
+            support.jline(pre),
+            support.jline(bare),
+            support.jline({**bare, "ts": T0 + 2}),
+            support.jline(bare),
+            support.jline({**pre, "ev": "zz-new", "tuid": "t-8"}),
+        ]
+        tail = support.jline(m.line(a, "s1", "turn-end", T0 + 3))
+        log = m.put(m.registry / "events/s1.jsonl", "\n".join(lines) + "\n" + tail)
+        scanner = dsp_monitor.Scanner(m.registry, m.registry / "events")
+        group = (a.run, str(a.plan), str(a.marker))
+
+        def counts() -> tuple[int, int, list[int]]:
+            now = time.time()
+            model = dsp_monitor.discover(scanner.scan(now), None, now)
+            sessions = cast("list[dict[str, object]]", detail_of(model, a)["sessions"])
+            got = scanner.logs["s1"].groups[group].lines
+            skipped = cast("int", sessions[0]["events_skipped"])
+            return got, skipped, cast("list[int]", sessions[0]["unknown_versions"])
+
+        written = [*lines, f"{tail} (no newline)"]
+        got = counts()
+        kept = ["pre", "bare", "bare a ts later"]
+        self.ok(f"{len(written)} lines written", written, "\n".join(written))
+        self.ok(
+            "3 lines: a dupe once, a ts apart twice, no unknown ev, no partial line",
+            got[0] == len(kept),
+            got,
+        )
+        self.ok("a torn line and v 99 skipped", got[1] == len(["torn", "v99"]), got)
+        self.ok("unknown_versions [99]", got[2] == [99], got)
+        with log.open("a") as f:
+            _ = f.write("\n")
+        got = counts()
+        self.ok(
+            "the partial line, completed, counts", got[0] == len([*kept, tail]), got
+        )
+        new = log.with_name("s1.new")
+        _ = new.write_text(f"{tail}\n{support.jline(pre)}\n")
+        _ = new.replace(log)
+        got = counts()
+        self.ok("a replaced shorter log: re-read from 0", got == (2, 0, []), got)
+        _ = log.write_text(f"{tail}\n")
+        got = counts()
+        self.ok("a log cut in place: re-read from 0", got == (1, 0, []), got)
+
+    def test_recording_states(self) -> None:
+        """Recording none (naming the switch), reduced, expired, seen; no switch key."""
+        from dsp_route import record, switch
+
+        m = support.Machine(self.T / self._testMethodName)
+        now = time.time()
+        a = m.fixture_route("route-a", repo=False)
+        _ = m.put_entry("s1", a)
+        b = m.fixture_route("route-b", repo=False)
+        _ = m.put_entry("s2", b)
+        _ = m.put_events(
+            "s2",
+            m.line(b, "s2", "turn-end", now - 10),
+            m.line(b, "s2", "cap", now - 5, bytes=record.CAP_BYTES),
+        )
+        past = now - (record.RETENTION_DAYS + 1) * 86400
+        c = m.fixture_route("route-c", repo=False)
+        old = support.run_id(50)
+        _ = m.put_entry("s3", c, previous=[m.prev(c, old)], activated=past)
+        d = m.fixture_route("route-d", repo=False)
+        _ = m.put_entry("s4", d, previous=[m.prev(d, old)], activated=past)
+        _ = m.put_events("s4", m.line(d, "s4", "turn-end", past, run=old))
+        model = model_of(m)
+        cases = {
+            "no log: none": (a, None, "none"),
+            "a cap line: reduced": (b, None, "reduced"),
+            "ended, past retention, no line: expired": (c, old, "expired"),
+            "ended, past retention, a line: seen": (d, old, "seen"),
+            "live, no line: none": (c, None, "none"),
+        }
+        for label, (r, run, want) in cases.items():
+            got = detail_of(model, r, run)
+            self.ok(label, got["recording"] == want, got)
+            hint = got["recording_hint"]
+            named = isinstance(hint, str) and switch.NAME in hint
+            self.ok(f"{label}: hint", named if want == "none" else hint is None, hint)
+            running = cast("dict[str, object]", got["summary"])["agents_running"]
+            unknown = want in {"none", "expired"}
+            self.ok(f"{label}: agents_running", (running is None) == unknown, running)
+        live = dsp_monitor.Live(dsp_monitor.read_page(dsp_monitor.PAGE), "n")
+        live.bound(0)
+        live.publish(model)
+        keys: list[str] = []
+
+        def walk(v: object) -> None:
+            if isinstance(v, dict):
+                for k, x in cast("dict[str, object]", v).items():
+                    keys.append(k)
+                    walk(x)
+            elif isinstance(v, list):
+                for x in cast("list[object]", v):
+                    walk(x)
+
+        for body in [live.state, *live.runs.values()]:
+            walk(cast("object", json.loads(body)))
+        bad = [k for k in keys if k in {"tracking", "switch", "enabled"}]
+        self.ok(f"{len(keys)} keys, no machine-wide switch", keys and not bad, bad)
+
+    def test_api_never_exposes_event_text(self) -> None:
+        """desc, cwd, to and error reach no response body of any endpoint."""
+        mark = "ZZ-MARK-7f3a"
+        m = support.Machine(self.T / self._testMethodName)
+        a = m.fixture_route("route-a", repo=False)
+        _ = m.put_entry("s1", a)
+        now = time.time()
+        log = m.put_events(
+            "s1",
+            m.line(a, "s1", "dispatch", now - 50, tuid="t-1", name="w-1", desc=mark),
+            m.line(
+                a,
+                "s1",
+                "launch",
+                now - 49,
+                tuid="t-1",
+                child=W,
+                mode="background",
+                name="w-1",
+                cwd=mark,
+            ),
+            m.line(
+                a, "s1", "pre", now - 40, agent=W, tool="Bash", tuid="t-2", desc=mark
+            ),
+            m.line(a, "s1", "pre", now - 30, tool="SendMessage", tuid="t-3", to=mark),
+            m.line(a, "s1", "failed", now - 20, tuid="t-4", name="w-2", error=mark),
+            m.line(a, "s1", "api-error", now - 10, agent=W, error=mark),
+        )
+        marked = ["dispatch desc", "launch cwd", "pre desc", "to", "error", "error"]
+        found = log.read_text().count(mark)
+        self.ok(f"the mark is in the log {found} times", found == len(marked))
+        mon = self.monitor_on(m, consts=FAST)
+        s = mon.wait(lambda s: runs_of(s, a.key) and runs_of(s, a.key)[0]["agents"])
+        agents = cast("list[object]", runs_of(s, a.key)[0]["agents"])
+        self.ok(f"{len(agents)} agents folded", len(agents) == len(["w-1", "w-2"]))
+        paths = ["/api/state", "/api/ping"]
+        paths += [f"/api/run?key={r['key']}" for r in runs_of(s, a.key)]
+        bodies = [mon.get(p)[2] for p in paths]
+        size = sum(map(len, bodies))
+        leaks = [p for p, b in zip(paths, bodies, strict=True) if mark.encode() in b]
+        self.ok(
+            f"{size} bytes, {len(paths)} responses: no mark", size and not leaks, leaks
+        )
+
+    def test_agent_fold(self) -> None:
+        """§3.6.4's states, the joins as measured, a TaskStop by name; one per case."""
+        for i, (label, (steps, want, unjoined)) in enumerate(FOLD.items()):
+            m = support.Machine(self.T / f"case{i}")
+            a = m.fixture_route("route-a", repo=False)
+            _ = m.put_entry("s1", a)
+            lines = [m.line(a, "s1", ev, T0 + at, **f) for ev, at, f in steps]
+            _ = m.put_events("s1", *lines)
+            model = model_of(m)
+            got = detail_of(model, a)
+            agents = cast("list[dict[str, object]]", got["agents"])
+            count = 0 if want is None else 1
+            self.ok(f"{label}: {count} agent", len(agents) == count, agents)
+            self.ok(
+                f"{label}: {unjoined} unjoined",
+                model.events_unjoined == unjoined,
+                model.events_unjoined,
+            )
+            running = cast("dict[str, object]", got["summary"])["agents_running"]
+            want_running = sum(x["state"] in RUNNING for x in agents)
+            self.ok(f"{label}: agents_running", running == want_running, running)
+            if want is not None and agents:
+                diff = {
+                    k: agents[0].get(k) for k in want if agents[0].get(k) != want[k]
+                }
+                self.ok(f"{label}: fields", not diff, diff)
+        self.ok(f"{len(FOLD)} cases", FOLD)

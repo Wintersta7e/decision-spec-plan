@@ -77,6 +77,9 @@ GIT_FLOOR_S = 30
 GIT_IDLE_S = 1800
 DEADLINE_S = 20
 DEADLINE_MAX_S = 120
+# a line's identity key is kept this long after the session's newest line: a plugin
+# loaded twice writes its duplicates within milliseconds
+_DEDUPE_S = 600
 PAGE = pathlib.Path(__file__).with_name("dsp_monitor.html")
 
 RUN_STATES = ("live", "ended")
@@ -258,13 +261,109 @@ def read_marker(path: pathlib.Path) -> MarkerRead:
     return MarkerRead("torn", {}) if data is None else MarkerRead("ok", data)
 
 
+class OpenCall(NamedTuple):
+    """A tool call with a `pre` and no `post` yet: its tool, its ts and any hold."""
+
+    tool: str | None
+    since: float
+    decision: str | None
+
+
+@dataclasses.dataclass
+class Calls:
+    """The open tool calls of one subject, an agent or the lead (§3.6.4)."""
+
+    open: dict[str, OpenCall] = dataclasses.field(default_factory=dict)
+    last_post: float = 0.0
+
+    def pre(self, line: dict[str, object], t: float) -> None:
+        """Open a call; one older than the subject's newest `post` has ended.
+
+        The model issues a new call only once every call of its previous message
+        returned, and a failed call fires no `post`.
+        """
+        for k, call in list(self.open.items()):
+            if call.since < self.last_post:
+                del self.open[k]
+        tuid, tool, decision = line.get("tuid"), line.get("tool"), line.get("decision")
+        self.open[tuid if isinstance(tuid, str) else f"@{t}"] = OpenCall(
+            tool if isinstance(tool, str) else None,
+            t,
+            decision if isinstance(decision, str) else None,
+        )
+
+    def post(self, line: dict[str, object], t: float) -> None:
+        """Close the call of the line's `tuid`."""
+        tuid = line.get("tuid")
+        if isinstance(tuid, str):
+            _ = self.open.pop(tuid, None)
+        self.last_post = max(self.last_post, t)
+
+    def oldest(self) -> OpenCall | None:
+        """The call open longest, None when none is open."""
+        return min(self.open.values(), key=lambda c: c.since, default=None)
+
+
+# the states no later line of that agent leaves, and those `agents_running` counts
+_OVER = ("returned", "stopped", "failed", "interrupted", "ended-with-session")
+_RUNNING = ("dispatched", "launched", "active")
+
+
+@dataclasses.dataclass(eq=False)
+class Agent:
+    """One agent of a session as its lines fold (§3.6.4); never a line's free text.
+
+    final: no later event changes its state (a denied dispatch, a `return`, a
+    `failed`, a TaskStop). group: the lines of the run it was first seen in.
+    """
+
+    session: str
+    group: "Group"
+    tuid: str | None = None
+    child: str | None = None
+    name: str = ""
+    team: str | None = None
+    state: str = "active"
+    final: bool = False
+    mode: str | None = None
+    model: str | None = None
+    started_at: float | None = None
+    ended_at: float | None = None
+    duration_s: float | None = None
+    tools: int | None = None
+    final_tokens: int | None = None
+    last_tool: str | None = None
+    last_tool_at: float | None = None
+    compactions: int = 0
+    calls: Calls = dataclasses.field(default_factory=Calls)
+
+    @property
+    def over(self) -> bool:
+        """Whether the agent has ended."""
+        return self.final or self.state in _OVER
+
+    def end(self, state: str, t: float, ms: object = None) -> None:
+        """End it in state at t; its duration from ms, else from its start."""
+        self.state, self.ended_at = state, t
+        if isinstance(ms, int) and not isinstance(ms, bool):
+            self.duration_s = ms / 1000
+        elif self.started_at is not None:
+            self.duration_s = round(t - self.started_at, 3)
+        self.calls.open.clear()
+
+
 @dataclasses.dataclass
 class Group:
-    """The retained event lines of one session for one (run, planning dir, marker)."""
+    """The retained event lines of one session for one (run, planning dir, marker).
+
+    gap_at: the ts of its first line with `gap`; agents: those first seen here.
+    """
 
     first_ts: float
     last_ts: float
     lines: int = 0
+    gap_at: float | None = None
+    agents: list[Agent] = dataclasses.field(default_factory=list)
 
 
 GroupKey = tuple[str | None, str | None, str | None]
@@ -297,11 +396,25 @@ class MarkerFile(NamedTuple):
 
 @dataclasses.dataclass
 class SessionLog:
-    """What the tail of one session's event log has folded so far."""
+    """What the tail of one session's event log has folded so far.
+
+    skipped, versions: lines skipped and the unknown `v` among them; seen: each
+    folded line's identity key and ts, within _DEDUPE_S of the newest; unjoined:
+    agent lines that name no agent; calls: the lead's open calls.
+    """
 
     ident: tuple[int, int]
+    session: str
     offset: int = 0
     groups: dict[GroupKey, Group] = dataclasses.field(default_factory=dict)
+    agents: list[Agent] = dataclasses.field(default_factory=list)
+    calls: Calls = dataclasses.field(default_factory=Calls)
+    skipped: int = 0
+    versions: set[int] = dataclasses.field(default_factory=set)
+    seen: dict[tuple[object, ...], float] = dataclasses.field(default_factory=dict)
+    unjoined: int = 0
+    cap: bool = False
+    ended: bool = False
 
 
 @dataclasses.dataclass
@@ -443,7 +556,7 @@ class Scanner:
             ident = (st.st_dev, st.st_ino)
             log = self.logs.get(path.stem)
             if log is None or log.ident != ident or st.st_size < log.offset:
-                log = self.logs[path.stem] = SessionLog(ident)
+                log = self.logs[path.stem] = SessionLog(ident, path.stem)
             if st.st_size > log.offset:
                 self._read(path, log)
         for gone in set(self.logs) - seen:
@@ -457,15 +570,31 @@ class Scanner:
                 data = f.read()
         except OSError:
             return
+        from dsp_route import record
+
         end = data.rfind(b"\n") + 1
         log.offset += end
+        lines: list[tuple[float, dict[str, object]]] = []
         for raw in data[:end].splitlines():
             try:
                 line = common.as_dict(common.parse_json(raw))
             except ValueError:
-                continue
-            if line is not None:
-                fold_line(log, line)
+                line = None
+            v = None if line is None else line.get("v")
+            t = None if line is None else line.get("ts")
+            if line is None or type(v) is not int or not isinstance(t, int | float):
+                log.skipped += 1
+            elif v > record.SCHEMA:
+                log.skipped += 1
+                log.versions.add(v)
+            elif line.get("ev") in record.KINDS:
+                lines.append((float(t), line))
+        # ts is taken at hook start, so lines land out of order
+        lines.sort(key=lambda x: x[0])
+        for t, line in lines:
+            fold_line(log, line, t)
+        newest = max(log.seen.values(), default=0.0)
+        log.seen = {k: t for k, t in log.seen.items() if t >= newest - _DEDUPE_S}
 
     def scan(self, now: float) -> Scan:
         """Read the registry, tail the logs and stat the markers and hook files.
@@ -511,17 +640,19 @@ class Scanner:
         return Scan(sightings, errors, found, current, mtimes, dirs, self.logs)
 
 
-def fold_line(log: SessionLog, line: dict[str, object]) -> None:
-    """Fold one parsed event line into its session's state.
+def fold_line(log: SessionLog, line: dict[str, object], t: float) -> None:
+    """Fold one event line into its session's state; a duplicate changes nothing.
 
     Args:
         log: The session's folded state.
-        line: The line, parsed.
+        line: The line, parsed, with a known `v` and `ev`.
+        t: Its ts.
     """
-    t = line.get("ts")
-    if not isinstance(t, int | float):
+    hook, tuid = line.get("hook"), line.get("tuid")
+    ident = (hook, tuid) if isinstance(tuid, str) else (hook, line.get("agent"), t)
+    if ident in log.seen:
         return
-    t = float(t)
+    log.seen[ident] = t
     run, planning, marker = (line.get(k) for k in ("run", "planning_dir", "marker"))
     # a line cut to fit keeps neither; without both it joins by run alone
     named = isinstance(planning, str) and isinstance(marker, str)
@@ -533,6 +664,262 @@ def fold_line(log: SessionLog, line: dict[str, object]) -> None:
     g = log.groups.setdefault(key, Group(t, t))
     g.first_ts, g.last_ts = min(g.first_ts, t), max(g.last_ts, t)
     g.lines += 1
+    if "gap" in line and (g.gap_at is None or t < g.gap_at):
+        g.gap_at = t
+    fold = _FOLD.get(str(line.get("ev")))
+    if fold is not None:
+        fold(Ev(log, g, line, t))
+
+
+class Ev(NamedTuple):
+    """One line being folded: its session, its group, the line and its ts."""
+
+    log: SessionLog
+    group: Group
+    line: dict[str, object]
+    t: float
+
+    def text(self, key: str) -> str | None:
+        """The line's string at key, None when it has none."""
+        value = self.line.get(key)
+        return value if isinstance(value, str) else None
+
+
+def _new(e: Ev, **fields: str | float | None) -> Agent:
+    """A new agent record of e's session and group, first seen at e."""
+    a = Agent(e.log.session, e.group, started_at=e.t)
+    for k, v in fields.items():
+        setattr(a, k, v)
+    e.log.agents.append(a)
+    e.group.agents.append(a)
+    return a
+
+
+def _join(e: Ev, *, create: bool) -> Agent | None:
+    """The record of e's `agent`: by id, else the oldest unjoined dispatch of its name.
+
+    With neither, a new record when create, else the line counts as unjoined: a
+    SubagentStop also fires for helper agents that never started.
+    """
+    x = e.text("agent") or ""
+    a = next((a for a in e.log.agents if a.child == x), None)
+    if a is None:
+        name = common.id_name(x)
+        a = next(
+            (
+                d
+                for d in e.log.agents
+                if d.child is None and d.tuid and not d.over and d.name == name
+            ),
+            None,
+        )
+        if a is not None:
+            a.child = x
+    if a is None and create:
+        a = _new(e, child=x, name=common.id_name(x))
+    if a is None:
+        e.log.unjoined += 1
+    return a
+
+
+def _merge(log: SessionLog, into: Agent, src: Agent) -> None:
+    """Fold src, opened by its own lines before its launch was seen, into into."""
+    starts = [t for t in (into.started_at, src.started_at) if t is not None]
+    into.started_at = min(starts, default=None)
+    into.state, into.final, into.calls = src.state, src.final, src.calls
+    into.ended_at, into.duration_s = src.ended_at, src.duration_s
+    into.last_tool, into.last_tool_at = src.last_tool, src.last_tool_at
+    into.compactions += src.compactions
+    log.agents.remove(src)
+    src.group.agents.remove(src)
+
+
+def _called(e: Ev) -> Agent:
+    """The record of a `launch`, `return` or `failed`: by its `tuid`, with its child.
+
+    A record its child opened before (SubagentStart can precede the launch) is merged
+    into the dispatch's.
+    """
+    tuid, child = e.text("tuid"), e.text("child")
+    a = next((d for d in e.log.agents if tuid and d.tuid == tuid), None)
+    if child is not None:
+        c = next((d for d in e.log.agents if d.child == child), None)
+        if a is None:
+            a = c
+        elif c is not None and c is not a:
+            _merge(e.log, a, c)
+    if a is None:
+        a = _new(e, tuid=tuid)
+    a.tuid, a.child = a.tuid or tuid, child or a.child
+    a.name = e.text("name") or a.name or (common.id_name(a.child) if a.child else "")
+    a.model = e.text("model") or a.model
+    return a
+
+
+def _dispatch(e: Ev) -> None:
+    decision = e.text("decision")
+    a = _new(
+        e,
+        tuid=e.text("tuid"),
+        name=e.text("name") or "",
+        state="dispatched" if decision is None else "held",
+    )
+    # a denied dispatch is held for good; an asked one waits for its launch
+    a.final = decision == "deny"
+
+
+def _launch(e: Ev) -> None:
+    a = _called(e)
+    a.mode, a.team = e.text("mode") or a.mode, e.text("team") or a.team
+    # a start seen first made it active; a launch never lowers that
+    if not a.final and a.state in {"dispatched", "held", "interrupted"}:
+        a.state = "launched"
+
+
+def _return(e: Ev) -> None:
+    a = _called(e)
+    a.mode = a.mode or "foreground"
+    tools, tokens = e.line.get("tools"), e.line.get("final_tokens")
+    a.tools = tools if type(tools) is int else None
+    a.final_tokens = tokens if type(tokens) is int else None
+    a.end("returned", e.t, e.line.get("ms"))
+    a.final = True
+
+
+def _failed(e: Ev) -> None:
+    a = _called(e)
+    a.end("failed", e.t, e.line.get("ms"))
+    a.final = True
+
+
+def _active(e: Ev) -> Agent | None:
+    """The record of e's agent, made active unless it ended for good."""
+    if e.text("agent") is None:
+        return None
+    a = _join(e, create=True)
+    if a is not None and not a.final:
+        if a.over:
+            a.ended_at = a.duration_s = None
+        a.state = "active"
+    return a
+
+
+def _start(e: Ev) -> None:
+    _ = _active(e)
+
+
+def _pre(e: Ev) -> None:
+    a = _active(e)
+    calls = e.log.calls if a is None else a.calls
+    calls.pre(e.line, e.t)
+    if a is not None:
+        a.last_tool, a.last_tool_at = e.text("tool") or a.last_tool, e.t
+
+
+def _post(e: Ev) -> None:
+    a = _active(e)
+    calls = e.log.calls if a is None else a.calls
+    calls.post(e.line, e.t)
+    if a is not None:
+        a.last_tool, a.last_tool_at = e.text("tool") or a.last_tool, e.t
+    elif e.text("tool") == "TaskStop" and (target := e.text("target")) is not None:
+        # the lead stopped an agent by name; by a task id it joins none
+        named = [d for d in e.log.agents if d.name == target and not d.over]
+        if named:
+            named[-1].end("stopped", e.t)
+            named[-1].final = True
+        else:
+            e.log.unjoined += 1
+
+
+def _stop(e: Ev) -> None:
+    a = None if e.text("agent") is None else _join(e, create=False)
+    if a is not None and not a.final:
+        a.end("stopped" if a.mode == "teammate" else "returned", e.t)
+
+
+def _idle(e: Ev) -> None:
+    if e.text("agent") is not None:
+        a = _join(e, create=False)
+    else:
+        mate, team = e.text("teammate"), e.text("team")
+        mates = [d for d in e.log.agents if d.name == mate and d.team == team]
+        a = mates[-1] if mates else None
+        if a is None:
+            e.log.unjoined += 1
+    if a is not None and not a.final:
+        a.state = "idle"
+        a.calls.open.clear()
+
+
+def _api_error(e: Ev) -> None:
+    a = None if e.text("agent") is None else _join(e, create=False)
+    if a is not None and not a.final:
+        a.state = "failed"
+
+
+def _compact(e: Ev) -> None:
+    a = None if e.text("agent") is None else _join(e, create=False)
+    if a is not None:
+        a.compactions += 1
+
+
+def _interrupted(e: Ev) -> None:
+    """A lead turn-end or user prompt: a dispatch with no launch never ran."""
+    for a in e.log.agents:
+        if not a.final and a.state in {"dispatched", "held"}:
+            a.state = "interrupted"
+
+
+def _turn_end(e: Ev) -> None:
+    if e.text("agent") is None:
+        e.log.calls.open.clear()
+        _interrupted(e)
+
+
+def _prompt(e: Ev) -> None:
+    if e.text("agent") is None and e.text("from") == "user":
+        _interrupted(e)
+
+
+def _session_start(e: Ev) -> None:
+    if e.text("source") == "resume":
+        for a in e.log.agents:
+            if not a.over:
+                a.state = "lost"
+
+
+def _session_end(e: Ev) -> None:
+    e.log.ended = True
+    e.log.calls.open.clear()
+    for a in e.log.agents:
+        if not a.over:
+            a.end("ended-with-session", e.t)
+
+
+def _cap(e: Ev) -> None:
+    e.log.cap = True
+
+
+# each event kind's fold (§3.6.4); `prompt`'s and `notify`'s other uses are §4.5's
+_FOLD: dict[str, Callable[[Ev], None]] = {
+    "dispatch": _dispatch,
+    "launch": _launch,
+    "return": _return,
+    "failed": _failed,
+    "start": _start,
+    "stop": _stop,
+    "idle": _idle,
+    "pre": _pre,
+    "post": _post,
+    "prompt": _prompt,
+    "turn-end": _turn_end,
+    "api-error": _api_error,
+    "compact": _compact,
+    "session": _session_start,
+    "session-end": _session_end,
+    "cap": _cap,
+}
 
 
 # --- the model: routes and runs, derived from one scan and the previous model
@@ -555,6 +942,15 @@ class Run:
     sightings: list[Sighting] = dataclasses.field(default_factory=list)
     first_seen_at: float | None = None
     last_activity_at: float = 0.0
+    recording: str = "none"
+    logs: dict[str, SessionLog] = dataclasses.field(default_factory=dict)
+
+    @property
+    def agents(self) -> list[Agent]:
+        """The agents first seen in the run's lines, oldest first."""
+        groups = [s.group for s in self.sightings if s.group is not None]
+        found = [a for g in groups for a in g.agents]
+        return sorted(found, key=lambda a: a.started_at or 0.0)
 
     @property
     def sessions(self) -> list[str]:
@@ -653,6 +1049,22 @@ def _activity(run: Run, scan: Scan, mf: MarkerFile) -> float:
     return max(times, default=0.0)
 
 
+def _recording(run: Run, scan: Scan, now: float) -> None:
+    """Set the run's session logs and its recording state (§4.5); never the switch."""
+    from dsp_route import record
+
+    run.logs = {s: scan.logs[s] for s in run.sessions if s in scan.logs}
+    retention = record.RETENTION_DAYS * 86400
+    if any(log.cap for log in run.logs.values()):
+        run.recording = "reduced"
+    elif any(s.group is not None for s in run.sightings):
+        run.recording = "seen"
+    elif not run.live and now - run.last_activity_at > retention:
+        run.recording = "expired"
+    else:
+        run.recording = "none"
+
+
 def _route(
     planning: str, mine: list[Sighting], scan: Scan, prev: Route | None, now: float
 ) -> Route | None:
@@ -683,6 +1095,7 @@ def _route(
         entries = [s.at for s in r.sightings if s.kind == "entry"]
         r.first_seen_at = min(events or entries, default=None)
         r.last_activity_at = _activity(r, scan, mf)
+        _recording(r, scan, now)
         listed.append(r)
     if not listed:
         return None
@@ -716,7 +1129,8 @@ def discover(scan: Scan, prev: Model | None, now: float) -> Model:
             routes.setdefault(s.planning_dir, []).append(s)
             if s.run is not None:
                 by_run[s.run] = s.planning_dir
-    model = Model({}, scan.errors)
+    # agent lines that join no agent, then lines that join no route
+    model = Model({}, scan.errors, sum(log.unjoined for log in scan.logs.values()))
     for s in scan.sightings:
         if s.planning_dir is not None:
             continue
@@ -740,6 +1154,9 @@ def discover(scan: Scan, prev: Model | None, now: float) -> Model:
 COPY = {
     "dir-missing": "planning dir gone — its hooks still hold pushes",
     "unreadable": "unreadable: {name}",
+    "recording_none": (
+        "No events recorded for this run (tracking may be off in its sessions: {name})"
+    ),
 }
 
 Item = dict[str, str | None]
@@ -773,16 +1190,60 @@ def _items(route: Route) -> list[Item]:
     return out
 
 
+def _blind_since(run: Run, sid: str) -> float | None:
+    """Return the ts of the session's first line in the run that has a `gap`."""
+    gaps = [
+        s.group.gap_at
+        for s in run.sightings
+        if s.session == sid and s.group is not None and s.group.gap_at is not None
+    ]
+    return min(gaps, default=None)
+
+
 def _session(run: Run, sid: str) -> dict[str, object]:
     """Return one session of a run as the API sends it."""
     mine = [s for s in run.sightings if s.session == sid]
     entries = [s.at for s in mine if s.kind == "entry"]
     lines = [s.at for s in mine if s.kind == "events"]
+    log = run.logs.get(sid)
+    if log is not None and log.cap:
+        recording = "reduced"
+    elif lines:
+        recording = "seen"
+    else:
+        recording = "expired" if run.recording == "expired" else "none"
     return {
         "id": sid,
         "activated_at": iso(max(entries, default=None)),
         "last_activity_at": iso(max(lines, default=None)),
-        "ended": False,
+        "recording": recording,
+        "blind_since": iso(_blind_since(run, sid)),
+        "ended": log is not None and log.ended,
+        "events_skipped": 0 if log is None else log.skipped,
+        "unknown_versions": [] if log is None else sorted(log.versions),
+    }
+
+
+def _agent_json(a: Agent) -> dict[str, object]:
+    """Return one agent as the API sends it: no line's free text."""
+    call = a.calls.oldest()
+    return {
+        "key": f"{a.session}-{a.child or a.tuid or 'unknown'}",
+        "session": a.session,
+        "name": a.name,
+        "mode": a.mode,
+        "state": a.state,
+        "model": a.model,
+        "started_at": iso(a.started_at),
+        "ended_at": iso(a.ended_at),
+        "duration_s": a.duration_s,
+        "tools": a.tools,
+        "last_tool": a.last_tool,
+        "last_tool_at": iso(a.last_tool_at),
+        "open_tool": None if call is None else call.tool,
+        "open_since": None if call is None else iso(call.since),
+        "final_tokens": a.final_tokens,
+        "compactions": a.compactions,
     }
 
 
@@ -796,6 +1257,16 @@ def run_detail(route: Route, run: Run) -> dict[str, object]:
     Returns:
         The RunDetail object.
     """
+    from dsp_route import switch
+
+    agents = run.agents
+    blind = {s: _blind_since(run, s) for s in run.sessions}
+    # the sessions still running decide; with every one ended, all of them
+    open_ = [t for s, t in blind.items() if not (s in run.logs and run.logs[s].ended)]
+    since = [t for t in open_ or blind.values() if t is not None]
+    unknown = run.recording in {"none", "expired"}
+    running = sum(a.state in _RUNNING for a in agents)
+    hint = COPY["recording_none"].format(name=switch.NAME)
     return {
         "key": run.key,
         "run": run.run,
@@ -804,6 +1275,11 @@ def run_detail(route: Route, run: Run) -> dict[str, object]:
         "last_activity_at": iso(run.last_activity_at),
         "ended_at": None,
         "sessions": [_session(run, s) for s in run.sessions],
+        "recording": run.recording,
+        "recording_hint": hint if run.recording == "none" else None,
+        "blind_since": iso(min(since, default=None)),
+        "summary": {"agents_running": None if unknown else running},
+        "agents": [_agent_json(a) for a in agents],
         "attention": _items(route) if run.live else [],
     }
 
