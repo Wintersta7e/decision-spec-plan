@@ -7,8 +7,10 @@ return, and the SessionStart re-read after a compaction or resume.
 
 import json
 import re
+import subprocess
+import time
 import unittest
-from typing import cast
+from typing import IO, cast
 
 from typing_extensions import override
 
@@ -233,9 +235,9 @@ class SessionStart(support.Route):
 READ = '"tool_name":"Read"'
 
 
-def _flag(cls: support.Route) -> None:
+def _flag(cls: support.Route, name: str = "two") -> None:
     """A new flag in the next report: an empty reconcile file an hour old."""
-    rec = cls.write(cls.P / "reconcile/p1-two.md", "")
+    rec = cls.write(cls.P / f"reconcile/p1-{name}.md", "")
     cls.touch(rec, -3600)
 
 
@@ -312,6 +314,121 @@ class SeedOtherSession(support.Route):
         self.ok(
             "seed: a second lead's first report is a delta holding the new flag",
             "changed between" in out and "reconcile/p1-two.md" in out,
+            out,
+        )
+
+
+WINDOW_S = 20  # the hook's THROTTLE_S: a claim file per window of this many seconds
+HOOKS = 8  # parallel PostToolUse hooks per round
+ROUNDS = 5
+KEPT = 2  # the claim files a session keeps at most: this window's and the last one's
+
+
+def _window(min_left: float) -> int:
+    """The current throttle window, after waiting for the next one to start.
+
+    The wait happens only when fewer than min_left seconds of this window remain, so it
+    is bounded at WINDOW_S.
+    """
+    left = WINDOW_S - time.time() % WINDOW_S
+    if left < min_left:
+        time.sleep(left)
+    return int(time.time()) // WINDOW_S
+
+
+class ConcurrentHooks(support.Route):
+    """Parallel PostToolUse hooks of one session inject the report once."""
+
+    def test_one_injection_per_round(self) -> None:
+        """Of 8 hooks started together, exactly one injects, in every round."""
+        counts: list[int] = []
+        for k in range(ROUNDS):
+            self.unthrottle()
+            _flag(self, f"r{k}")
+            _ = _window(12)
+            procs = [
+                subprocess.Popen(
+                    [support.PY, RS, "--hook"],
+                    stdin=subprocess.PIPE,
+                    stdout=subprocess.PIPE,
+                    stderr=subprocess.DEVNULL,
+                    env=self.env,
+                    text=True,
+                )
+                for _ in range(HOOKS)
+            ]
+            time.sleep(0.5)
+            for p in procs:
+                assert p.stdin is not None
+                _ = p.stdin.write(ev("PostToolUse", "s1", READ) + "\n")
+                p.stdin.close()
+            outs: list[str] = []
+            for p in procs:
+                # stdout=PIPE: never None; typeshed says IO[Any], text=True makes it str
+                assert p.stdout is not None
+                stream: IO[str] = p.stdout
+                outs.append(stream.read())
+                stream.close()
+                _ = p.wait(timeout=120)
+            counts.append(sum(1 for o in outs if o.strip()))
+        self.ok(
+            f"parallel hooks: injections per round of {HOOKS}: {counts}",
+            counts == [1] * ROUNDS,
+            counts,
+        )
+
+
+class ThrottleGap(support.Route):
+    """The previous window's recent claim keeps the gap; old claims are removed."""
+
+    def test_gap_and_bound(self) -> None:
+        """A claim a second old throttles, one 30 s old does not, and old ones go."""
+        reg = self.HOME / ".claude/dsp-routes"
+        legacy = reg / "s1.checked"
+        seen: list[bool] = []
+        w = _window(5)
+        prev = reg / f"s1.{w - 1}.checked"
+        self.touch(prev, -1)
+        _flag(self, "g1")
+        quiet = _post(self, "s1")
+        seen.append(legacy.exists())
+        self.touch(prev, -30)
+        control = _post(self, "s1")
+        seen.append(legacy.exists())
+        self.ok(
+            "throttle gap: a claim 1 s old in the last window holds, 30 s old does not",
+            quiet == "" and control != "",
+            f"quiet {quiet!r}\ncontrol {control!r}",
+        )
+        self.unthrottle()
+        w = _window(5)
+        for k in range(1, 6):
+            self.touch(reg / f"s1.{w - k}.checked", -30)
+        _flag(self, "g2")
+        bound = _post(self, "s1")
+        seen.append(legacy.exists())
+        left = len(list(reg.glob("s1.*.checked")))
+        self.ok(
+            f"throttle bound: it reports and leaves {left} claim files of 6",
+            bound != "" and 0 < left <= KEPT,
+            f"{sorted(p.name for p in reg.glob('s1*'))}\n{bound!r}",
+        )
+        self.ok("the legacy s1.checked is never written", not any(seen), seen)
+
+
+class ClaimFirst(support.Route):
+    """A window another hook already claimed injects nothing."""
+
+    def test_claimed_window(self) -> None:
+        """With this window's claim present, a PostToolUse is silent."""
+        reg = self.HOME / ".claude/dsp-routes"
+        w = _window(5)
+        self.touch(reg / f"s1.{w}.checked")
+        _flag(self, "c1")
+        out = _post(self, "s1")
+        self.ok(
+            "claimed window: no injection, and no legacy s1.checked",
+            out == "" and not (reg / "s1.checked").exists(),
             out,
         )
 

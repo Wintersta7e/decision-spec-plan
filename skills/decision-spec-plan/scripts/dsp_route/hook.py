@@ -9,6 +9,7 @@ up front made the no-route call 70% slower.
 
 import contextlib
 import io
+import os
 import pathlib
 import sys
 import time
@@ -155,11 +156,42 @@ def _post_tool_use_line(
     return None
 
 
+def _claim(session: str) -> bool:
+    """Return whether this hook claimed the session's current throttle window.
+
+    The window is the time in THROTTLE_S slices. Its claim file is created exclusively,
+    so of parallel hooks exactly one wins it. A claim of the previous window less than
+    THROTTLE_S old keeps the gap, and one that cannot be read admits nobody. The claims
+    two windows old and older are removed.
+    """
+    w = int(time.time()) // THROTTLE_S
+    here = REGISTRY / f"{session}.{w}.checked"
+    if here.exists():
+        return False
+    try:
+        age = time.time() - (REGISTRY / f"{session}.{w - 1}.checked").stat().st_mtime
+    except FileNotFoundError:
+        age = THROTTLE_S
+    except OSError:
+        return False
+    if age < THROTTLE_S:
+        return False
+    try:
+        os.close(os.open(here, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o600))
+    except FileExistsError:
+        return False
+    for old in REGISTRY.glob(f"{session}.*.checked"):
+        mid = old.name[len(session) + 1 : -len(".checked")]
+        if mid.isdigit() and int(mid) <= w - 2:
+            old.unlink(missing_ok=True)
+    return True
+
+
 def _quiet(name: str, event: Mapping[str, object], session: str) -> bool:
     """Return whether an event of the lead injects no state.
 
     A SessionStart other than compact and resume, a prompt that is no agent's return,
-    and a PostToolUse within THROTTLE_S of the last one checked.
+    and a PostToolUse whose throttle window another hook of the session already claimed.
     """
     if name == "SessionStart" and event.get("source") not in ("compact", "resume"):
         return True
@@ -168,10 +200,7 @@ def _quiet(name: str, event: Mapping[str, object], session: str) -> bool:
         if not any(t in head for t in RETURNS):
             return True
     if name == "PostToolUse":
-        stamp = REGISTRY / f"{session}.checked"
-        if stamp.exists() and time.time() - stamp.stat().st_mtime < THROTTLE_S:
-            return True
-        stamp.touch()
+        return not _claim(session)
     return False
 
 

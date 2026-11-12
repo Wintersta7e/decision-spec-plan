@@ -586,7 +586,7 @@ class DeltaLaneLine(support.Sandbox):
         _ = self.git("-C", wt, "commit", "-q", "--allow-empty", "-m", "l2")
         _ = self.write(cp, f"Final SHA: {self.rev(wt)}\n")
         self.touch(cp, -3600)
-        self.rm(self.HOME / ".claude/dsp-routes/rc1.checked")
+        self.rm(*(self.HOME / ".claude/dsp-routes").glob("rc1.*.checked"))
         out = self.hook_out(cev).out
         self.ok(
             "hook delta: a changed lane line is no cleared flag",
