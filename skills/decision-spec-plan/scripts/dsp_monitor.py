@@ -202,8 +202,26 @@ def now_iso() -> str:
 
 
 def as_json(obj: object) -> bytes:
-    """Return obj as compact UTF-8 JSON."""
+    """Return obj as compact UTF-8 JSON, HOME written as `~` in every string.
+
+    A HOME of one character (`/`) is left as it is.
+    """
+    top = str(pathlib.Path.home())
+    if len(top) > 1:
+        # HOME as a whole path component, wherever a string holds it
+        obj = _tilde(obj, re.compile(rf"(?<![\w.-]){re.escape(top)}(?![\w.-])"))
     return json.dumps(obj, separators=(",", ":"), ensure_ascii=False).encode()
+
+
+def _tilde(value: object, top: re.Pattern[str]) -> object:
+    """Return value with each match of top in its strings and keys replaced by `~`."""
+    if isinstance(value, str):
+        return top.sub("~", value)
+    if (d := common.as_dict(value)) is not None:
+        return {top.sub("~", k): _tilde(v, top) for k, v in d.items()}
+    if (items := common.as_list(value)) is not None:
+        return [_tilde(v, top) for v in items]
+    return value
 
 
 def iso(t: float | None) -> str | None:
@@ -211,14 +229,6 @@ def iso(t: float | None) -> str | None:
     if t is None:
         return None
     return dt.datetime.fromtimestamp(t, dt.UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
-
-
-def home(path: str | None) -> str | None:
-    """Return path with the HOME prefix replaced by `~`."""
-    top = str(pathlib.Path.home())
-    if path is not None and (path == top or path.startswith(top + os.sep)):
-        return "~" + path[len(top) :]
-    return path
 
 
 # --- what the scan reads: markers, the registry and the event logs
@@ -1044,6 +1054,7 @@ class Route:
     status: Literal["active", "idle"] | None = None
     errors: list[dict[str, str]] = dataclasses.field(default_factory=list)
     args: common.RouteArgs | None = None
+    marker_data: dict[str, object] = dataclasses.field(default_factory=dict)
 
     @property
     def reported(self) -> Run | None:
@@ -1179,7 +1190,12 @@ def _route(
         listed.append(r)
     if not listed:
         return None
-    listed.sort(key=lambda r: r.last_activity_at, reverse=True)
+    # at equal activity, a run with a registry entry of its own is the newer: a run
+    # seen only in another entry's `previous` takes that entry's time
+    listed.sort(
+        key=lambda r: (r.last_activity_at, any(s.kind == "entry" for s in r.sightings)),
+        reverse=True,
+    )
     out = Route(key, planning, mf.path, claim, torn, listed, now)
     sessions = {s.session for s in mine}
     out.errors = [
@@ -1187,6 +1203,7 @@ def _route(
     ]
     if out.live is not None:
         out.dir_missing = not scan.dirs[planning]
+        out.marker_data = mf.read.data
         args = out.args = _marker_args(mf.read.data)
         out.repo = args.repo if args is not None and claim is not None else None
         quiet = now - out.live.last_activity_at
@@ -1251,6 +1268,7 @@ COPY = {
     "recording_none": (
         "No events recorded for this run (tracking may be off in its sessions: {name})"
     ),
+    "no-args": "no report: no marker or registry entry of this run records its args",
 }
 # each attention kind's severity; the waiting kinds have none
 SEVERITY = {
@@ -1438,6 +1456,12 @@ def attention(route: Route, run: Run, reports: "Reports | None" = None) -> list[
             else COPY["git-slow"].format(at=hhmm(at))
         )
         out.append(_item("git-slow", (route, run), None, at, text))
+    rep = None if reports is None else reports.report()
+    for flag in [] if rep is None else rep["flags"]:
+        # the flag's own line, before the API copy drops it from the report
+        if flag["kind"] in ATTENTION_FLAGS:
+            item = _item("flag", (route, run), flag["subject"], None, flag["line"])
+            out.append(item)
     out += _stuck(route, run)
     return sorted(out, key=_urgent)
 
@@ -1531,6 +1555,122 @@ def _agent_json(a: Agent, *, stuck: bool) -> dict[str, object]:
     }
 
 
+def reduced(state: "State") -> dict[str, object]:
+    """Return the report as the API sends it: no planning file's text.
+
+    `extra`, each file's `last_line` and each flag's `line` are dropped; every other
+    field, `decisions` and `lane_files` among them, passes through.
+    """
+    out: dict[str, object] = {k: v for k, v in state.items() if k != "extra"}
+    out["files"] = [
+        {k: v for k, v in f.items() if k != "last_line"} for f in state["files"]
+    ]
+    out["flags"] = [{k: v for k, v in f.items() if k != "line"} for f in state["flags"]]
+    return out
+
+
+def board(state: "State") -> dict[str, dict[str, object]]:
+    """Return each lane's board column and gating badge, by lane id (BOARD).
+
+    A queued lane is blocked until every plan it waits for has a merged lane.
+    """
+    merged = {lane["plan"] for lane in state["lanes"] if lane["state"] == "merged"}
+    out: dict[str, dict[str, object]] = {}
+    for lane in state["lanes"]:
+        column, gating = BOARD[lane["state"]]
+        wave = state["waves"].get(lane["plan"])
+        needs: set[str] = set() if wave is None else set(wave["waits_for"])
+        if lane["state"] == "queued" and not needs <= merged:
+            column = "blocked"
+        out[lane["id"]] = {"column": column, "gating": gating}
+    return out
+
+
+def summary(state: "State | None", running: int | None) -> dict[str, object]:
+    """Return a run's stage and its waves and lanes merged, and its running agents.
+
+    Args:
+        state: The run's report, None without one.
+        running: The run's running agents, None when its recording knows none.
+
+    Returns:
+        The RunDetail `summary` object.
+    """
+    out: dict[str, object] = {
+        "stage": None,
+        "waves_merged": None,
+        "waves_total": None,
+        "lanes_merged": 0,
+        "lanes_total": 0,
+        "agents_running": running,
+    }
+    if state is None:
+        return out
+    stages = state["stages"]
+    current = [s["name"] for s in stages if s["state"] == "current"]
+    # with no current stage the route is past its last one
+    out["stage"] = current[0] if current else (stages[-1]["name"] if stages else None)
+    numbers = {
+        w["wave_no"] for w in state["waves"].values() if w["wave_no"] is not None
+    }
+    lanes: dict[int, list[str]] = {}
+    for lane in state["lanes"]:
+        wave = state["waves"].get(lane["plan"])
+        if wave is not None and wave["wave_no"] is not None:
+            lanes.setdefault(wave["wave_no"], []).append(lane["state"])
+    out["waves_total"] = len(numbers)
+    out["waves_merged"] = sum(
+        1 for n in numbers if lanes.get(n) and set(lanes[n]) == {"merged"}
+    )
+    out["lanes_total"] = len(state["lanes"])
+    out["lanes_merged"] = sum(lane["state"] == "merged" for lane in state["lanes"])
+    return out
+
+
+def budget(route: Route, run: Run) -> dict[str, object] | None:
+    """Return the last budget recorded for the route's newest run, None without one.
+
+    The phase is the marker's for a live run, else the run's registry entry's.
+    """
+    args = _run_args(route, run)
+    if run is not route.reported or args is None:
+        return None
+    marker = route.marker_data if run.live else {}
+    found = common.budgets(route.planning_dir, marker, args.phase)
+    if not found:
+        return None
+    last = found[-1]
+    return {
+        "label": last["label"],
+        "estimate": last["estimate"],
+        "groups": last.get("groups"),
+        "at": last["at"],
+    }
+
+
+def _report_of(route: Route, run: Run, reports: "Reports | None") -> "State | None":
+    """The run's report: only the run its route keeps one for, when it has args."""
+    if reports is None or run is not route.reported or _run_args(route, run) is None:
+        return None
+    return reports.report()
+
+
+def _files_as_of(state: "State | None") -> float | None:
+    """The newest mtime of the files a report lists, None without any."""
+    return (
+        None
+        if state is None
+        else max((f["mtime"] for f in state["files"]), default=None)
+    )
+
+
+def rev(run: Run, files_as_of: float | None) -> str:
+    """Return the id that changes with a run's files, retained lines or recording."""
+    lines = sum(g.lines for g in _groups(run))
+    text = f"{int(files_as_of or 0)}|{lines}|{run.recording}"
+    return hashlib.sha1(text.encode(), usedforsecurity=False).hexdigest()[:12]
+
+
 def run_detail(
     route: Route, run: Run, reports: "Reports | None" = None
 ) -> dict[str, object]:
@@ -1552,7 +1692,13 @@ def run_detail(
     running = sum(a.state in _RUNNING for a in agents)
     hint = COPY["recording_none"].format(name=switch.NAME)
     mine = reports if run is route.reported else None
-    rep = None if mine is None else mine.report()
+    rep = _report_of(route, run, reports)
+    # only an ended run's report is of the current files, not of the run
+    kept = rep is not None and not run.live
+    if _run_args(route, run) is None:
+        error = COPY["no-args"]
+    else:
+        error = None if mine is None else mine.error
     return {
         "key": run.key,
         "run": run.run,
@@ -1564,11 +1710,15 @@ def run_detail(
         "recording": run.recording,
         "recording_hint": hint if run.recording == "none" else None,
         "blind_since": None if blind is None else iso(blind[0]),
-        "report": rep,
+        "report": None if rep is None else reduced(rep),
         "report_as_of": None if rep is None else iso(rep["generated_at"]),
-        "report_error": None if mine is None else mine.error,
+        "report_error": error,
+        "current_files": kept,
+        "files_as_of": iso(_files_as_of(rep)) if kept else None,
         "git": _git_json(route, run, mine),
-        "summary": {"agents_running": None if unknown else running},
+        "lanes": {} if rep is None else board(rep),
+        "summary": summary(rep, None if unknown else running),
+        "budget": budget(route, run),
         "agents": [
             _agent_json(a, stuck=stuck_call(route, run, a) is not None) for a in agents
         ],
@@ -1583,8 +1733,8 @@ def _route_json(route: Route, reports: "Reports | None") -> dict[str, object]:
     return {
         "key": route.key,
         "name": route.name,
-        "planning_dir": home(route.planning_dir),
-        "repo": home(route.repo),
+        "planning_dir": route.planning_dir,
+        "repo": route.repo,
         "status": route.status,
         "last_activity_at": iso(live.last_activity_at),
         "planning_dir_missing": route.dir_missing,
@@ -1593,22 +1743,33 @@ def _route_json(route: Route, reports: "Reports | None") -> dict[str, object]:
     }
 
 
-def _ended_json(route: Route) -> dict[str, object]:
+def _run_summary(
+    route: Route, run: Run, reports: "Reports | None"
+) -> dict[str, object]:
+    """Return an ended run as `ended` lists it."""
+    rep = _report_of(route, run, reports)
+    unknown = run.recording in {"none", "expired"}
+    return {
+        "key": run.key,
+        "run": run.run,
+        "first_seen_at": iso(run.first_seen_at),
+        "last_activity_at": iso(run.last_activity_at),
+        "sessions": len(run.sessions),
+        "agents": None if unknown else len(run.agents),
+        "recording": run.recording,
+        "has_report": rep is not None,
+        "rev": rev(run, _files_as_of(rep)),
+    }
+
+
+def _ended_json(route: Route, reports: "Reports | None") -> dict[str, object]:
     """Return a route's ended runs as `ended` lists them."""
     return {
         "key": route.key,
         "name": route.name,
-        "planning_dir": home(route.planning_dir),
+        "planning_dir": route.planning_dir,
         "runs": [
-            {
-                "key": run.key,
-                "run": run.run,
-                "first_seen_at": iso(run.first_seen_at),
-                "last_activity_at": iso(run.last_activity_at),
-                "sessions": len(run.sessions),
-            }
-            for run in route.runs
-            if not run.live
+            _run_summary(route, run, reports) for run in route.runs if not run.live
         ],
     }
 
@@ -1900,7 +2061,7 @@ class Live:
                     _route_json(r, reports[r.key]) for r in live if r.status == "active"
                 ],
                 "idle": idle,
-                "ended": [_ended_json(r) for r in ended],
+                "ended": [_ended_json(r, reports[r.key]) for r in ended],
                 "counts": {
                     "waiting": len(waits),
                     "idle": len(idle),
@@ -1918,8 +2079,8 @@ class Live:
                     "route": {
                         "key": r.key,
                         "name": r.name,
-                        "planning_dir": home(r.planning_dir),
-                        "repo": home(r.repo),
+                        "planning_dir": r.planning_dir,
+                        "repo": r.repo,
                     },
                     "run": run_detail(r, run, reports[r.key]),
                 }

@@ -1495,3 +1495,492 @@ class Refresh(support.MonitorSandbox):
             ref.pool.shutdown(wait=True)
         want = [("slow", 4), ("fresh", 4), ("fresh", 4)]
         self.ok(f"three cycles: {seen}", seen == want, seen)
+
+
+# §4.7's board table, written from the spec: (report lane state, its dependencies
+# met; None where that does not matter) -> (column, gating)
+SPEC_BOARD: dict[tuple[str, bool | None], tuple[str, bool]] = {
+    ("queued", True): ("queued", False),
+    ("queued", False): ("blocked", False),
+    ("running", None): ("running", False),
+    ("gating", None): ("running", True),
+    ("ready", None): ("ready", False),
+    ("red", None): ("failed", False),
+    ("merged", None): ("merged", False),
+}
+# the key set of each §4.7 shape (with the amendments: routes/idle/counts, the
+# recording hint, per-session skips, files_as_of and rev), written from the spec
+SHAPES = {
+    "state": {
+        "version",
+        "page",
+        "generated_at",
+        "ready",
+        "monitor",
+        "waiting",
+        "attention",
+        "routes",
+        "idle",
+        "counts",
+        "ended",
+        "errors",
+        "events_unjoined",
+    },
+    "monitor": {"pid", "port"},
+    "counts": {"waiting", "idle", "ended"},
+    "item": {"kind", "severity", "route", "run", "subject", "since", "text"},
+    "route": {
+        "key",
+        "name",
+        "planning_dir",
+        "repo",
+        "status",
+        "last_activity_at",
+        "planning_dir_missing",
+        "runs",
+        "run",
+    },
+    "run": {
+        "key",
+        "run",
+        "state",
+        "first_seen_at",
+        "last_activity_at",
+        "ended_at",
+        "sessions",
+        "recording",
+        "recording_hint",
+        "blind_since",
+        "report",
+        "report_as_of",
+        "report_error",
+        "current_files",
+        "files_as_of",
+        "git",
+        "lanes",
+        "summary",
+        "budget",
+        "agents",
+        "waiting",
+        "attention",
+    },
+    "session": {
+        "id",
+        "activated_at",
+        "last_activity_at",
+        "recording",
+        "blind_since",
+        "ended",
+        "events_skipped",
+        "unknown_versions",
+    },
+    "agent": {
+        "key",
+        "session",
+        "name",
+        "mode",
+        "state",
+        "model",
+        "started_at",
+        "ended_at",
+        "duration_s",
+        "tools",
+        "last_tool",
+        "last_tool_at",
+        "open_tool",
+        "open_since",
+        "final_tokens",
+        "compactions",
+        "likely_stuck",
+    },
+    "git": {"state", "as_of", "ms"},
+    "lane": {"column", "gating"},
+    "summary": {
+        "stage",
+        "waves_merged",
+        "waves_total",
+        "lanes_merged",
+        "lanes_total",
+        "agents_running",
+    },
+    "budget": {"label", "estimate", "groups", "at"},
+    "ended": {"key", "name", "planning_dir", "runs"},
+    "run_summary": {
+        "key",
+        "run",
+        "first_seen_at",
+        "last_activity_at",
+        "sessions",
+        "agents",
+        "recording",
+        "has_report",
+        "rev",
+    },
+    "error": {"source", "reason"},
+    "run_response": {"version", "generated_at", "route", "run"},
+    "route_ref": {"key", "name", "planning_dir", "repo"},
+}
+# a skill digest no fixture id contains, written into route-a's registry entry
+SKILL_DIGEST = "5ca1ab1e5ca1ab1e"
+
+
+def strings(v: object) -> list[str]:
+    """Every string of a parsed JSON value, keys included."""
+    if isinstance(v, str):
+        return [v]
+    if isinstance(v, dict):
+        d = cast("dict[str, object]", v)
+        return [s for k, x in d.items() for s in [k, *strings(x)]]
+    if isinstance(v, list):
+        return [s for x in cast("list[object]", v) for s in strings(x)]
+    return []
+
+
+def dicts(v: object) -> list[dict[str, object]]:
+    """Every object of a parsed JSON value, nested ones included."""
+    if isinstance(v, dict):
+        d = cast("dict[str, object]", v)
+        return [d, *(o for x in d.values() for o in dicts(x))]
+    if isinstance(v, list):
+        return [o for x in cast("list[object]", v) for o in dicts(x)]
+    return []
+
+
+def run_of(state: dict[str, object], key: str) -> dict[str, object]:
+    """The live run of route key in /api/state; {} while it is not listed."""
+    runs = [r for r in live_runs(state) if str(r["key"]).startswith(f"{key}-")]
+    return runs[0] if runs else {}
+
+
+def ended_of(state: dict[str, object], key: str) -> list[dict[str, object]]:
+    """The RunSummary list of route key in /api/state's `ended`."""
+    for r in cast("list[dict[str, object]]", state["ended"]):
+        if r["key"] == key:
+            return cast("list[dict[str, object]]", r["runs"])
+    return []
+
+
+class Shape:
+    """Checks of key sets and enum values; the mismatches and the fields checked."""
+
+    def __init__(self) -> None:
+        """No check made yet."""
+        self.bad: list[tuple[str, object]] = []
+        self.fields: int = 0
+
+    def keys(self, obj: object, shape: str) -> dict[str, object]:
+        """Obj as an object, its key set checked against SHAPES[shape]."""
+        d = cast("dict[str, object]", obj)
+        self.fields += len(d)
+        if set(d) != SHAPES[shape]:
+            self.bad.append((shape, sorted(set(d) ^ SHAPES[shape])))
+        return d
+
+    def enum(self, value: object, allowed: tuple[object, ...], what: str) -> None:
+        """Value is one of allowed."""
+        self.fields += 1
+        if value not in allowed:
+            self.bad.append((what, value))
+
+    def items(self, items: object) -> None:
+        """Each waiting or attention item."""
+        for i in cast("list[object]", items):
+            d = self.keys(i, "item")
+            self.enum(d["kind"], dsp_monitor.ATTENTION, "item.kind")
+            self.enum(d["severity"], ("red", "amber", None), "item.severity")
+
+    def run(self, obj: object) -> dict[str, object]:
+        """A RunDetail and every object in it."""
+        from dsp_route import record
+
+        d = self.keys(obj, "run")
+        self.enum(d["state"], dsp_monitor.RUN_STATES, "run.state")
+        self.enum(d["recording"], dsp_monitor.RECORDING, "run.recording")
+        for s in cast("list[object]", d["sessions"]):
+            ses = self.keys(s, "session")
+            self.enum(ses["recording"], dsp_monitor.RECORDING, "session.recording")
+        git = self.keys(d["git"], "git")
+        self.enum(git["state"], dsp_monitor.GIT_STATES, "git.state")
+        for lane in cast("dict[str, object]", d["lanes"]).values():
+            column = self.keys(lane, "lane")["column"]
+            self.enum(column, dsp_monitor.BOARD_COLUMNS, "lane.column")
+        _ = self.keys(d["summary"], "summary")
+        if d["budget"] is not None:
+            _ = self.keys(d["budget"], "budget")
+        for a in cast("list[object]", d["agents"]):
+            agent = self.keys(a, "agent")
+            self.enum(agent["mode"], (*record.AGENT_MODES, None), "agent.mode")
+            self.enum(agent["state"], record.AGENT_STATES, "agent.state")
+        self.items(d["waiting"])
+        self.items(d["attention"])
+        return d
+
+    def state(self, obj: object) -> None:
+        """A /api/state answer and every object in it."""
+        d = self.keys(obj, "state")
+        _ = self.keys(d["monitor"], "monitor")
+        _ = self.keys(d["counts"], "counts")
+        self.items(d["waiting"])
+        self.items(d["attention"])
+        for group in ("routes", "idle"):
+            for r in cast("list[object]", d[group]):
+                route = self.keys(r, "route")
+                self.enum(route["status"], dsp_monitor.ROUTE_STATUS, "route.status")
+                _ = self.run(route["run"])
+        for e in cast("list[object]", d["ended"]):
+            for x in cast("list[object]", self.keys(e, "ended")["runs"]):
+                rs = self.keys(x, "run_summary")
+                self.enum(rs["recording"], dsp_monitor.RECORDING, "summary.recording")
+        for e in cast("list[object]", d["errors"]):
+            _ = self.keys(e, "error")
+
+
+class Derived(support.MonitorSandbox):
+    """What the API derives for the page: board, summary, budget, ended runs, shape."""
+
+    def machine(self) -> tuple[support.Machine, Path]:
+        """This test's own machine, and its own directory for the shim and probe."""
+        d = self.T / self._testMethodName
+        return support.build_machine(d), d
+
+    def settled(self, mon: support.Monitor, key: str) -> dict[str, object]:
+        """/api/state once route key's live run has a report and fresh git."""
+
+        def ready(s: dict[str, object]) -> bool:
+            run = run_of(s, key)
+            git = cast("dict[str, object]", run.get("git") or {})
+            return bool(run) and run["report"] is not None and git["state"] == "fresh"
+
+        return mon.wait(ready, timeout=60)
+
+    def responses(self, mon: support.Monitor) -> dict[str, object]:
+        """Every answer of the API: /api/state, /api/ping and /api/run of each run."""
+        state = mon.state()
+        out: dict[str, object] = {"/api/state": state}
+        code, _, body = mon.get("/api/ping")
+        out["/api/ping"] = json.loads(body) if code == HTTPStatus.OK else None
+        keys = [str(r["key"]) for r in live_runs(state)]
+        for r in cast("list[dict[str, object]]", state["ended"]):
+            keys += [str(x["key"]) for x in cast("list[dict[str, object]]", r["runs"])]
+        for k in keys:
+            code, _, body = mon.get(f"/api/run?key={k}")
+            out[k] = json.loads(body) if code == HTTPStatus.OK else None
+        return out
+
+    def test_board_mapping(self) -> None:
+        """Every report lane state on route-a's board, as §4.7's table maps it."""
+        from dsp_route import report
+
+        m, _ = self.machine()
+        mon = self.monitor_on(m, consts=QUICK)
+        run = run_of(self.settled(mon, m.live_route_key), m.live_route_key)
+        rep = cast("dict[str, object]", run["report"])
+        lanes = cast("list[dict[str, object]]", rep["lanes"])
+        waves = cast("dict[str, dict[str, object]]", rep["waves"])
+        board = cast("dict[str, dict[str, object]]", run["lanes"])
+        merged = {x["plan"] for x in lanes if x["state"] == "merged"}
+        seen: set[tuple[str, bool | None]] = set()
+        bad: list[object] = []
+        for state in report.LANE_STATES:
+            for lane in (x for x in lanes if x["state"] == state):
+                needs = cast("list[str]", waves[str(lane["plan"])]["waits_for"])
+                row = (state, set(needs) <= merged if state == "queued" else None)
+                seen.add(row)
+                got = board.get(str(lane["id"]), {})
+                if (got.get("column"), got.get("gating")) != SPEC_BOARD[row]:
+                    bad.append((lane["id"], row, got))
+        self.ok(
+            f"{len(seen)} of the table's rows on the board", seen == set(SPEC_BOARD)
+        )
+        self.ok(f"{len(lanes)} lanes, each in its row's column", lanes and not bad, bad)
+        self.ok("one board entry per lane", len(board) == len(lanes), board)
+        want = ("queued", "running", "ready", "merged", "blocked", "failed")
+        self.ok("BOARD_COLUMNS in display order", want == dsp_monitor.BOARD_COLUMNS)
+        summary = run["summary"]
+        expect = {
+            "stage": "exec",
+            "waves_merged": 0,
+            "waves_total": 2,
+            "lanes_merged": 1,
+            "lanes_total": 8,
+            "agents_running": 1,
+        }
+        self.ok("route-a's summary", summary == expect, summary)
+
+    def test_ended_runs_show_what_was_kept(self) -> None:
+        """route-e: no git, current files on its newest run, rev follows the files."""
+        m, d = self.machine()
+        e = m.routes["route-e"]
+        kept = m.put(e.plan / "lanes/p1-01-x-checkpoint.md", f"Final SHA: {'0' * 40}\n")
+        _, log = self.git_shim(d / "shim")
+        probe = d / "probe.jsonl"
+        consts = {**QUICK, "FREE_IDLE_S": 1}
+        mon = self.monitor_on(m, consts=consts, probe=probe, path_prefix=[d / "shim"])
+
+        def collects() -> int:
+            return sum(
+                x["what"] == "collect" and x["planning_dir"] == str(e.plan)
+                for x in probed(probe)
+            )
+
+        def newest(s: dict[str, object]) -> dict[str, object]:
+            runs = ended_of(s, e.key)
+            return runs[0] if runs else {}
+
+        def after(n: int) -> dict[str, object]:
+            """/api/state once route-e had n more refreshes."""
+            want = collects() + n
+            return mon.wait(lambda _: collects() >= want, timeout=30)
+
+        s = mon.wait(lambda s: newest(s).get("has_report") is True, timeout=30)
+        s = after(3)
+        spawns = [x for x in log.read_text().splitlines() if str(e.repo) in x]
+        self.ok(f"{collects()} refreshes of route-e, {len(spawns)} git", not spawns)
+        runs = ended_of(s, e.key)
+        self.ok(f"{len(runs)} ended runs", len(runs) == len(["new", "old"]), runs)
+        new, old = (str(r["key"]) for r in runs[:2])
+        self.ok("the newest is route-e's own run", new == e.run_key(), runs)
+        detail: dict[str, dict[str, object]] = {}
+        for k in (new, old):
+            code, _, body = mon.get(f"/api/run?key={k}")
+            self.ok(f"/api/run {k[-6:]}: {code}", code == HTTPStatus.OK)
+            detail[k] = cast("dict[str, object]", json.loads(body)["run"])
+        mtime = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(kept.stat().st_mtime))
+        n = detail[new]
+        self.ok("newest: a report", n["report"] is not None)
+        self.ok("newest: current files", n["current_files"] is True, n["current_files"])
+        self.ok("newest: as of its file", n["files_as_of"] == mtime, n["files_as_of"])
+        git = cast("dict[str, object]", n["git"])
+        self.ok("newest: git not tracked", git["state"] == "not_tracked", git)
+        o = detail[old]
+        self.ok("older: no report", o["report"] is None and not o["current_files"])
+        error = str(o["report_error"])
+        self.ok(f"older, seen only as previous: {error!r}", "args" in error)
+        self.ok("older: no budget", o["budget"] is None)
+        rev = newest(s)["rev"]
+        s = after(2)
+        self.ok("rev unchanged over two refreshes", newest(s)["rev"] == rev, rev)
+        support.Sandbox.touch(kept, -3600)
+        s = mon.wait(lambda s: newest(s).get("rev") not in {rev, None}, timeout=30)
+        touched = newest(s)["rev"]
+        self.ok(f"rev {rev} -> {touched} after a touch", touched != rev)
+        self.rm(m.registry / "events/s5.jsonl")
+        s = mon.wait(lambda s: newest(s).get("rev") not in {touched, None}, timeout=30)
+        gone = newest(s)["rev"]
+        self.ok(f"rev {touched} -> {gone} after the log went", gone != touched)
+
+    def shapes(self, answers: dict[str, object]) -> None:
+        """Each answer's shapes, enums, version and keys."""
+        from dsp_route import report
+
+        shape = Shape()
+        shape.state(answers["/api/state"])
+        for path, body in answers.items():
+            if path.startswith("/api/"):
+                continue
+            self.ok(f"/api/run {path[-6:]} answered", body is not None)
+            r = shape.keys(body, "run_response")
+            _ = shape.keys(r["route"], "route_ref")
+            _ = shape.run(r["run"])
+        self.ok(f"{shape.fields} fields of {len(answers)} answers", shape.fields)
+        self.ok("every shape and enum as §4.7 says", not shape.bad, shape.bad)
+        versions = {
+            p: cast("dict[str, object]", b)["version"] for p, b in answers.items()
+        }
+        bad_v = {p: v for p, v in versions.items() if v != dsp_monitor.API_VERSION}
+        self.ok(f"{len(versions)} versions, all API_VERSION", not bad_v, bad_v)
+        flags = sorted(set(dsp_monitor.ATTENTION_FLAGS) - set(report.FLAG_KINDS))
+        self.ok("every ATTENTION_FLAGS kind is a report flag", not flags, flags)
+        keys = [str(o["key"]) for o in dicts(list(answers.values())) if "key" in o]
+        bad_k = [k for k in keys if not re.fullmatch(r"[0-9A-Za-z_-]+", k)]
+        self.ok(f"{len(keys)} keys, all [0-9A-Za-z_-]+", keys and not bad_k, bad_k)
+
+    def test_api_shape_and_enums(self) -> None:
+        """Exact shapes, owners' enums, safe keys; HOME as ~, no planning file text."""
+        from dsp_route import report
+
+        m, _ = self.machine()
+        a = m.routes["route-a"]
+        _ = self.git("-C", a.repo, "worktree", "add", "-q", m.home / "wt-h", "p1-04-x")
+        entry = m.registry / "s1.json"
+        data = cast("dict[str, object]", json.loads(entry.read_text()))
+        data["skill_digests"] = {"SKILL.md": SKILL_DIGEST}
+        _ = m.put(entry, json.dumps(data) + "\n")
+        mon = self.monitor_on(m, consts=QUICK)
+        _ = self.settled(mon, a.key)
+        answers = self.responses(mon)
+        state = cast("dict[str, object]", answers["/api/state"])
+        self.shapes(answers)
+        # the report as collected, before the API copy
+        args = common.checked(common.route_args, {"args": a.args})
+        if args is None:
+            self.fail("route-a's args do not parse")
+        full = report.collect(args, use_git=False, write_cache=False)
+        if full is None:
+            self.fail("route-a gave no report")
+        lasts = {f["last_line"] for f in full["files"] if f["last_line"]}
+        found = strings(list(answers.values()))
+        home = [x for x in found if str(m.home) in x]
+        lines = [x for x in found for t in lasts if t in x]
+        digest = [x for x in found if SKILL_DIGEST in x or x == "skill_digests"]
+        self.ok(f"{len(found)} strings: none holds HOME", found and not home, home[:5])
+        self.ok(f"{len(lasts)} last lines: none sent", lasts and not lines, lines[:5])
+        self.ok("no skill digest sent", not digest, digest)
+        run = run_of(state, a.key)
+        rep = cast("dict[str, object]", run["report"])
+        files = cast("list[dict[str, object]]", rep["files"])
+        rflags = cast("list[dict[str, object]]", rep["flags"])
+        kept = [k for k in ("extra",) if k in rep]
+        kept += [
+            f"files[{i}].last_line" for i, f in enumerate(files) if "last_line" in f
+        ]
+        kept += [f"flags[{i}].line" for i, f in enumerate(rflags) if "line" in f]
+        self.ok(
+            f"{len(files)} files, {len(rflags)} flags: no text",
+            files and not kept,
+            kept,
+        )
+        decisions = cast("dict[str, object]", rep["decisions"])
+        same = (
+            decisions["index"] == full["decisions"]["index"]
+            and rep["lane_files"] == full["lane_files"]
+        )
+        self.ok("decisions.index and lane_files pass through", same)
+        git = cast("dict[str, object]", rep["git"])
+        trees = cast("dict[str, dict[str, object]]", git["lanes"])
+        paths = [
+            str(cast("dict[str, object]", t["worktree"])["path"])
+            for t in trees.values()
+            if t["worktree"] is not None
+        ]
+        tilde = [rep["planning_dir"], git["repo"]]
+        self.ok(
+            f"planning dir and repo under ~/: {tilde}",
+            all(str(x).startswith("~/") for x in tilde),
+        )
+        self.ok(f"a worktree under ~/: {paths}", any(p.startswith("~/") for p in paths))
+
+    def test_budget_recorded_never_spend(self) -> None:
+        """route-a's budget is its last record; no answer names spend."""
+        # not the test's name for its directory: the paths sent hold it
+        m = support.build_machine(self.T / "budget")
+        a = m.routes["route-a"]
+        mon = self.monitor_on(m, consts=QUICK)
+        state = self.settled(mon, a.key)
+        recorded = common.budgets(a.plan, {}, "1")
+        self.ok(f"{len(recorded)} budget records", recorded)
+        last = recorded[-1]
+        want = {
+            "label": last["label"],
+            "estimate": last["estimate"],
+            "groups": last.get("groups"),
+            "at": last["at"],
+        }
+        got = run_of(state, a.key)["budget"]
+        self.ok("route-a's budget is the last record", got == want, got)
+        answers = self.responses(mon)
+        found = strings(list(answers.values()))
+        spend = [x for x in found if "spend" in x.lower()]
+        self.ok(
+            f"{len(found)} keys and values: none says spend", found and not spend, spend
+        )
