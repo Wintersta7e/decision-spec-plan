@@ -1,0 +1,32 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>dsp monitor</title>
+<style>
+body { margin: 0; font-family: system-ui, sans-serif; background: #fafafa; color: #222; }
+main { padding: 1rem; }
+</style>
+</head>
+<body>
+<main id="board"></main>
+<script>
+"use strict";
+const LABELS = /* dsp:labels */ {
+  "stage": {"harvest": "harvest", "decisions": "decisions", "review": "review", "asks": "asks", "spec": "spec", "plan": "plan", "exec": "exec", "push": "push"},
+  "stage_state": {"done": "done", "current": "current", "skipped": "skipped", "not-reached": "not reached"},
+  "lane": {"queued": "queued", "running": "running", "gating": "gating", "ready": "ready", "red": "red", "merged": "merged"},
+  "gate": {"green": "green", "red": "red", "dirty": "dirty", "no-exit": "no exit", "none": "none"},
+  "agent_state": {"dispatched": "dispatched", "held": "held", "launched": "launched", "active": "active", "idle": "idle", "returned": "returned", "stopped": "stopped", "failed": "failed", "interrupted": "interrupted", "ended-with-session": "ended with session", "lost": "lost"},
+  "agent_mode": {"foreground": "foreground", "background": "background", "teammate": "teammate"},
+  "run_state": {"live": "live", "ended": "ended"},
+  "route_status": {"active": "active", "idle": "idle"},
+  "recording": {"seen": "seen", "none": "none", "reduced": "reduced", "expired": "expired"},
+  "attention": {"asked": "asked", "input": "input", "blind": "blind", "dir-missing": "dir missing", "stuck": "stuck", "reduced": "reduced", "git-slow": "git slow", "unreadable": "unreadable", "flag": "flag"},
+  "git_state": {"pending": "pending", "fresh": "fresh", "slow": "slow", "not_tracked": "not tracked"},
+  "board_column": {"queued": "queued", "running": "running", "ready": "ready", "merged": "merged", "blocked": "blocked", "failed": "failed"}
+} /* /dsp:labels */;
+document.getElementById("board").dataset.enums = String(Object.keys(LABELS).length);
+</script>
+</body>
+</html>

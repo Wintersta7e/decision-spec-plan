@@ -10,18 +10,24 @@ still runs.
 
 import datetime as dt
 import hashlib
+import http.client
 import json
 import os
 import re
 import resource
+import selectors
 import shutil
+import signal
+import socket
 import subprocess
 import sys
 import tempfile
+import time
 import unittest
 from collections.abc import Callable, Iterable, Mapping
 from pathlib import Path
 from typing import (
+    IO,
     ClassVar,
     Final,
     Literal,
@@ -681,6 +687,261 @@ class Route(Sandbox):
         """The hook's throttle stamps removed, so its next run checks again."""
         for f in (self.HOME / ".claude/dsp-routes").glob("*.checked"):
             f.unlink()
+
+
+# --- the route monitor, scripts/dsp_monitor.py, run as a subprocess
+
+# The monitor's test entry: `PY -c MONITOR_ENTRY <options as JSON>`. It sets the
+# module's constants named in "set" (a name the module lacks exits 3), points PAGE at
+# "page", deletes os.nice with "delete_nice", and with "probe" appends one JSON line
+# per report.collect and subprocess.run call to that file: what ran, its thread,
+# use_git, whether no git deadline was set, its argv and timeout, and its start and end.
+MONITOR_ENTRY: Final[str] = """
+import json, os, pathlib, sys, threading, time
+opts = json.loads(sys.argv[1])
+sys.path.insert(0, opts["scripts"])
+import dsp_monitor
+for name, value in opts["set"].items():
+    if not hasattr(dsp_monitor, name):
+        sys.exit(3)
+    setattr(dsp_monitor, name, tuple(value) if isinstance(value, list) else value)
+if opts["page"] is not None:
+    dsp_monitor.PAGE = pathlib.Path(opts["page"])
+if opts["delete_nice"]:
+    del os.nice
+if opts["probe"] is not None:
+    import subprocess
+    from dsp_route import common, report
+    lock = threading.Lock()
+    def note(what, t0, **extra):
+        line = {"what": what, "thread": threading.get_ident(),
+                "deadline_unset": common.GIT_DEADLINE.get() is None,
+                "t0": t0, "t1": time.time(), **extra}
+        with lock, open(opts["probe"], "a", encoding="utf-8") as f:
+            f.write(json.dumps(line) + "\\n")
+    collect, run = report.collect, subprocess.run
+    def collect_probe(*a, **k):
+        t0 = time.time()
+        try:
+            return collect(*a, **k)
+        finally:
+            note("collect", t0, use_git=k.get("use_git"))
+    def run_probe(*a, **k):
+        t0 = time.time()
+        try:
+            return run(*a, **k)
+        finally:
+            argv = [str(x) for x in (a[0] if a else k["args"])]
+            note("run", t0, use_git=None, argv=argv, timeout=k.get("timeout"))
+    report.collect = collect_probe
+    subprocess.run = run_probe
+sys.exit(dsp_monitor.main(opts["argv"]))
+"""
+
+
+class MonitorOptions(TypedDict, total=False):
+    """How `start_monitor` and `run_monitor` launch the monitor; see MONITOR_ENTRY."""
+
+    consts: Mapping[str, object]
+    page: StrPath
+    delete_nice: bool
+    probe: StrPath
+    path_prefix: Iterable[StrPath]
+    port: int
+
+
+def monitor_cmd(*args: object, **kw: Unpack[MonitorOptions]) -> list[str]:
+    """The command line of the monitor's test entry: `--port <port>` (0) then args."""
+    page, probe = kw.get("page"), kw.get("probe")
+    opts = {
+        "scripts": str(SCRIPTS),
+        "set": dict(kw.get("consts") or {}),
+        "page": None if page is None else str(page),
+        "delete_nice": kw.get("delete_nice", False),
+        "probe": None if probe is None else str(probe),
+        "argv": ["--port", str(kw.get("port", 0)), *map(str, args)],
+    }
+    return [PY, "-c", MONITOR_ENTRY, json.dumps(opts)]
+
+
+def monitor_env(
+    env: Mapping[str, str], path_prefix: Iterable[StrPath] = ()
+) -> dict[str, str]:
+    """Env with path_prefix first on PATH and no directory that holds a `curl.exe`.
+
+    So the Windows curl.exe of WSL interop never answers the monitor's self-check
+    unless a test puts a stub first.
+    """
+    dirs = [
+        d
+        for d in env.get("PATH", "").split(os.pathsep)
+        if d and not (Path(d) / "curl.exe").exists()
+    ]
+    return {**env, "PATH": os.pathsep.join([*map(str, path_prefix), *dirs])}
+
+
+class Monitor:
+    """A running monitor: its process, its URL and port, and an HTTP client for it."""
+
+    def __init__(self, proc: subprocess.Popen[str], url: str) -> None:
+        """Wrap proc, which printed url."""
+        self.proc: subprocess.Popen[str] = proc
+        self.url: str = url
+        self.port: int = int(url.rstrip("/").rsplit(":", 1)[1])
+        self.code: int | None = None
+        self.err: str = ""
+
+    def get(
+        self,
+        path: str,
+        host: str | Iterable[str] | None = None,
+        method: str = "GET",
+    ) -> tuple[int, dict[str, str], bytes]:
+        """Request path; its status, its headers (names lower-cased) and its body.
+
+        host None sends `Host: 127.0.0.1:<port>`; a string sends it; an iterable sends
+        one Host header per item, none for an empty one.
+        """
+        hosts = (
+            [f"127.0.0.1:{self.port}"]
+            if host is None
+            else [host]
+            if isinstance(host, str)
+            else list(host)
+        )
+        conn = http.client.HTTPConnection("127.0.0.1", self.port, timeout=10)
+        try:
+            conn.putrequest(method, path, skip_host=True, skip_accept_encoding=True)
+            for h in hosts:
+                conn.putheader("Host", h)
+            conn.endheaders()
+            r = conn.getresponse()
+            return r.status, {k.lower(): v for k, v in r.getheaders()}, r.read()
+        finally:
+            conn.close()
+
+    def state(self) -> dict[str, object]:
+        """GET /api/state, parsed; a status other than 200 fails the test."""
+        code, _, body = self.get("/api/state")
+        if code != http.client.OK:
+            msg = f"/api/state answered {code}"
+            raise AssertionError(msg)
+        return cast("dict[str, object]", json.loads(body))
+
+    def wait(
+        self, pred: Callable[[dict[str, object]], object], timeout: float = 10
+    ) -> dict[str, object]:
+        """The first /api/state, polled every 0.2 s, for which pred holds."""
+        end = time.monotonic() + timeout
+        while True:
+            s = self.state()
+            if pred(s):
+                return s
+            if time.monotonic() > end:
+                msg = (
+                    f"no state met the condition in {timeout} s: {json.dumps(s)[:3000]}"
+                )
+                raise AssertionError(msg)
+            time.sleep(0.2)
+
+    def stop(self) -> int:
+        """SIGTERM, wait up to 5 s (then kill); the exit code. Keeps stderr in err."""
+        if self.code is None:
+            if self.proc.poll() is None:
+                self.proc.send_signal(signal.SIGTERM)
+            try:
+                _, err = self.proc.communicate(timeout=5)
+            except subprocess.TimeoutExpired:
+                self.proc.kill()
+                _, err = self.proc.communicate()
+            self.err = str(err)
+            code = self.proc.returncode
+            self.code = code
+            return code
+        return self.code
+
+
+def _first_line(proc: subprocess.Popen[str], timeout: float) -> str:
+    """Proc's first stdout line within timeout; "" when it ends or the time runs out."""
+    out: IO[str] | None = proc.stdout
+    if out is None:
+        return ""
+    end = time.monotonic() + timeout
+    with selectors.DefaultSelector() as sel:
+        _ = sel.register(out, selectors.EVENT_READ)
+        while (left := end - time.monotonic()) > 0:
+            if sel.select(left):
+                return out.readline()
+    return ""
+
+
+def start_monitor(
+    env: Mapping[str, str], *args: object, **kw: Unpack[MonitorOptions]
+) -> Monitor:
+    """The monitor started with env (see `monitor_env`), once it printed its URL.
+
+    It fails with the monitor's stderr when it exits, or prints nothing in 10 s, first.
+    """
+    proc = subprocess.Popen(
+        monitor_cmd(*args, **kw),
+        env=monitor_env(env, kw.get("path_prefix", ())),
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+    )
+    url = _first_line(proc, 10).strip()
+    if not url:
+        m = Monitor(proc, "http://localhost:0/")
+        code = m.stop()
+        msg = f"the monitor printed no URL (exit {code}): {m.err[-3000:]}"
+        raise AssertionError(msg)
+    return Monitor(proc, url)
+
+
+def free_ports(n: int) -> int:
+    """A port P with P … P+n-1 each bindable on 127.0.0.1 now."""
+
+    def bindable(port: int) -> bool:
+        with socket.socket() as s:
+            try:
+                s.bind(("127.0.0.1", port))
+            except OSError:
+                return False
+        return True
+
+    for _ in range(100):
+        with socket.socket() as s:
+            s.bind(("127.0.0.1", 0))
+            first = cast("tuple[str, int]", s.getsockname())[1]
+        if all(bindable(first + i) for i in range(1, n)):
+            return first
+    msg = f"no {n} free ports in a row"
+    raise AssertionError(msg)
+
+
+class MonitorSandbox(Route):
+    """A sandbox for the monitor: Route's repository and HOME, no route activated."""
+
+    activate: ClassVar[bool] = False
+
+    def start_monitor(self, *args: object, **kw: Unpack[MonitorOptions]) -> Monitor:
+        """The monitor started in this sandbox's env; stopped when the test ends."""
+        m = start_monitor(self.env, *args, **kw)
+        self.addCleanup(m.stop)
+        return m
+
+    def run_monitor(
+        self, *args: object, **kw: Unpack[MonitorOptions]
+    ) -> subprocess.CompletedProcess[str]:
+        """The monitor run to its exit (30 s at most), its stdout and stderr kept."""
+        return subprocess.run(
+            monitor_cmd(*args, **kw),
+            env=monitor_env(self.env, kw.get("path_prefix", ())),
+            capture_output=True,
+            text=True,
+            timeout=30,
+            check=False,
+        )
 
 
 # --- transcript records, as the bash suite's jq one-liners wrote them

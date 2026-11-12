@@ -86,7 +86,8 @@ layers = [
 requirements_files = ["requirements.txt"]
 requirements_files_dev = ["requirements-dev.txt"]
 known_first_party = [
-  "apply_markers", "criteria_check", "decision_check", "dsp_route", "gate", "plan_lint",
+  "apply_markers", "criteria_check", "decision_check", "dsp_monitor", "dsp_route", "gate",
+  "plan_lint",
   "push_guard", "route_state", "scope_check", "shell_cmd", "support", "test_check",
   "usage_report",
 ]

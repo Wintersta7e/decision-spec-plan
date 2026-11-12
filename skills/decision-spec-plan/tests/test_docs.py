@@ -209,6 +209,7 @@ class PluginFiles(support.Sandbox):
             "usage_report.py",
             "apply_markers.py",
             "decision_check.py",
+            "dsp_monitor.py",
         ):
             doc = ast.get_docstring(ast.parse((SCRIPTS / s).read_text())) or ""
             last = doc.strip().splitlines()[-1].strip()
