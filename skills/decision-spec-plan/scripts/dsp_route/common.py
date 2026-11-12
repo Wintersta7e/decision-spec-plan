@@ -66,6 +66,15 @@ class Budget(TypedDict):
     answered: NotRequired[str]
 
 
+class PreviousRoute(TypedDict):
+    """A route a session left, as its registry entry lists it."""
+
+    marker: str
+    planning_dir: str
+    # None for an entry written before run ids
+    run: str | None
+
+
 class RegistryEntry(TypedDict):
     """A registered session's entry in REGISTRY, as `--activate` writes it."""
 
@@ -76,6 +85,11 @@ class RegistryEntry(TypedDict):
     skill_seen: NotRequired[float]
     # each skill file's text, as the session's last change check hashed it
     skill_digests: NotRequired[dict[str, str]]
+    # the marker's run id and arguments when the session activated it
+    run: NotRequired[str]
+    args: NotRequired[list[str]]
+    # the routes the session left, newest first
+    previous: NotRequired[list[PreviousRoute]]
 
 
 class RouteArgs(argparse.Namespace):

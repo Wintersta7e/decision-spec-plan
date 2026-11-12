@@ -35,6 +35,8 @@ from typing import (
 # typing.override is 3.12+; the tests need dev-only packages anyway (pytest)
 from typing_extensions import override
 
+from dsp_route.common import RegistryEntry
+
 TESTS = Path(__file__).resolve().parent
 PLUGIN = TESTS.parent
 SCRIPTS = PLUGIN / "scripts"
@@ -628,6 +630,12 @@ class Route(Sandbox):
     def marker(cls, repo: StrPath | None = None, plan: StrPath | None = None) -> Marker:
         """The route marker of repo (default R) and plan, as read from disk."""
         return cast("Marker", json.loads(cls.MK(repo or cls.R, plan).read_text()))
+
+    @classmethod
+    def entry(cls, session: str = "s1") -> RegistryEntry:
+        """The registry entry of session, as read from disk."""
+        path = cls.HOME / ".claude/dsp-routes" / f"{session}.json"
+        return cast("RegistryEntry", json.loads(path.read_text()))
 
     @classmethod
     def budgets(cls, plan: StrPath | None = None) -> list[dict[str, object]]:

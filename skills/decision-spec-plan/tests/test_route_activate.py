@@ -10,6 +10,7 @@ import re
 import subprocess
 import time
 import unittest
+from pathlib import Path
 from typing import ClassVar, cast
 
 import support
@@ -194,6 +195,9 @@ class NoRouteThenActivate(support.Route):
 
 RUN = re.compile(r"^\d{8}T\d{6}-[0-9a-f]{16}$")
 NEW_RUNS = 1000  # ids minted in one process, all distinct
+PREVIOUS = 8  # the earlier routes an entry keeps
+# a time stamp of the report (`%Y-%m-%d %H:%M`) or of a delta's header (`%m-%d %H:%M`)
+STAMP = re.compile(r"(\d{4}-)?\d{2}-\d{2} \d{2}:\d{2}")
 
 # 50 activations by one session, as `route_state.py --activate` runs them; the exits
 WRITER = """import contextlib, json, os, sys
@@ -270,10 +274,9 @@ class RunIdentity(support.Route):
     activate: ClassVar[bool] = False
 
     def clear(self) -> None:
-        """No marker, no legacy marker and no registry entry: a route never run."""
+        """No marker (of any planning dir) and no registry entry: no route ever run."""
         self.rm(
-            self.MK(self.R),
-            self.R / ".git" / "dsp-route.json",
+            *(self.R / ".git").glob("dsp-route*.json"),
             *(self.HOME / ".claude/dsp-routes").glob("*.json"),
         )
 
@@ -449,6 +452,186 @@ class RunIdentity(support.Route):
             self.marker().get("run") != m.get("run"),
             self.marker(),
         )
+
+    # --- the registry entry
+
+    def entry_path(self, session: str = "s1") -> Path:
+        """Session's registry entry."""
+        return self.HOME / ".claude/dsp-routes" / f"{session}.json"
+
+    def entry_3c70cb6(self) -> None:
+        """s1's entry written as a version before run ids wrote it."""
+        self.entry_path().parent.mkdir(parents=True, exist_ok=True)
+        _ = self.entry_path().write_text(
+            json.dumps(
+                {
+                    "marker": str(self.MK(self.R)),
+                    "planning_dir": str(self.P),
+                    "activated": time.time() - 60,
+                    "ledger": {"1": True, "1#checks": CHECKS},
+                }
+            )
+        )
+
+    def activate_plan(self, plan: Path) -> None:
+        """--activate of phase 1 by s1 for the route whose planning dir is plan."""
+        for d in ("lanes", "plans", "decisions/phase1", "spec"):
+            (plan / d).mkdir(parents=True, exist_ok=True)
+        _ = self.py(
+            RS,
+            plan,
+            *("--phase", "1", "--repo", self.R, "--sections", "1-", "--activate"),
+            session="s1",
+        )
+
+    def pointer(self, plan: Path) -> dict[str, object]:
+        """The entry's pointer to the route of plan, as `previous` lists it."""
+        return {
+            "marker": str(self.MK(self.R, plan)),
+            "planning_dir": str(plan),
+            "run": self.marker(plan=plan).get("run"),
+        }
+
+    def sequence(self) -> str:
+        """A report, a merge ask and a push check on s1's route, stamps normalised."""
+        self.unthrottle()
+        self.rm(*(self.R / ".git").glob("*.last"))
+        merge = '"tool_name":"Bash","tool_input":{"command":"gh pr merge 1"}'
+        out = "\n".join(
+            (
+                self.hook("report", ev("PostToolUse", "s1", '"tool_name":"Read"')),
+                self.hook("ask:F81", ev("PreToolUse", "s1", merge)),
+                self.gmsg(self.R, "git push origin main"),
+            )
+        )
+        return STAMP.sub("<now>", out)
+
+    def test_entry_has_run_and_args(self) -> None:
+        """The entry keeps the marker's run and arguments."""
+        self.clear()
+        _ = self.activate_route()
+        e, m = self.entry(), self.marker()
+        self.ok(
+            "the entry's run and args are the marker's",
+            e.get("run") == m.get("run")
+            and RUN.match(e.get("run", ""))
+            and e.get("args") == m["args"],
+            (e, m),
+        )
+
+    def test_previous(self) -> None:
+        """`previous`: an upgrade adds nothing, a restart adds the old run."""
+        self.clear()
+        self.set_marker(self.shape_3c70cb6())
+        self.entry_3c70cb6()
+        _ = self.activate_route()
+        self.ok(
+            "an upgrade of the live route's run-less entry: previous == []",
+            self.entry().get("previous") == [],
+            self.entry(),
+        )
+        self.clear()
+        _ = self.activate_route()
+        old = self.marker().get("run")
+        self.rm(self.MK(self.R))
+        _ = self.activate_route()
+        m = self.marker()
+        self.ok(
+            "a route ended and begun again in one session: another run, no upgrade",
+            m.get("run") not in {None, old} and "run_upgraded" not in m,
+            m,
+        )
+        prev = self.entry().get("previous", [])
+        self.ok(
+            f"...and previous ({len(prev)} items) opens with the ended run",
+            prev[:1]
+            == [
+                {
+                    "marker": str(self.MK(self.R)),
+                    "planning_dir": str(self.P),
+                    "run": old,
+                }
+            ],
+            prev,
+        )
+
+    def test_moves(self) -> None:
+        """A session moving between routes keeps up to 8, newest first."""
+        self.clear()
+        b = self.R / ".plan-b"
+        _ = self.activate_route()
+        self.activate_plan(b)
+        e = self.entry()
+        prev = e.get("previous", [])
+        self.ok(
+            f"A then B: the entry is B's, previous ({len(prev)} items) holds A",
+            e["planning_dir"] == str(b) and prev == [self.pointer(self.P)],
+            e,
+        )
+        _ = self.activate_route()
+        prev = self.entry().get("previous", [])
+        self.ok(
+            f"A, B, A: previous ({len(prev)} items) holds B, not A",
+            prev == [self.pointer(b)],
+            prev,
+        )
+        self.clear()
+        plans = [self.R / f".plan-{i}" for i in range(10)]
+        for p in plans:
+            self.activate_plan(p)
+        prev = self.entry().get("previous", [])
+        want = [self.pointer(p) for p in reversed(plans[:-1])][:PREVIOUS]
+        self.ok(
+            f"ten routes in turn: previous holds {len(prev)}, newest first",
+            prev == want,
+            prev,
+        )
+
+    def test_skill_digests_kept(self) -> None:
+        """A re-activation is no re-read of the skill: its digests stay."""
+        self.clear()
+        _ = self.activate_route()
+        digests = {"SKILL.md": "0123456789abcdef"}
+        for value, want in ((digests, digests), ("x", None)):
+            data = cast("dict[str, object]", json.loads(self.entry_path().read_text()))
+            data["skill_digests"] = value
+            _ = self.entry_path().write_text(json.dumps(data))
+            _ = self.activate_route()
+            self.ok(
+                f"skill_digests {value!r} after a re-activation: {want!r}",
+                self.entry().get("skill_digests") == want,
+                self.entry(),
+            )
+
+    def test_readers_ignore_new_fields(self) -> None:
+        """The hook and push_guard.py print the same with or without the new fields."""
+        self.clear()
+        _ = self.activate_route()
+        drop = {
+            self.MK(self.R): ("run", "run_upgraded", "x_future"),
+            self.entry_path(): ("run", "args", "previous", "x_future"),
+        }
+        for f in drop:
+            data = cast("dict[str, object]", json.loads(f.read_text()))
+            data["x_future"] = 1
+            _ = f.write_text(json.dumps(data))
+        full = self.sequence()
+        for f, keys in drop.items():
+            data = cast("dict[str, object]", json.loads(f.read_text()))
+            for k in keys:
+                _ = data.pop(k, None)
+            _ = f.write_text(json.dumps(data))
+        bare = self.sequence()
+        self.ok(
+            "the same output with the new fields and without them",
+            full == bare,
+            (full, bare),
+        )
+        self.set_marker(self.shape_3c70cb6())
+        self.entry_3c70cb6()
+        self.unthrottle()
+        self.rm(*(self.R / ".git").glob("*.last"))
+        _ = self.hook("report", ev("PostToolUse", "s1", '"tool_name":"Read"'))
 
 
 if __name__ == "__main__":
