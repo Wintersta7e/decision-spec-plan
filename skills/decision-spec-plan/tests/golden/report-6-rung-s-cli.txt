@@ -1,0 +1,8 @@
+route state · <masked>
+decisions  0 D files (2 in the index) · markers 0, header in 0/0 · 00-dispatch no 00-framing-review no 00-seams no 00-arbiter no spec-returns no
+reconcile  0 files
+plans      1 plans (0 in the index) · 1 manifests parse
+lanes      1 checkpoints (0 plans)
+gates      0 green · 0 red · 0 without exit= · 0 integration files
+    p1-01-a                                          cb98b60d3e83165203ce66ab856d97a4c275c030
+flags      0

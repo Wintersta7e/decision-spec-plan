@@ -1,0 +1,13 @@
+decisions  0 D files (0 in the index) · markers 0, header in 0/0 · 00-dispatch no 00-framing-review no 00-seams no 00-arbiter no spec-returns no
+reconcile  0 files
+plans      0 plans (0 in the index) · 0 manifests parse
+lanes      3 checkpoints (0 plans) · 0 merged into main · 2 lane worktrees
+gates      0 green · 0 red · 0 without exit= · 0 integration files
+budget     phase 1 · 4M · 2 exec- agents · since 2026-01-02T03:04Z
+    p1-01-a                                          a4228f9a196b2a9273cb165b20bcc8d12647aa38 not merged · 1 commits · no gate log at this SHA · trailers none · 1 uncommitted in its worktree
+    p1-02-a                                          a3dde8f3befd40ecc62772fdc35d55ce788eafd4 not merged, branch 2 not on main · 1 commits · no gate log at this SHA · trailers none
+    p1-03-a                                          f3703bf9594a5c46b229c095a927328edfd0d103 not merged · 1 commits · no gate log at this SHA · trailers none
+flags      3
+  no `Final SHA:` line               lanes/p1-03-a-checkpoint.md (last SHA in the text used)
+  checkpoint over 35 lines           lanes/p1-03-a-checkpoint.md (40 — the next group overwrites it with the lane's state and map)
+  rulings over 12 KB                 lanes/p1-03-a-rulings.md (13 KB — between groups, move the applied ones to p1-03-a-rulings-archive.md)

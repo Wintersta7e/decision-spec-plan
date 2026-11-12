@@ -1,0 +1,19 @@
+route state · <masked>
+decisions  0 D files (0 in the index) · markers 0, header in 0/0 · 00-dispatch no 00-framing-review no 00-seams no 00-arbiter no spec-returns no
+reconcile  0 files
+plans      4 plans (4 in the index) · 4 manifests parse
+lanes      3 checkpoints (4 plans) · 3 merged into main · 0 lane worktrees
+gates      0 green · 0 red · 0 without exit= · 1 integration files
+    plans/p1-01-a.md                                    0.0 KB    3d  '- [ ] Task 1'
+    plans/p1-02-a.md                                    0.0 KB    3d  '- [ ] Task 1'
+    plans/p1-03-a.md                                    0.0 KB    3d  '- [ ] Task 1'
+    plans/p1-04-x.md                                    0.0 KB    3d  '- [ ] Task 1'
+    lanes/p1-01-a-checkpoint.md                         0.1 KB    3d  'Final SHA: a4228f9a196b2a9273cb165b20bcc8d12647aa38'
+    p1-01-a                                          a4228f9a196b2a9273cb165b20bcc8d12647aa38 merged
+    lanes/p1-02-a-checkpoint.md                         0.1 KB    3d  'Final SHA: a3dde8f3befd40ecc62772fdc35d55ce788eafd4'
+    p1-02-a                                          a3dde8f3befd40ecc62772fdc35d55ce788eafd4 merged (by patch)
+    lanes/p1-03-a-checkpoint.md                         0.1 KB    3d  'Final SHA: f3703bf9594a5c46b229c095a927328edfd0d103'
+    p1-03-a                                          f3703bf9594a5c46b229c095a927328edfd0d103 merged as 5a166729c (wave1-integration.md)
+    lanes/wave1-integration.md                          0.1 KB    3d  'Merged p1-03-a f3703bf9594a5c46b229c095a927328edfd0d103 → 5a'
+flags      1
+  base moved                         main 4 commits past cb98b60d3

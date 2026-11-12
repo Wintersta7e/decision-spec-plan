@@ -1,0 +1,11 @@
+decisions  0 D files (0 in the index) · markers 0, header in 0/0 · 00-dispatch no 00-framing-review no 00-seams no 00-arbiter no spec-returns no
+reconcile  0 files
+plans      0 plans (0 in the index) · 0 manifests parse
+lanes      0 checkpoints (0 plans) · 0 merged into main · 0 lane worktrees
+gates      0 green · 0 red · 0 without exit= · 0 integration files
+flags      5
+  base moved                         main 5 commits past cb98b60d3
+  base moved upstream                main@{upstream} 1 commits past cb98b60d3
+  assumed ref moved                  api 4a31a36af → d6689adf7, merged into main
+  assumed ref merged                 feat bed8ff827 into main
+  assumes ref gone                   gone (recorded at cb98b60d3)

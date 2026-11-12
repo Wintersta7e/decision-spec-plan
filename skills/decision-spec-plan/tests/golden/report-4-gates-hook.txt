@@ -1,0 +1,13 @@
+decisions  0 D files (0 in the index) · markers 0, header in 0/0 · 00-dispatch no 00-framing-review no 00-seams no 00-arbiter no spec-returns no
+reconcile  0 files
+plans      0 plans (0 in the index) · 0 manifests parse
+lanes      4 checkpoints (0 plans) · 0 merged into main · 0 lane worktrees
+gates      2 green · 2 red · 1 without exit= · 0 integration files
+    p1-01-a                                          a4228f9a196b2a9273cb165b20bcc8d12647aa38 not merged · 1 commits · gate exit=1 dirty=0 · trailers none
+    p1-02-a                                          a3dde8f3befd40ecc62772fdc35d55ce788eafd4 not merged · 1 commits · gate exit=0 · trailers none
+    p1-03-a                                          f3703bf9594a5c46b229c095a927328edfd0d103 not merged · 1 commits · gate exit=none yet dirty=0 · trailers none
+    p1-04-a                                          760c671c27723d039a33179354b90780a45eafd7 not merged · 1 commits · gate exit=0 dirty=2 · trailers none
+flags      3
+  RED exit=1                         lanes/p1-01-a-gate.log
+  RED harness=pg exit=1              lanes/p1-02-a-gate-pg.log
+  gate log has no exit= line         lanes/p1-03-a-gate.log

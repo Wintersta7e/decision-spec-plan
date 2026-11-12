@@ -1,0 +1,8 @@
+route state · <masked>
+decisions  1 D files (1 in the index) · markers 0, header in 1/1 · 00-dispatch no 00-framing-review no 00-seams no 00-arbiter yes spec-returns no
+spec       0 sections from §1
+reconcile  0 files
+plans      0 plans (0 in the index) · 0 manifests parse
+lanes      0 checkpoints (0 plans) · 0 merged into main · 0 lane worktrees
+gates      0 green · 0 red · 0 without exit= · 0 integration files
+flags      0

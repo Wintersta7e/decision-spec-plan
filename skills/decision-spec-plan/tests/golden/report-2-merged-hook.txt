@@ -1,0 +1,7 @@
+decisions  0 D files (0 in the index) · markers 0, header in 0/0 · 00-dispatch no 00-framing-review no 00-seams no 00-arbiter no spec-returns no
+reconcile  0 files
+plans      4 plans (4 in the index) · 4 manifests parse
+lanes      3 checkpoints (4 plans) · 3 merged into main · 0 lane worktrees
+gates      0 green · 0 red · 0 without exit= · 1 integration files
+flags      1
+  base moved                         main 4 commits past cb98b60d3
