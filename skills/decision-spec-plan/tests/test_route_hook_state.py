@@ -433,5 +433,96 @@ class ClaimFirst(support.Route):
         )
 
 
+# an inject.py writer run on s1's entry or marker (argv: scripts, case, entry path,
+# "cut" or "whole", event): with "cut", every file opened for writing takes half the
+# text and then fails as a full disk does
+INTERRUPTED = """import errno, json, pathlib, sys
+sys.path.insert(0, sys.argv[1])
+from dsp_route import inject
+case, entry_path, cut = sys.argv[2], pathlib.Path(sys.argv[3]), sys.argv[4] == "cut"
+entry = json.loads(entry_path.read_text())
+target = entry_path if case == "entry" else pathlib.Path(entry["marker"])
+real = pathlib.Path.open
+class Half:
+    def __init__(self, f): self.f = f
+    def __enter__(self): return self
+    def __exit__(self, *exc): self.f.close()
+    def write(self, s):
+        self.f.write(s[: len(s) // 2]); self.f.flush()
+        raise OSError(errno.ENOSPC, "full")
+def opener(self, mode="r", *a, **k):
+    f = real(self, mode, *a, **k)
+    return Half(f) if "w" in mode else f
+before = target.read_bytes()
+if cut:
+    pathlib.Path.open = opener
+raised = False
+try:
+    if case == "entry":
+        inject.skill_changes(entry_path, entry)
+    else:
+        inject.took(json.loads(sys.argv[5]), entry)
+except OSError:
+    raised = True
+pathlib.Path.open = real
+after = target.read_bytes()
+try:
+    data = json.loads(after)
+except ValueError:
+    data = {}
+print(json.dumps({
+    "raised": raised,
+    "same": after == before,
+    "tmps": sorted(p.name for p in target.parent.iterdir() if p.name.endswith(".tmp")),
+    "digests": "skill_digests" in data,
+    "asks": len(data.get("asks", [])),
+}))"""
+
+
+class AtomicWrites(support.Route):
+    """The hook's writes of the entry and the marker, interrupted halfway."""
+
+    def test_inject_writes_are_atomic(self) -> None:
+        """Interrupted, a write leaves its target whole and no temp file."""
+        # the monitor reads a marker with no retry on a parse failure: an in-place write
+        # truncates first, so an interrupted one left half a JSON object behind
+        entry_path = self.HOME / ".claude/dsp-routes/s1.json"
+        entry = cast("dict[str, object]", json.loads(entry_path.read_text()))
+        # without its digests, the next check reaches the entry's write
+        _ = entry.pop("skill_digests", None)
+        clean = json.dumps(entry) + "\n"
+        marker = self.MK(self.R).read_text()
+        held = cast("dict[str, list[object]]", json.loads(marker)).get("asks", [])
+        asks = len(held)
+        event = askq("Drop it")
+        got: dict[tuple[str, str], dict[str, object]] = {}
+        for case in ("entry", "marker"):
+            for how in ("cut", "whole"):
+                _ = self.write(entry_path, clean)
+                _ = self.write(self.MK(self.R), marker)
+                argv = [support.SCRIPTS, case, entry_path, how, event]
+                r = self.run_([support.PY, "-c", INTERRUPTED, *argv], merge=True)
+                try:
+                    got[case, how] = cast("dict[str, object]", json.loads(r.out))
+                except ValueError:
+                    got[case, how] = {"out": r.out}
+        cut = [got["entry", "cut"], got["marker", "cut"]]
+        interrupted = sum(g.get("raised") is True for g in cut)
+        unchanged = sum(g.get("same") is True for g in cut)
+        tmps = sum(len(cast("list[str]", g.get("tmps", []))) for g in got.values())
+        changed = sum(
+            (
+                got["entry", "whole"].get("digests") is True,
+                cast("int", got["marker", "whole"].get("asks", 0)) > asks,
+            )
+        )
+        self.ok(
+            f"cases=2 interrupted={interrupted} unchanged={unchanged} tmps={tmps} "
+            f"controls_changed={changed}",
+            (interrupted, unchanged, tmps, changed) == (2, 2, 0, 2),
+            got,
+        )
+
+
 if __name__ == "__main__":
     _ = unittest.main()
