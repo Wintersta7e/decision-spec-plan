@@ -79,9 +79,47 @@ h2 { font-size: 1rem; margin: 1rem 0 0.4rem; }
 .idle-list li { padding: 0.15rem 0; }
 .idle-list .when { color: var(--muted); margin-left: 0.5rem; }
 .more { display: flex; flex-wrap: wrap; gap: 1rem; align-items: baseline; margin-top: 1rem; }
+h3 { font-size: 0.95rem; margin: 1.1rem 0 0.4rem; }
+.detail-head { display: flex; flex-wrap: wrap; align-items: baseline; gap: 0.4rem 1rem; }
+.detail-head h2 { margin: 0.5rem 0; }
+.when, .muted { color: var(--muted); }
+.hint, .error { margin: 0.3rem 0; }
+.error { color: var(--bad); }
+.mono { font-family: ui-monospace, monospace; font-size: 0.88em; overflow-wrap: anywhere; }
+.stages { list-style: none; margin: 0; padding: 0; display: flex; flex-wrap: wrap; gap: 0.4rem; }
+.stages li {
+  display: inline-flex; gap: 0.35rem; align-items: baseline; padding: 0.15rem 0.5rem;
+  border: 1px solid var(--line); border-radius: 6px; background: var(--card);
+}
+.stages .glyph { font-weight: 700; }
+.board { display: grid; grid-auto-flow: column; grid-auto-columns: minmax(150px, 1fr); gap: 0.5rem; overflow-x: auto; }
+.board .col { background: var(--card); border: 1px solid var(--line); border-radius: 8px; padding: 0.4rem; min-height: 4rem; }
+.board h4 { margin: 0 0 0.4rem; font-size: 0.9rem; display: flex; gap: 0.3rem; align-items: baseline; }
+.lane { border: 1px solid var(--line); border-radius: 6px; padding: 0.3rem 0.45rem; margin: 0 0 0.35rem; background: var(--bg); }
+.lane .plan { font-weight: 600; margin-right: 0.4rem; }
+.lane .chips { margin-top: 0.25rem; }
+.badge { color: var(--warn); border-color: currentColor; }
+.graph { position: relative; }
+.graph svg { display: block; max-width: 100%; height: auto; }
+.graph .node { fill: var(--card); stroke: var(--line); }
+.graph .edge, .graph .bracket { fill: none; stroke: var(--muted); stroke-width: 1.5px; }
+.graph .bracket { stroke: var(--line); }
+.graph text { fill: var(--fg); font-size: 13px; }
+.graph text.head { fill: var(--muted); font-weight: 600; }
+.graph tspan[data-enum] { fill: currentColor; }
+.sr-table { position: absolute; width: 1px; height: 1px; overflow: hidden; clip-path: inset(50%); white-space: nowrap; }
+.table-wrap { overflow-x: auto; }
+table.grid { border-collapse: collapse; width: 100%; background: var(--card); }
+table.grid th, table.grid td { text-align: left; padding: 0.25rem 0.5rem; border-bottom: 1px solid var(--line); vertical-align: top; }
+table.grid th { color: var(--muted); font-weight: 600; }
+tr.maybe-stuck { outline: 2px dashed var(--warn); outline-offset: -2px; }
+.maybe-stuck .note { color: var(--warn); font-weight: 600; margin-left: 0.4rem; }
 @media (max-width: 720px) {
   #head { flex-wrap: wrap; }
   .cards { grid-template-columns: 1fr; }
+  .board { grid-auto-flow: row; grid-auto-columns: auto; }
+  .graph svg { display: none; }
+  .graph .sr-table { position: static; width: auto; height: auto; overflow: visible; clip-path: none; white-space: normal; }
 }
 @media (prefers-reduced-motion: reduce) {
   * { transition: none !important; }
@@ -184,7 +222,54 @@ const LABELS = /* dsp:labels */ {
     "idle_row": "idle ({n})",
     "ended_link": "Ended ({n})",
     "not_responding": "Monitor not responding since {since} — showing data from {data_from}",
-    "upgraded": "The monitor was upgraded — reload the page"
+    "upgraded": "The monitor was upgraded — reload the page",
+    "route_missing": "This route is not listed by the monitor",
+    "overview_link": "Back to the overview",
+    "as_of": "as of {time}",
+    "since": "since {time}",
+    "no_report": "No report yet",
+    "stages_heading": "Stages",
+    "board_heading": "Lanes",
+    "board_empty": "No lanes yet",
+    "column_count": "({n})",
+    "wave_n": "wave {n}",
+    "gating_badge": "gate running",
+    "graph_heading": "Wave graph",
+    "graph_empty": "No waves yet",
+    "graph_plan": "plan",
+    "graph_wave": "wave",
+    "graph_after": "depends on",
+    "budget_label": "label",
+    "budget_estimate": "estimate",
+    "budget_groups": "groups",
+    "budget_at": "recorded",
+    "budget_none": "None recorded",
+    "agents_heading": "Agents",
+    "agents_empty": "No agents recorded",
+    "show_all": "show all {n}",
+    "show_fewer": "show fewer",
+    "agent_name": "agent",
+    "agent_mode": "mode",
+    "agent_state": "state",
+    "agent_model": "model",
+    "agent_started": "started",
+    "agent_duration": "duration",
+    "agent_tools": "tools",
+    "agent_last_tool": "last tool",
+    "agent_open_tool": "open tool",
+    "final_context": "context at return",
+    "unavailable": "unavailable",
+    "may_be_stuck": "may be stuck",
+    "dur_s": "{n} s",
+    "dur_m": "{n} min",
+    "dur_h": "{n} h",
+    "gates_heading": "Gates",
+    "gates_empty": "No gate logs",
+    "gate_log": "log",
+    "gate_sha": "sha",
+    "gate_dirty": "dirty",
+    "gate_exit": "exit",
+    "gate_harness": "harness"
   }
 } /* /dsp:labels */;
 const PAGE = /* dsp:page */ {
@@ -200,6 +285,10 @@ const URL_ATTRS = ["src", "href", "xlink:href", "action", "formaction", "srcset"
 const THEMES = ["auto", "light", "dark"];
 const THEME_TEXT = {auto: copy.theme_auto, light: copy.theme_light, dark: copy.theme_dark};
 const THEME_KEY = "dsp-monitor-theme";
+const ROUTE_PREFIX = "#/r/";
+/* the wave graph's layout, in SVG user units */
+const GRAPH = {col: 190, node_w: 150, node_h: 40, gap: 12, pad: 40, head: 28, bend: 36,
+  bracket: 8, radius: 6, text_x: 10, line1: 17, line2: 33};
 
 const poll = {timer: 0, busy: false, failures: 0, failedAt: null, text: "", state: null, first: null};
 const ui = {expanded: new Set(), updated: null, theme: null, help: null};
@@ -445,9 +534,348 @@ function renderOverview(s, root) {
   ]));
 }
 
+/* --- route detail: what the server sent for one run, laid out */
+
+/* An SVG element; like el(), it never writes a URL attribute. */
+function svg(tag, attrs, text) {
+  const node = document.createElementNS(SVG_NS, tag);
+  for (const [k, v] of Object.entries(attrs)) {
+    if (URL_ATTRS.includes(k)) {
+      throw new TypeError(k);
+    }
+    node.setAttribute(k, String(v));
+  }
+  if (text !== undefined) {
+    node.textContent = text;
+  }
+  return node;
+}
+
+function chipOr(enumName, value) {
+  return value === null || value === undefined ? el("span", {"class": "chip"}, copy.missing) : chip(enumName, value);
+}
+
+function stamp(iso) {
+  if (!iso) {
+    return copy.missing;
+  }
+  return new Date(iso).toLocaleString([], {dateStyle: "medium", timeStyle: "short"});
+}
+
+function dur(s) {
+  if (s === null || s === undefined) {
+    return copy.missing;
+  }
+  if (s < 60) {
+    return fmt(copy.dur_s, {n: Math.round(s)});
+  }
+  if (s < 3600) {
+    return fmt(copy.dur_m, {n: Math.round(s / 60)});
+  }
+  return fmt(copy.dur_h, {n: (s / 3600).toFixed(1)});
+}
+
+function cmp(x, y) {
+  return (x > y) - (x < y);
+}
+
+function grid(cls, heads, rows) {
+  return el("div", {"class": "table-wrap " + cls}, [el("table", {"class": "grid"}, [
+    el("thead", {}, [el("tr", {}, heads.map((h) => el("th", {"scope": "col"}, h)))]),
+    el("tbody", {}, rows),
+  ])]);
+}
+
+/* The chips every run shows: recording, and git with the time its facts are from. */
+function runChips(run) {
+  return [
+    chip("recording", run.recording),
+    chip("git_state", run.git.state),
+    run.git.as_of ? el("span", {"class": "when"}, fmt(copy.as_of, {time: hhmm(run.git.as_of)})) : null,
+  ];
+}
+
+/* The stages in LABELS.stage order; a stage name the labels lack follows, raw. */
+function stageStrip(stages) {
+  const order = Object.keys(LABELS.stage);
+  const sorted = [
+    ...order.flatMap((k) => stages.filter((st) => st.name === k)),
+    ...stages.filter((st) => !order.includes(st.name)),
+  ];
+  return el("ol", {"class": "stages"}, sorted.map((st) => {
+    const name = label("stage", st.name);
+    const state = label("stage_state", st.state);
+    return el("li", {"data-enum": "stage_state", "data-v": st.state}, [
+      state ? el("span", {"class": "glyph", "aria-hidden": "true"}, state.glyph) : null,
+      el("span", {}, name ? name.text : String(st.name)),
+      el("span", {"class": "muted"}, state ? state.text : String(st.state)),
+    ]);
+  }));
+}
+
+function budgetPanel(b) {
+  return el("section", {"class": "budget"}, [
+    el("h3", {}, copy.budget_recorded),
+    b
+      ? el("dl", {"class": "facts"}, [
+        ...fact(copy.budget_label, b.label),
+        ...fact(copy.budget_estimate, b.estimate),
+        ...fact(copy.budget_groups, b.groups),
+        ...fact(copy.budget_at, stamp(b.at)),
+      ])
+      : el("p", {"class": "empty"}, copy.budget_none),
+  ]);
+}
+
+function laneCard(lane, waves, lanes) {
+  const wave = Object.hasOwn(waves, lane.plan) ? waves[lane.plan].wave : null;
+  const gating = Object.hasOwn(lanes, lane.id) && lanes[lane.id].gating;
+  return el("article", {"class": "lane"}, [
+    el("span", {"class": "plan"}, shown(lane.plan)),
+    el("span", {"class": "muted"}, wave === null ? copy.missing : fmt(copy.wave_n, {n: wave})),
+    el("div", {"class": "chips"}, [
+      chipOr("gate", lane.gate),
+      gating ? el("span", {"class": "chip badge"}, copy.gating_badge) : null,
+    ]),
+  ]);
+}
+
+/* One column per BOARD_COLUMNS value, in the labels' order; a lane sits where run.lanes puts it. */
+function laneBoard(rep, lanes) {
+  if (!rep.lanes.length) {
+    return el("p", {"class": "empty"}, copy.board_empty);
+  }
+  const cols = Object.keys(LABELS.board_column);
+  const by = new Map();
+  for (const lane of rep.lanes) {
+    const col = Object.hasOwn(lanes, lane.id) ? lanes[lane.id].column : copy.missing;
+    if (!cols.includes(col)) {
+      cols.push(col);
+    }
+    by.set(col, [...(by.get(col) || []), lane]);
+  }
+  return el("div", {"class": "board"}, cols.map((col) => {
+    const cards = by.get(col) || [];
+    const lab = label("board_column", col);
+    return el("section", {"class": "col"}, [
+      el("h4", {"data-enum": "board_column", "data-v": col}, [
+        lab ? el("span", {"class": "glyph", "aria-hidden": "true"}, lab.glyph) : null,
+        el("span", {}, lab ? lab.text : String(col)),
+        el("span", {"class": "muted"}, fmt(copy.column_count, {n: cards.length})),
+      ]),
+      ...cards.map((lane) => laneCard(lane, rep.waves, lanes)),
+    ]);
+  }));
+}
+
+function curve(x1, y1, c1, c2, x2, y2) {
+  return ["M", x1, y1, "C", c1, y1, c2, y2, x2, y2].join(" ");
+}
+
+/* Waves left to right (wave_no ascending, null last), an edge per "after" id and per
+   "after_waves" entry, and the same facts as a table for narrow screens and screen readers. */
+function waveGraph(rep, lanes) {
+  const waves = rep.waves;
+  const plans = Object.keys(waves);
+  if (!plans.length) {
+    return el("p", {"class": "empty"}, copy.graph_empty);
+  }
+  const g = GRAPH;
+  const nos = [];
+  for (const p of plans) {
+    if (!nos.includes(waves[p].wave_no)) {
+      nos.push(waves[p].wave_no);
+    }
+  }
+  nos.sort((a, b) => (a === null) - (b === null) || a - b);
+  const rows = nos.map(() => 0);
+  const at = new Map();
+  for (const p of plans) {
+    const i = nos.indexOf(waves[p].wave_no);
+    at.set(p, {x: g.pad + i * g.col, y: g.pad + g.head + rows[i] * (g.node_h + g.gap)});
+    rows[i] += 1;
+  }
+  const columnsOf = new Map();
+  for (const lane of rep.lanes) {
+    const col = Object.hasOwn(lanes, lane.id) ? lanes[lane.id].column : null;
+    columnsOf.set(lane.plan, [...(columnsOf.get(lane.plan) || []), col]);
+  }
+  const top = g.pad + g.head;
+  const width = g.pad + nos.length * g.col;
+  const height = top + Math.max(...rows) * (g.node_h + g.gap) + g.pad;
+  const pic = svg("svg", {"viewBox": ["0 0", width, height].join(" "), "width": width, "height": height,
+    "aria-hidden": "true", "focusable": "false"});
+  const brackets = nos.map((no, i) => {
+    const x = g.pad + i * g.col;
+    const bottom = top + rows[i] * (g.node_h + g.gap) - g.gap;
+    const spine = x + g.node_w + g.bracket;
+    pic.append(svg("text", {"class": "head", "x": x, "y": g.pad}, no === null ? copy.missing : fmt(copy.wave_n, {n: no})));
+    pic.append(svg("path", {"class": "bracket",
+      "d": ["M", x + g.node_w, top, "H", spine, "V", bottom, "H", x + g.node_w].join(" ")}));
+    return {x: spine, y: (top + bottom) * 0.5};
+  });
+  const mid = (y) => y + g.node_h * 0.5;
+  for (const p of plans) {
+    const t = at.get(p);
+    for (const a of waves[p].after) {
+      const f = at.get(a);
+      if (f) {
+        const d = f.x === t.x
+          ? curve(f.x, mid(f.y), f.x - g.bend, t.x - g.bend, t.x, mid(t.y))
+          : curve(f.x + g.node_w, mid(f.y), f.x + g.node_w + g.bend, t.x - g.bend, t.x, mid(t.y));
+        pic.append(svg("path", {"class": "edge", "d": d}));
+      }
+    }
+    for (const w of waves[p].after_waves) {
+      const b = brackets[nos.indexOf(w)];
+      if (b) {
+        pic.append(svg("path", {"class": "edge", "d": curve(b.x, b.y, b.x + g.bend, t.x - g.bend, t.x, mid(t.y))}));
+      }
+    }
+  }
+  for (const p of plans) {
+    const {x, y} = at.get(p);
+    const node = svg("g", {});
+    node.append(svg("rect", {"class": "node", "x": x, "y": y, "width": g.node_w, "height": g.node_h, "rx": g.radius}));
+    node.append(svg("text", {"x": x + g.text_x, "y": y + g.line1}, p));
+    const cols = svg("text", {"x": x + g.text_x, "y": y + g.line2});
+    for (const col of columnsOf.get(p) || []) {
+      const lab = label("board_column", col);
+      cols.append(svg("tspan", {"data-enum": "board_column", "data-v": String(col)},
+        (lab ? lab.glyph + " " + lab.text : shown(col)) + " "));
+    }
+    node.append(cols);
+    pic.append(node);
+  }
+  const deps = (w) => [...w.after, ...w.after_waves.map((n) => fmt(copy.wave_n, {n: n}))].join(", ");
+  return el("div", {"class": "graph"}, [
+    pic,
+    grid("sr-table", [copy.graph_plan, copy.graph_wave, copy.graph_after], plans.map((p) => el("tr", {}, [
+      el("td", {}, p),
+      el("td", {}, shown(waves[p].wave)),
+      el("td", {}, deps(waves[p]) || copy.missing),
+    ]))),
+  ]);
+}
+
+function agentRow(a, nowMs) {
+  return el("tr", {"class": a.likely_stuck ? "maybe-stuck" : null}, [
+    el("td", {}, [shown(a.name), a.likely_stuck ? el("span", {"class": "note"}, copy.may_be_stuck) : null]),
+    el("td", {}, [chipOr("agent_mode", a.mode)]),
+    el("td", {}, [chipOr("agent_state", a.state)]),
+    el("td", {}, shown(a.model)),
+    el("td", {}, hhmm(a.started_at)),
+    el("td", {}, dur(a.duration_s)),
+    el("td", {}, shown(a.tools)),
+    el("td", {}, a.last_tool === null ? copy.missing
+      : [a.last_tool, " ", el("span", {"class": "when"}, age(a.last_tool_at, nowMs))]),
+    el("td", {}, a.open_tool === null ? copy.missing
+      : [a.open_tool, " ", el("span", {"class": "when"}, fmt(copy.since, {time: hhmm(a.open_since)}))]),
+    el("td", {}, a.final_tokens === null ? copy.unavailable : Number(a.final_tokens).toLocaleString()),
+  ]);
+}
+
+/* Running agents first by start, then finished ones newest first; the newest
+   PAGE.finished_shown finished ones unless the list is expanded. */
+function agentTable(agents, nowMs, key) {
+  if (!agents.length) {
+    return el("p", {"class": "empty"}, copy.agents_empty);
+  }
+  const open = agents.filter((a) => a.ended_at === null)
+    .sort((a, b) => cmp(a.started_at || "", b.started_at || ""));
+  const done = agents.filter((a) => a.ended_at !== null).sort((a, b) => cmp(b.ended_at, a.ended_at));
+  const id = "agents:" + key;
+  const all = ui.expanded.has(id);
+  const table = grid("", [
+    copy.agent_name, copy.agent_mode, copy.agent_state, copy.agent_model, copy.agent_started,
+    copy.agent_duration, copy.agent_tools, copy.agent_last_tool, copy.agent_open_tool, copy.final_context,
+  ], [...open, ...(all ? done : done.slice(0, PAGE.finished_shown))].map((a) => agentRow(a, nowMs)));
+  if (done.length <= PAGE.finished_shown) {
+    return table;
+  }
+  const button = el("button", {"type": "button", "aria-expanded": String(all), "data-key": id},
+    all ? copy.show_fewer : fmt(copy.show_all, {n: agents.length}));
+  button.addEventListener("click", () => {
+    if (all) {
+      ui.expanded.delete(id);
+    } else {
+      ui.expanded.add(id);
+    }
+    render();
+  });
+  return el("div", {}, [table, button]);
+}
+
+function gateTable(logs) {
+  if (!logs.length) {
+    return el("p", {"class": "empty"}, copy.gates_empty);
+  }
+  return grid("", [copy.gate_log, copy.gate_sha, copy.gate_dirty, copy.gate_exit, copy.gate_harness],
+    logs.map((row) => el("tr", {}, [
+      el("td", {"class": "mono"}, shown(row.log)),
+      el("td", {"class": "mono"}, shown(row.sha)),
+      el("td", {}, shown(row.dirty)),
+      el("td", {}, shown(row.exit)),
+      el("td", {}, shown(row.harness)),
+    ])));
+}
+
+/* Everything below a run's header: report error, stages, budget, board, graph, agents, gates. */
+function runSections(run, nowMs, key) {
+  const rep = run.report;
+  const out = [];
+  if (run.report_error !== null) {
+    out.push(el("p", {"class": "error"}, run.report_error));
+  }
+  if (rep) {
+    out.push(el("h3", {}, copy.stages_heading), stageStrip(rep.stages));
+  } else {
+    out.push(el("p", {"class": "empty"}, copy.no_report));
+  }
+  out.push(budgetPanel(run.budget));
+  if (rep) {
+    out.push(el("h3", {}, copy.board_heading), laneBoard(rep, run.lanes));
+    out.push(el("h3", {}, copy.graph_heading), waveGraph(rep, run.lanes));
+  }
+  out.push(el("h3", {}, copy.agents_heading), agentTable(run.agents, nowMs, key));
+  if (rep) {
+    out.push(el("h3", {}, copy.gates_heading), gateTable(rep.gate_logs));
+  }
+  return out;
+}
+
+function renderRoute(s, root, key) {
+  const r = s.routes.find((x) => x.key === key) || s.idle.find((x) => x.key === key);
+  if (!r) {
+    root.append(el("p", {"class": "empty"}, copy.route_missing), link("", copy.overview_link, "overview"));
+    return;
+  }
+  const run = r.run;
+  root.append(el("div", {"class": "detail-head"}, [
+    el("h2", {}, r.name),
+    el("div", {"class": "chips"}, [chip("route_status", r.status), ...runChips(run)]),
+  ]));
+  if (run.recording_hint !== null) {
+    root.append(el("p", {"class": "hint"}, run.recording_hint));
+  }
+  root.append(...runSections(run, Date.now(), r.key));
+}
+
 /* --- rendering: one view per hash, focus kept on the element with the same data-key */
 
-function viewFor() {
+function decoded(text) {
+  try {
+    return decodeURIComponent(text);
+  } catch {
+    return text;
+  }
+}
+
+function viewFor(hash) {
+  if (hash.startsWith(ROUTE_PREFIX)) {
+    const key = decoded(hash.slice(ROUTE_PREFIX.length));
+    return (s, root) => renderRoute(s, root, key);
+  }
   return renderOverview;
 }
 
