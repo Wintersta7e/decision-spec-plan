@@ -93,18 +93,17 @@ def spend(paths: Iterable[pathlib.Path], since: str, phase: str) -> float:
     the user's answer, and one such rewrite after a 3 h wait tipped a wave over (F93).
     An agent whose name names another phase (`harvest-code-p9`, `exec-p9-01-a`) is that
     phase's: another phase's harvest and decision round in the same lead session made 8
-    of 20 over-budget holds false (F74).
+    of 20 over-budget holds false (F74). A hook session counts once: the leads' searches
+    overlap when one ran outside the repository or in a worktree.
     """
     import usage_report
 
-    total, projects = 0.0, set[pathlib.Path]()
+    total, seen = 0.0, set[pathlib.Path]()
     for path in paths:
-        lead, agents, sdk = usage_report.route_cost(path, since)
+        lead, agents, sdk = usage_report.route_cost(path, since, seen=seen)
         total += lead["units"] - lead["idle"]
         total += sum(a["units"] for a in agents if _phases(a["name"]) <= {str(phase)})
-        if path.parent not in projects:
-            projects.add(path.parent)
-            total += sum(s["units"] for s in sdk)
+        total += sum(s["units"] for s in sdk)
     return total
 
 

@@ -149,6 +149,17 @@ def read(*a): raise SystemExit("sdk sessions read")
 transcript.sdk_transcripts = read
 print(budget.measured_fit("g1")[1])"""
 
+# the budget hold's spend of a route's leads, in millions
+SPEND = """import pathlib, sys; sys.path.insert(0, sys.argv[1])
+from dsp_route import holds
+leads = [pathlib.Path(p) for p in sys.argv[3:]]
+print(f"{holds.spend(leads, sys.argv[2], '1') / 1e6:.1f}")"""
+
+
+def slug(path: object) -> str:
+    """The transcript dir name Claude Code gives a working directory."""
+    return re.sub(r"[^A-Za-z0-9]", "-", str(path))
+
 
 class UsageReport(support.Route):
     """usage_report.py on the route's lead and on transcripts written for each check."""
@@ -473,6 +484,80 @@ class HookSessions(support.Sandbox):
             out,
         )
         (home / ".claude/dsp-routes/lead2.json").unlink()
+
+    def test_lead_outside_its_repository(self) -> None:
+        """A lead run from outside the repo counts the repo's and worktrees' hooks.
+
+        Two leads ran from a directory in no repository: their hook sessions ran in the
+        repository and its worktrees, and the report counted none of them.
+        """
+        tmp, home = self.T, self.HOME
+        tab = self.init_repo(tmp / "repo")
+        _ = self.git(
+            "-C", tab, "worktree", "add", "-q", tmp / "repo-p1-01", "-b", "p1-01"
+        )
+        _ = self.git("init", "-q", "-b", "main", tmp / "repo-v2")
+        hub = tmp / "hub"
+        hub.mkdir()
+        projects = home / ".claude/projects"
+        lead = projects / slug(hub) / "lead.jsonl"
+        lead2 = projects / slug(tab) / "lead2.jsonl"
+        for d in ("", "-p1-01", "-v2"):
+            (projects / (slug(tab) + d)).mkdir(parents=True)
+        lead.parent.mkdir(parents=True)
+        self.append(
+            lead,
+            crec(-100, "a1", 1000000, str(hub)),
+            crec(-50, "a2", 1000000, str(hub)),
+        )
+        self.append(
+            lead2,
+            crec(-100, "b1", 1000000, str(tab)),
+            crec(-40, "b2", 1000000, str(tab)),
+        )
+        self.append(
+            projects / slug(tab) / "hook.jsonl",
+            crec(-80, "c1", 2000000, str(tab), "sdk-ts"),
+        )
+        self.append(
+            projects / slug(tab) / "human.jsonl",
+            crec(-80, "c2", 5000000, str(tab)),
+        )
+        self.append(
+            projects / (slug(tab) + "-p1-01") / "hook.jsonl",
+            crec(-80, "c3", 3000000, str(tmp / "repo-p1-01"), "sdk-cli"),
+        )
+        self.append(
+            projects / (slug(tab) + "-v2") / "other.jsonl",
+            crec(-80, "c4", 7000000, str(tmp / "repo-v2"), "sdk-py"),
+        )
+        marker = jline({"marker": str(tab / ".git/dsp-route-0123456789.json")})
+        for name in ("lead", "lead2"):
+            _ = self.write(home / f".claude/dsp-routes/{name}.json", marker + "\n")
+        want = "^total 7.0M = lead 2.0M + 0 agents 0.0M + 2 hook sessions 5.0M"
+        out = self.py(UR, "lead", "--project-dir", lead.parent, merge=True).out
+        self.ok(
+            "usage_report: a registered lead outside its repository counts the "
+            "repository's hook sessions",
+            support.grep(out, want),
+            out,
+        )
+        # the route's two leads count each hook session once
+        out = self.run_(
+            [support.PY, "-c", SPEND, support.SCRIPTS, ts(-200), lead, lead2],
+            merge=True,
+        ).out
+        self.ok("the budget's spend counts a hook session once", out == "9.0", out)
+        for name in ("lead", "lead2"):
+            (home / f".claude/dsp-routes/{name}.json").unlink()
+        out = self.py(
+            UR, "lead", "--project-dir", lead.parent, "--repo", tab, merge=True
+        ).out
+        self.ok(
+            "usage_report --repo counts that repository's hook sessions",
+            support.grep(out, want),
+            out,
+        )
 
 
 if __name__ == "__main__":

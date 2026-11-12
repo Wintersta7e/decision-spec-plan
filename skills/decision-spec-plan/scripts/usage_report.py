@@ -15,7 +15,7 @@ redacted and streamed snapshots undercount it.
 
 Usage:
     usage_report.py [session-id] [--project-dir DIR] [--since ISO-TIMESTAMP]
-        [--until ISO-TIMESTAMP] [--top N] [--groups]
+        [--until ISO-TIMESTAMP] [--top N] [--groups] [--repo DIR]
 
 Without a session id it reports the running session ($CLAUDE_CODE_SESSION_ID) of the
 project whose directory is the current working directory, else that project's newest
@@ -25,6 +25,10 @@ from the skill's start). Sessions a hook or plugin started through the Agent SDK
 project or one of its worktrees (entrypoint `sdk-*`, e.g. a security review of every
 commit) are counted too, over the same span — up to the last record of the lead or its
 agents without `--until`: 53 and 87 of them cost two runs 3.0M each in a day, uncounted.
+So are those in the lead's repository and its worktrees when the lead ran outside it:
+the repository is `--repo`'s, else the one the lead's route was activated for
+(`route_state.py --activate`) — two rounds led from outside the repository reported
+none of their 28 and 118.
 `--groups` adds a line per Stage 5 task group (`exec-*`, not an integrator
 `exec-wave*`): its context at its first edit, its peak, its `git commit` calls, the
 context each commit added, minutes and units; then the medians, and how many commits
@@ -32,7 +36,7 @@ fit between the median first edit and the 200k stop — the size of the lane's n
 groups (`execution.md`); and each group's cache rewrites: turns that wrote the whole
 prompt again after a gap past the cache's 5 minutes. A line `cache` sums those rewrites
 over every agent.
-Exit 0 on a report, 2 when no transcript is found.
+Exit 0 on a report, 2 when no transcript is found or `--repo` is in no repository.
 """
 
 import argparse
@@ -102,6 +106,7 @@ class Args(argparse.Namespace):
     until: str | None = None
     top: int = 40
     groups: bool = False
+    repo: pathlib.Path | None = None
 
 
 def rates(model: str | None, prompt: int) -> tuple[float, float]:
@@ -182,35 +187,47 @@ def group_stats(
 
 
 def sdk_sessions(
-    project: pathlib.Path,
     lead_path: pathlib.Path,
     since: str | None,
     until: str | None,
+    *,
+    repo: str | None = None,
+    seen: set[pathlib.Path] | None = None,
 ) -> list[Row]:
     """Return the scan() rows of the hook sessions beside a lead.
 
-    The sessions are transcript.sdk_transcripts'.
+    The sessions are transcript.sdk_transcripts' in `repo`; one in `seen` is left out,
+    and each counted one is added to it.
     """
+    seen = set() if seen is None else seen
     rows: list[Row] = []
-    for path in transcript.sdk_transcripts(project, lead_path, since):
+    for path in transcript.sdk_transcripts(lead_path.parent, lead_path, since, repo):
+        if path in seen:
+            continue
         row = scan(path, since, until)
         if row["contexts"]:
             rows.append(row)
+            seen.add(path)
     return rows
 
 
 def route_cost(
-    lead_path: pathlib.Path, since: str | None, until: str | None = None
+    lead_path: pathlib.Path,
+    since: str | None,
+    until: str | None = None,
+    *,
+    repo: str | None = None,
+    seen: set[pathlib.Path] | None = None,
 ) -> tuple[Row, list[Agent], list[Row]]:
     """Return (lead, agents, sdk sessions) of a lead session in [since, until].
 
-    Each is a scan() row.
+    Each is a scan() row; `repo` and `seen` are sdk_sessions'.
     """
     lead = scan(lead_path, since, until)
     agents = subagents(lead_path, since, until)
     # Hook sessions go on after the round: without --until, up to its last record.
     end = until or max((r["last"] for r in [lead, *agents] if r["last"]), default=None)
-    sdk = sdk_sessions(lead_path.parent, lead_path, since or lead["first"], end)
+    sdk = sdk_sessions(lead_path, since or lead["first"], end, repo=repo, seen=seen)
     return lead, agents, sdk
 
 
@@ -310,14 +327,18 @@ def main() -> int:
     _ = parser.add_argument("--until", type=transcript.timestamp)
     _ = parser.add_argument("--top", type=int)
     _ = parser.add_argument("--groups", action="store_true")
+    _ = parser.add_argument("--repo", type=pathlib.Path)
     args = parser.parse_args(namespace=Args())
+    repo = transcript.repository(args.repo) if args.repo else None
+    if args.repo and repo is None:
+        parser.error(f"--repo {args.repo} is in no git repository")
 
     lead_path = transcript.find_lead(args.project_dir, args.session)
     if not lead_path.exists():
         print(f"no transcript at {lead_path}", file=sys.stderr)
         return 2
 
-    lead, agents, sdk = route_cost(lead_path, args.since, args.until)
+    lead, agents, sdk = route_cost(lead_path, args.since, args.until, repo=repo)
     agent_units = sum(a["units"] for a in agents)
     sdk_units = sum(s["units"] for s in sdk)
     total = lead["units"] + agent_units + sdk_units

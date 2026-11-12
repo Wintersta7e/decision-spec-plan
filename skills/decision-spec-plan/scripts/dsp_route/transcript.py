@@ -236,14 +236,28 @@ def common_dir(path: StrPath) -> str | None:
     with pathlib.Path(path).open(encoding="utf-8", errors="replace") as fh:
         for _, line in zip(range(20), fh, strict=False):
             if m := CWD.search(line):
-                rc, out = git(
-                    m[1],
-                    "rev-parse",
-                    "--path-format=absolute",
-                    "--git-common-dir",
-                )
-                return out if rc == 0 else None
+                return repository(m[1])
     return None
+
+
+def repository(directory: StrPath) -> str | None:
+    """Return the git common dir of a directory, or None when it is in none."""
+    rc, out = git(directory, "rev-parse", "--path-format=absolute", "--git-common-dir")
+    return out if rc == 0 else None
+
+
+def route_repository(session: str) -> str | None:
+    """Return the git common dir of the route a session registered, or None.
+
+    `--activate` writes the route's marker into that dir.
+    """
+    marker = load_json(REGISTRY / f"{session}.json").get("marker")
+    return str(pathlib.Path(marker).parent) if isinstance(marker, str) else None
+
+
+def slug(directory: StrPath) -> str:
+    """Return the name of the transcript dir Claude Code keeps for a directory."""
+    return re.sub(r"[^A-Za-z0-9]", "-", str(directory))
 
 
 def event_transcript(event: Mapping[str, object]) -> pathlib.Path | None:
@@ -261,10 +275,7 @@ def find_lead(project: pathlib.Path | None, session: str | None) -> pathlib.Path
     another lead's.
     """
     if not (project and any(project.glob("*.jsonl"))):
-        slug = re.sub(
-            r"[^A-Za-z0-9]", "-", str((project or pathlib.Path.cwd()).resolve())
-        )
-        project = PROJECTS / slug
+        project = PROJECTS / slug((project or pathlib.Path.cwd()).resolve())
     own = project / f"{os.environ.get('CLAUDE_CODE_SESSION_ID')}.jsonl"
     if session:
         return project / f"{session}.jsonl"
@@ -301,27 +312,38 @@ def subagent_transcripts(
 
 
 def sdk_transcripts(
-    project: pathlib.Path, lead: pathlib.Path, since: str | None
+    project: pathlib.Path,
+    lead: pathlib.Path,
+    since: str | None,
+    repo: str | None = None,
 ) -> Iterator[pathlib.Path]:
     """Return sessions with an `sdk-*` entrypoint in the project dir or a worktree's.
 
-    A worktree's is `<project>-*`. A route's lead (registered by `route_state.py
-    --activate`) is a lead even when headless (`sdk-cli`). A `<project>-*` dir counts
-    only for the sessions that ran in the lead's repository: one named alike, or whose
-    repository is unknown, is another project — counted, its headless sessions held a
-    route's wave over a budget it had not spent.
+    A worktree's is `<project>-*`. The lead's repository (`repo`, a git common dir) is
+    the one its working directory is in, else the one its route was registered for
+    (`route_state.py --activate`): its checkout's dir and `<checkout>-*` are searched
+    too, as a lead run from outside the repository has its hooks run inside it — two
+    such rounds reported none of theirs. A route's lead is a lead even when headless
+    (`sdk-cli`). A dir other than the project's counts only for the sessions that ran
+    in the lead's repository: one named alike, or whose repository is unknown, is
+    another project — counted, its headless sessions held a route's wave over a budget
+    it had not spent.
     """
     floor = epoch(since)
-    repo = common_dir(lead)
-    for directory in [project, *sorted(project.parent.glob(project.name + "-*"))]:
+    repo = repo or common_dir(lead) or route_repository(lead.stem)
+    dirs = [project, *sorted(project.parent.glob(project.name + "-*"))]
+    if repo and (git_dir := pathlib.Path(repo)).name == ".git":
+        checkout = project.parent / slug(git_dir.parent)
+        dirs += [checkout, *sorted(project.parent.glob(checkout.name + "-*"))]
+    for directory in dict.fromkeys(dirs):
         for path in sorted(directory.glob("*.jsonl")):
             if path == lead or (floor and path.stat().st_mtime < floor):
                 continue
             if (REGISTRY / f"{path.stem}.json").exists():
                 continue
-            if directory != project and (repo is None or common_dir(path) != repo):
+            if not entrypoint(path).startswith("sdk"):
                 continue
-            if entrypoint(path).startswith("sdk"):
+            if directory == project or (repo and common_dir(path) == repo):
                 yield path
 
 
