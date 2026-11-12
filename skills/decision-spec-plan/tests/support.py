@@ -462,6 +462,31 @@ class Sandbox(unittest.TestCase):
         """
         Sandbox.touch(path, -3600)
 
+    @classmethod
+    def git_shim(cls, root: Path, sleep: float = 0) -> tuple[dict[str, str], Path]:
+        """A logging git at root/git: the env that puts it first on PATH, and its log.
+
+        The scripts resolve git by `shutil.which`, so the shim sees every spawn they
+        make. Before git runs it appends one line per spawn to root/git.log:
+        `<epoch ns> <args>`, the first field `date +%s%N` and the rest `$*`. A count is
+        the number of lines; a time stamp is `int(line.split(" ", 1)[0])`. With sleep,
+        it waits that many seconds before running git.
+        """
+        real = shutil.which("git", path=cls.env["PATH"])
+        if real is None:
+            msg = "git_shim: no git on PATH"
+            raise AssertionError(msg)
+        log = root / "git.log"
+        wait = f"sleep {sleep}\n" if sleep else ""
+        shim = cls.write(
+            root / "git",
+            "#!/bin/sh\n"
+            f"printf '%s %s\\n' \"$(date +%s%N)\" \"$*\" >> '{log}'\n"
+            f"{wait}exec '{real}' \"$@\"\n",
+        )
+        cls.chmod_x(shim)
+        return {"PATH": f"{root}{os.pathsep}{cls.env['PATH']}"}, log
+
     @staticmethod
     def chmod_x(*paths: StrPath) -> None:
         """The execute bits added to each path's mode."""

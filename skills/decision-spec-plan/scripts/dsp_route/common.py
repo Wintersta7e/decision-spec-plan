@@ -6,6 +6,8 @@ hook's output, and the narrowing of parsed JSON to typed values.
 """
 
 import argparse
+import contextlib
+import contextvars
 import hashlib
 import json
 import os
@@ -13,7 +15,8 @@ import pathlib
 import re
 import shutil
 import subprocess
-from collections.abc import Callable, Mapping
+import time
+from collections.abc import Callable, Generator, Mapping
 from typing import Literal, NotRequired, TypedDict, TypeVar, TypeVarTuple, cast
 
 MARKER = "dsp-route.json"
@@ -146,16 +149,52 @@ def ago(seconds: float) -> str:
     return f"{int(seconds)}s"
 
 
+GIT_DEADLINE: contextvars.ContextVar[float | None] = contextvars.ContextVar(
+    "GIT_DEADLINE", default=None
+)
+"""The `time.monotonic()` by which the context's git calls must end; None: no bound."""
+
+
+class GitDeadlineError(TimeoutError):
+    """A git call reached the deadline `git_deadline` set: not started, or stopped."""
+
+
+@contextlib.contextmanager
+def git_deadline(seconds: float) -> Generator[None, None, None]:
+    """Bound every `git()` call in the block to end within seconds from now."""
+    token = GIT_DEADLINE.set(time.monotonic() + seconds)
+    try:
+        yield
+    finally:
+        GIT_DEADLINE.reset(token)
+
+
 def git(repo: StrPath, *args: str, stdin: str | None = None) -> tuple[int, str]:
-    """Run git in repo, fed stdin; its exit code and its stripped stdout."""
-    r = subprocess.run(
-        [shutil.which("git") or "git", "-C", str(repo), *args],
-        input=stdin,
-        env={**os.environ, "GIT_OPTIONAL_LOCKS": "0"},
-        capture_output=True,
-        text=True,
-        check=False,
-    )
+    """Run git in repo, fed stdin; its exit code and its stripped stdout.
+
+    Under `git_deadline`, a call raises `GitDeadlineError` without spawning git once
+    the deadline has passed, and stops a git that outlives it.
+    """
+    deadline = GIT_DEADLINE.get()
+    timeout = None
+    if deadline is not None:
+        timeout = deadline - time.monotonic()
+        if timeout <= 0:
+            msg = f"git {' '.join(args)}: deadline passed"
+            raise GitDeadlineError(msg)
+    try:
+        r = subprocess.run(
+            [shutil.which("git") or "git", "-C", str(repo), *args],
+            input=stdin,
+            env={**os.environ, "GIT_OPTIONAL_LOCKS": "0"},
+            capture_output=True,
+            text=True,
+            timeout=timeout,
+            check=False,
+        )
+    except subprocess.TimeoutExpired as e:
+        msg = f"git {' '.join(args)}: stopped at the deadline"
+        raise GitDeadlineError(msg) from e
     return r.returncode, r.stdout.strip()
 
 
