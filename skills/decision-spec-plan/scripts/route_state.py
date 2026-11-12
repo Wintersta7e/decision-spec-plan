@@ -89,8 +89,14 @@ wakes it when the job ends (F92). It holds the lead's `exec-` dispatch while
 
 Registration: the plugin's `hooks/hooks.json` runs `route_state.py --hook` under
 SessionStart matcher `compact|resume`, PostToolUse matcher `*`, UserPromptSubmit,
-PreToolUse matcher `Agent|Bash|Write|Edit|MultiEdit|NotebookEdit`, SubagentStop,
-TeammateIdle.
+PreToolUse matcher `Agent|Bash|Write|Edit|MultiEdit|NotebookEdit|SendMessage`,
+PreToolUse matcher `^mcp__.*create_note$` (a review note posted through an MCP tool,
+held as a `gh` or `glab` review comment is), SubagentStop and TeammateIdle; and
+`push_guard.py` under PreToolUse matcher `Bash`. Seven more run `--hook` only when the
+hook shell sees `DSP_MONITOR=1`: SubagentStart, PostToolUseFailure matcher `Agent`,
+PostCompact, Notification, Stop, StopFailure and SessionEnd. They record the session's
+events under `~/.claude/dsp-routes/events/` (README, Monitor tracking).
+Those seven print nothing.
 """
 
 import sys
