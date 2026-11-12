@@ -14,6 +14,8 @@ import time
 from collections.abc import Iterable, Mapping
 from typing import TypedDict
 
+import scope_check
+
 from .common import (
     PLAN_ID,
     RouteArgs,
@@ -72,6 +74,8 @@ Worktree = tuple[str | None, str | None]
 # The report's data object (`collect`); bumped when a key changes meaning or type.
 VERSION = 1
 # the enums of its derived facts, in display order; other modules import them
+STAGES = ("harvest", "decisions", "review", "asks", "spec", "plan", "exec", "push")
+STAGE_STATES = ("done", "current", "skipped", "not-reached")
 LANE_STATES = ("queued", "running", "gating", "ready", "red", "merged")
 LANE_BASES = ("planned", "no-sha", "unchecked", "unknown", "open", "merged")
 GATE_STATES = ("green", "red", "dirty", "no-exit", "none")
@@ -267,6 +271,20 @@ class Flag(TypedDict):
     line: str
 
 
+class WaveFact(TypedDict):
+    """A plan's row of the plan index: its Wave cell and number, what it waits for.
+
+    after: the plan ids its `Depends on` cell names; after_waves: the waves an `all`
+    cell waits for; waits_for: every plan id it waits for, directly or through others.
+    """
+
+    wave: str
+    wave_no: int | None
+    after: list[str]
+    after_waves: list[int]
+    waits_for: list[str]
+
+
 class Stage(TypedDict):
     """A route stage and its state."""
 
@@ -293,6 +311,7 @@ class State(TypedDict):
     spec: SpecFacts | None
     reconcile: list[str]
     plans: PlanFacts
+    waves: dict[str, WaveFact]
     lane_files: bool
     checkpoints: list[CheckpointFact]
     gate_logs: list[GateLogFact]
@@ -1058,6 +1077,34 @@ def _gate_fact(gate: GateLog) -> GateLogFact:
     }
 
 
+def _plan_id(stem: str) -> str:
+    """Return a plan's id: the PLAN_ID its stem opens with, else the stem."""
+    m = PLAN_ID.match(stem)
+    return m[0] if m else stem
+
+
+def _waves(base: pathlib.Path, p: str) -> dict[str, WaveFact]:
+    """Return each plan's wave and dependencies by plan id, from the plan index.
+
+    Read with the plan checker's own parser; {} with no index or no plan-set table.
+    """
+    index = base / "plans" / f"p{p}-00-index.md"
+    if not index.exists():
+        return {}
+    rows = scope_check.plan_table(str(index))
+    direct, reach = scope_check.edges(rows), scope_check.depends(rows)
+    return {
+        _plan_id(s): {
+            "wave": wave,
+            "wave_no": scope_check.wave_no(wave),
+            "after": sorted(map(_plan_id, direct[s][0])),
+            "after_waves": sorted(direct[s][1]),
+            "waits_for": sorted(map(_plan_id, reach[s])),
+        }
+        for s, (wave, _) in rows.items()
+    }
+
+
 def _file_facts(
     a: RouteArgs, rung: str | None, *, fresh: bool, extra: Iterable[str]
 ) -> tuple[State, str | None]:
@@ -1096,6 +1143,7 @@ def _file_facts(
         "spec": spec,
         "reconcile": [_rel(f, base) for f in reconcile],
         "plans": plans,
+        "waves": _waves(base, p),
         "lane_files": any(lanes.glob(f"p{p}-*")),
         "checkpoints": checkpoints,
         "gate_logs": [_gate_fact(g) for g in gate_logs(lanes, p)],
@@ -1278,13 +1326,63 @@ def _flags(state: State, lanes: list[Lane]) -> list[Flag]:
     return out + _gate_flags(state["gate_logs"]) + _file_flags(of("wave"))
 
 
-def derive(state: State) -> State:
-    """Return a new state whose lanes and flags are computed from its facts alone.
+def _exec_complete(state: State, lanes: Iterable[Lane]) -> bool:
+    """Return whether every plan id of the index has lanes, and each is merged."""
+    merged: dict[str, list[bool]] = {}
+    for lane in lanes:
+        if lane["basis"] != "planned":
+            merged.setdefault(lane["plan"], []).append(lane["basis"] == "merged")
+    ids = state["plans"]["index_ids"]
+    return bool(ids) and all(
+        all(merged.get(f"p{state['phase']}-{i}", [False])) for i in ids
+    )
 
-    Pure: no I/O, no git, no clock. The input's own lanes, flags and stages are
-    recomputed, so derive(derive(s)) == derive(s), and older git facts can be laid
-    over newer file facts.
+
+def _reached(state: State, lanes: list[Lane]) -> list[bool]:
+    """Return whether the route's files and git reached each stage, in STAGES order.
+
+    At rung S there is no arbiter: its asks are settled with its decisions.
     """
+    d = state["decisions"]
+    fixed, spec = d["fixed"], state["spec"]
+    return [
+        True,
+        d["index"],
+        fixed["00-framing-review"] or fixed["00-seams"],
+        fixed["00-arbiter"] or (state["rung"] == "S" and d["index"]),
+        bool(spec and spec["sections"]) or bool(state["reconcile"]),
+        bool(state["plans"]["files"]),
+        bool(state["checkpoints"]) or state["lane_files"],
+        _exec_complete(state, lanes),
+    ]
+
+
+def _stages(state: State, lanes: list[Lane]) -> list[Stage]:
+    """Return each stage's state: the highest reached is current, unless pushed.
+
+    Below it a stage is done if reached, else skipped; above it, not reached. At rung
+    S the review is due after the plan: unreached, it is skipped only once exec is.
+    """
+    reached = _reached(state, lanes)
+    top = max(i for i, r in enumerate(reached) if r)
+    g = state["git"]
+    pushed = reached[-1] and g is not None and g["pushed"] is True
+    out: list[Stage] = []
+    for i, (name, r) in enumerate(zip(STAGES, reached, strict=True)):
+        if i > top:
+            st = "not-reached"
+        elif i < top:
+            st = "done" if r else "skipped"
+        else:
+            st = "done" if pushed else "current"
+        out.append({"name": name, "state": st})
+    if state["rung"] == "S" and not reached[2] and not reached[6]:
+        out[2]["state"] = "not-reached"
+    return out
+
+
+def _lanes(state: State) -> list[Lane]:
+    """Return a lane per checkpoint, then one per plan id no checkpoint has started."""
     lanes = [_lane(c, state) for c in state["checkpoints"]]
     started = {c["plan"] for c in state["checkpoints"]}
     for i in state["plans"]["index_ids"]:
@@ -1302,7 +1400,23 @@ def derive(state: State) -> State:
                     "git": False,
                 }
             )
-    return {**state, "lanes": lanes, "flags": _flags(state, lanes), "stages": []}
+    return lanes
+
+
+def derive(state: State) -> State:
+    """Return a new state whose lanes, flags and stages come from its facts alone.
+
+    Pure: no I/O, no git, no clock. The input's own lanes, flags and stages are
+    recomputed, so derive(derive(s)) == derive(s), and older git facts can be laid
+    over newer file facts.
+    """
+    lanes = _lanes(state)
+    return {
+        **state,
+        "lanes": lanes,
+        "flags": _flags(state, lanes),
+        "stages": _stages(state, lanes),
+    }
 
 
 def _how(lane: GitLane) -> str:
@@ -1424,6 +1538,12 @@ def render(state: State, *, show_all: bool) -> str:
     return "\n".join(out)
 
 
+def _pushed(repo: str, main: str, tip: str) -> bool | None:
+    """Return whether main's tip is on its upstream, None when git cannot tell."""
+    rc, _ = git(repo, "merge-base", "--is-ancestor", tip, f"{main}@{{upstream}}")
+    return {0: True, 1: False}.get(rc)
+
+
 def collect(
     a: RouteArgs,
     *,
@@ -1435,7 +1555,8 @@ def collect(
     """Return the route report of a round as data, None with no planning dir.
 
     Prints nothing. File facts first, then git facts (None without --repo or with
-    use_git False: then no git spawn at all, the marker lookup included), then derive.
+    use_git False: then no git spawn at all, the marker lookup included), whether main
+    is pushed (asked only once every plan's lane is merged), then derive.
     Only with write_cache, and only after derive returns, does it write the
     merged-result cache.
     """
@@ -1447,7 +1568,10 @@ def collect(
     state, index_text = _file_facts(a, _rung(a, route), fresh=fresh, extra=extra)
     cache = None
     if use_git and a.repo:
-        state["git"], cache = _git_facts(a, a.repo, route, state, index_text)
+        g, cache = _git_facts(a, a.repo, route, state, index_text)
+        state["git"] = g
+        if (tip := g["main_sha"]) and _exec_complete(state, _lanes(state)):
+            g["pushed"] = _pushed(a.repo, g["main"], tip)
     state = derive(state)
     if write_cache and cache is not None:
         cache.save()

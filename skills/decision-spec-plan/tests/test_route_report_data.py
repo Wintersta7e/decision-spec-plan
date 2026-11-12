@@ -4,13 +4,15 @@
 `collect()` returns a round's facts as one JSON-native object, `derive()` computes
 every lane state and flag from them, and `render()` prints today's text from the object
 alone. `scope_check.edges()` gives each plan's direct edges, the plans its `Depends on`
-cell names and the waves an `all` cell waits for; `depends()` closes over them.
+cell names and the waves an `all` cell waits for; `depends()` closes over them. The
+object carries both by plan id, the route's stage strip, and only its enums' values.
 """
 
 import contextlib
 import hashlib
 import io
 import os
+import re
 import sys
 from pathlib import Path
 from unittest import mock
@@ -309,3 +311,190 @@ class WaveEdges(support.Sandbox):
             },
             reach,
         )
+
+
+class Waves(support.Sandbox):
+    """Each plan's wave and dependencies in the object, by plan id (AC-P1-2-21)."""
+
+    def test_waves(self) -> None:
+        """after, after_waves and waits_for are edges() and depends() by plan id."""
+        plan = self.T / "w"
+        index = self.write(plan / "plans/p1-00-index.md", INDEX)
+        argv = [str(plan), "--phase", "1"]
+        waves = collect_json(type(self), argv, use_git=False)["waves"]
+        rows = scope_check.plan_table(str(index))
+        direct, reach = scope_check.edges(rows), scope_check.depends(rows)
+
+        def ident(stem: str) -> str:
+            m = scope_check.PLAN_ID.match(stem)
+            return m[0] if m else stem
+
+        want = {
+            ident(s): (
+                sorted(map(ident, direct[s][0])),
+                sorted(direct[s][1]),
+                sorted(map(ident, reach[s])),
+            )
+            for s in rows
+        }
+        got = {
+            i: (w["after"], w["after_waves"], w["waits_for"]) for i, w in waves.items()
+        }
+        ids = [
+            *waves,
+            *(o for w in waves.values() for o in w["after"] + w["waits_for"]),
+        ]
+        self.ok(
+            f"waves of {len(got)} plans, by plan id",
+            len(got) == len(rows) > 0
+            and got == want
+            and got["p1-04"][1] == [1]
+            and got["p1-05"][1] == [0, 1, 2]
+            and all(PLAN_ONLY.fullmatch(i) for i in ids),
+            f"{got}\n{want}",
+        )
+
+
+# a plan id and nothing else
+PLAN_ONLY = re.compile(r"p\d+-\d+[a-z]?")
+# a stage state's letter in a strip of the eight, in STAGES order
+LETTER = {"done": "d", "current": "c", "skipped": "s", "not-reached": "n"}
+DEC = "decisions/phase1/"
+IDX, SEAMS, ARB, FRAMING = (
+    f"{DEC}00-index.md",
+    f"{DEC}00-seams.md",
+    f"{DEC}00-arbiter.md",
+    f"{DEC}00-framing-review.md",
+)
+SPEC, PLAN, CKPT = "spec/1-a.md", "plans/p1-01-a.md", "lanes/p1-01-a-checkpoint.md"
+SECTIONS = ("--sections", "1-")
+RUNG_S = (*SECTIONS, "--rung", "S")
+# (fixture, its files, its arguments, its strip): planning dirs without git
+FILE_STAGES: list[tuple[str, tuple[str, ...], tuple[str, ...], str]] = [
+    ("harvest only", (), (), "cnnnnnnn"),
+    ("+ index", (IDX,), (), "dcnnnnnn"),
+    ("+ seams", (IDX, SEAMS), (), "ddcnnnnn"),
+    ("+ arbiter", (IDX, SEAMS, ARB), (), "dddcnnnn"),
+    ("+ spec", (IDX, SEAMS, ARB, SPEC), SECTIONS, "ddddcnnn"),
+    ("+ plan", (IDX, SEAMS, ARB, SPEC, PLAN), SECTIONS, "dddddcnn"),
+    ("+ checkpoint", (IDX, SEAMS, ARB, SPEC, PLAN, CKPT), SECTIONS, "ddddddcn"),
+    ("rung S, no review, no exec", (IDX, SPEC, PLAN), RUNG_S, "ddnddcnn"),
+    ("rung S, a checkpoint, no review", (IDX, SPEC, PLAN, CKPT), RUNG_S, "ddsdddcn"),
+    ("rung S, framing review", (IDX, FRAMING, SPEC, PLAN), RUNG_S, "dddddcnn"),
+    ("no --sections, no reconcile", (IDX, SEAMS, ARB, PLAN), (), "ddddscnn"),
+]
+# (main pushed: none, after the merge, before it; its strip) of an exec-complete route
+GIT_STAGES = (("none", "dddddddc"), ("pushed", "dddddddd"), ("stale", "dddddddc"))
+STAGE_FIXTURES = 15
+
+
+class Stages(support.Sandbox):
+    """Each stage's state from a route's files, git and rung (AC-P1-2-20)."""
+
+    def exec_route(self, root: Path, push: str) -> list[str]:
+        """Return the arguments of a route whose one plan id's lane is merged.
+
+        push: main never pushed (none), pushed after the merge, or before it (stale).
+        """
+        r = self.init_repo(root / "r", commits=("base",))
+        if push != "none":
+            _ = self.git("init", "-q", "--bare", root / "o.git")
+            _ = self.git("-C", r, "remote", "add", "origin", root / "o.git")
+        if push == "stale":
+            _ = self.git("-C", r, "push", "-q", "-u", "origin", "main")
+        _ = self.git("-C", r, "switch", "-q", "-c", "p1-01-a")
+        _ = self.write(r / "f1", "lane\n")
+        _ = self.git("-C", r, "add", "f1")
+        _ = self.git("-C", r, "commit", "-q", "-m", "p1-01-a")
+        sha = self.rev(r)
+        _ = self.git("-C", r, "switch", "-q", "main")
+        _ = self.git("-C", r, "merge", "-q", "--no-ff", "-m", "merge", "p1-01-a")
+        if push == "pushed":
+            _ = self.git("-C", r, "push", "-q", "-u", "origin", "main")
+        plan = r / ".plan"
+        for f in (IDX, SEAMS, ARB, SPEC, PLAN):
+            _ = self.write(plan / f, "x\n")
+        _ = self.write(plan / CKPT, f"Final SHA: {sha}\n")
+        _ = self.write(
+            plan / "plans/p1-00-index.md",
+            "| Plan | Wave | Depends on |\n|---|---|---|\n| p1-01-a | 1 | — |\n",
+        )
+        return [
+            str(plan),
+            "--phase",
+            "1",
+            "--repo",
+            str(r),
+            "--main",
+            "main",
+            *SECTIONS,
+        ]
+
+    def test_stages(self) -> None:
+        """The eight states of every fixture, in STAGES order."""
+        from dsp_route import report
+
+        cases: list[tuple[str, list[str], bool, str]] = []
+        for n, (label, files, extra, want) in enumerate(FILE_STAGES):
+            plan = self.T / f"f{n}"
+            plan.mkdir(parents=True)
+            for f in files:
+                _ = self.write(plan / f, "x\n")
+            cases.append((label, [str(plan), "--phase", "1", *extra], False, want))
+        for push, want in GIT_STAGES:
+            argv = self.exec_route(self.T / push, push)
+            cases.append((f"exec complete, push {push}", argv, True, want))
+        cases.append(("exec complete, no git", cases[-3][1], False, "ddddddcn"))
+        got: dict[str, str] = {}
+        names: set[tuple[str, ...]] = set()
+        for label, argv, use_git, _ in cases:
+            stages = collect_json(type(self), argv, use_git=use_git)["stages"]
+            names.add(tuple(s["name"] for s in stages))
+            got[label] = "".join(LETTER.get(s["state"], "?") for s in stages)
+        want = {label: w for label, _, _, w in cases}
+        self.ok(
+            f"stage strips of {len(cases)} fixtures",
+            len(cases) == STAGE_FIXTURES and got == want and names == {report.STAGES},
+            {k: (got[k], w) for k, w in want.items() if got[k] != w},
+        )
+
+
+class Enums(report_shapes.Shapes):
+    """Every enum value the object emits is its constant's, and every one is emitted.
+
+    Over the seven golden shapes and the route holding every lane state (AC-P1-2-19).
+    """
+
+    def test_enums(self) -> None:
+        """Stage names and states, lane states, bases and gates, flag kinds."""
+        from dsp_route import report
+
+        states = [collect_json(type(self), s["argv"]) for s in GOLDEN.values()]
+        states.append(
+            collect_json(
+                type(self), report_shapes.lane_states(type(self), self.T / "ls")
+            )
+        )
+        stages = [s for x in states for s in x["stages"]]
+        lanes = [ln for x in states for ln in x["lanes"]]
+        emitted: dict[str, tuple[tuple[str, ...], set[str]]] = {
+            "STAGES": (report.STAGES, {s["name"] for s in stages}),
+            "STAGE_STATES": (report.STAGE_STATES, {s["state"] for s in stages}),
+            "LANE_STATES": (report.LANE_STATES, {ln["state"] for ln in lanes}),
+            "LANE_BASES": (report.LANE_BASES, {ln["basis"] for ln in lanes}),
+            "GATE_STATES": (
+                report.GATE_STATES,
+                {g for ln in lanes if (g := ln["gate"]) is not None},
+            ),
+            "FLAG_KINDS": (
+                report.FLAG_KINDS,
+                {f["kind"] for x in states for f in x["flags"]},
+            ),
+        }
+        for name, (values, got) in emitted.items():
+            self.ok(
+                f"{name}: {len(values)} values, {len(got & set(values))} emitted",
+                len(values) > 0 and got == set(values),
+                f"not emitted {sorted(set(values) - got)}, "
+                f"not in {name} {sorted(got - set(values))}",
+            )
