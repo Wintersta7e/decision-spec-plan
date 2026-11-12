@@ -230,5 +230,91 @@ class SessionStart(support.Route):
         _ = self.hook("silent", ev("SessionStart", "s2", '"source":"compact"'))
 
 
+READ = '"tool_name":"Read"'
+
+
+def _flag(cls: support.Route) -> None:
+    """A new flag in the next report: an empty reconcile file an hour old."""
+    rec = cls.write(cls.P / "reconcile/p1-two.md", "")
+    cls.touch(rec, -3600)
+
+
+def _post(cls: support.Route, session: str) -> str:
+    """The context a PostToolUse of session injects, "" for none."""
+    return _context(cls.hook_out(ev("PostToolUse", session, READ)).out) or ""
+
+
+class TwoLeads(support.Route):
+    """Two leads of one route each keep their own last injection."""
+
+    def test_two_leads(self) -> None:
+        """A flag one lead was told of still reaches the other."""
+        _ = self.activate_route(session="s2")
+        _ = _post(self, "s1")
+        _ = _post(self, "s2")
+        _flag(self)
+        self.unthrottle()
+        s1 = _post(self, "s1")
+        self.unthrottle()
+        s2 = _post(self, "s2")
+        self.ok(
+            "two leads: both hear the new flag",
+            "reconcile/p1-two.md" in s1 and "reconcile/p1-two.md" in s2,
+            f"s1 {s1!r}\ns2 {s2!r}",
+        )
+
+
+class SeedShared(support.Route):
+    """A new lead's delta starts from the shared file, which stays as it was."""
+
+    def test_seed_shared(self) -> None:
+        """The shared `.last` seeds a new session's delta and is never written."""
+        _ = _post(self, "s1")
+        marker = self.MK(self.R)
+        shared = marker.with_suffix(".last")
+        own = marker.with_name(f"{marker.stem}.s1.last")
+        if own.exists():
+            _ = own.replace(shared)
+        self.touch(shared, -600)
+        before = (shared.read_bytes(), shared.stat().st_mtime_ns)
+        _flag(self)
+        _ = self.activate_route(session="s3")
+        out = _post(self, "s3")
+        after = (shared.read_bytes(), shared.stat().st_mtime_ns)
+        self.ok(
+            "seed: a new session's first report is a delta from the shared file",
+            "changed between" in out and "in-flight block's state" not in out,
+            out,
+        )
+        self.ok(
+            "seed: the shared file's bytes and mtime are unchanged",
+            after == before,
+            f"before {before}\nafter  {after}",
+        )
+
+
+class SeedOtherSession(support.Route):
+    """With no shared file, another session's `.last` seeds a new lead's delta."""
+
+    def test_seed_other_session(self) -> None:
+        """A second lead's first report is a delta from the first lead's file."""
+        _ = _post(self, "s1")
+        marker = self.MK(self.R)
+        self.ok(
+            "seed: no shared file, one per-session file",
+            not marker.with_suffix(".last").exists()
+            and marker.with_name(f"{marker.stem}.s1.last").exists(),
+            sorted(p.name for p in marker.parent.glob("*.last")),
+        )
+        _flag(self)
+        _ = self.activate_route(session="s2")
+        out = _post(self, "s2")
+        self.ok(
+            "seed: a second lead's first report is a delta holding the new flag",
+            "changed between" in out and "reconcile/p1-two.md" in out,
+            out,
+        )
+
+
 if __name__ == "__main__":
     _ = unittest.main()

@@ -220,9 +220,27 @@ def _delta(old: str | None, body: str, since: str, text: str) -> str:
     )
 
 
+def _seed(path: pathlib.Path, last: pathlib.Path) -> pathlib.Path | None:
+    """Return the file a session's delta starts from: its own `.last`, else a seed.
+
+    The seed is the newest of the route's shared `.last` and the other sessions' ones,
+    so a successor lead hears what changed instead of the whole report again. It is
+    only read, never written.
+    """
+    if last.exists():
+        return last
+    seeds = [
+        p
+        for p in (path.with_suffix(".last"), *path.parent.glob(f"{path.stem}.*.last"))
+        if p != last and p.exists()
+    ]
+    return max(seeds, key=lambda p: p.stat().st_mtime, default=None)
+
+
 def _inject_state(
     name: str,
     event: Mapping[str, object],
+    session: str,
     entry_path: pathlib.Path,
     entry: RegistryEntry,
 ) -> int:
@@ -241,11 +259,12 @@ def _inject_state(
         _ = report(a, fresh=False, extra=budget_line(a.planning_dir, marker, a.phase))
     text = buf.getvalue().rstrip()
     body = text.partition("\n")[2]
-    last = path.with_suffix(".last")
-    old = last.read_text() if last.exists() else None
+    last = path.with_name(f"{path.stem}.{session}.last")
+    seed = _seed(path, last)
+    old = seed.read_text() if seed else None
     since = (
-        time.strftime("%m-%d %H:%M", time.localtime(last.stat().st_mtime))
-        if old
+        time.strftime("%m-%d %H:%M", time.localtime(seed.stat().st_mtime))
+        if seed and old
         else ""
     )
     _ = last.write_text(body)
@@ -299,7 +318,7 @@ def _registered(
         return 0
     if _quiet(name, event, session):
         return 0
-    return _inject_state(name, event, entry_path, entry)
+    return _inject_state(name, event, session, entry_path, entry)
 
 
 def hook() -> int:
@@ -312,12 +331,12 @@ def hook() -> int:
     comment while the review's decision document fails its check (F104). The other
     events put the round's state into the lead's context, never a subagent's or
     teammate's (agent_id): PostToolUse checks at most every THROTTLE_S and, like an
-    agent's return as a prompt, injects only the lines that changed since the last
-    injection — nothing when none did. SessionStart (compact, resume) injects the whole
-    report and what to re-read. Each names the skill's files changed since the session
-    read them. After an AskUserQuestion, unthrottled, PostToolUse tallies whether each
-    answer took the recommended option, and says so past TAKE_RATE of the last
-    TAKE_WINDOW. After the lead's own edit of the repository once the phase has a
+    agent's return as a prompt, injects only the lines that changed since this session's
+    last injection — nothing when none did. SessionStart (compact, resume) injects the
+    whole report and what to re-read. Each names the skill's files changed since the
+    session read them. After an AskUserQuestion, unthrottled, PostToolUse tallies
+    whether each answer took the recommended option, and says so past TAKE_RATE of the
+    last TAKE_WINDOW. After the lead's own edit of the repository once the phase has a
     budget, unthrottled, it says at the second and every tenth after that execution is a
     fresh group's (F68).
 
