@@ -177,6 +177,11 @@ GIT_DEADLINE: contextvars.ContextVar[float | None] = contextvars.ContextVar(
 )
 """The `time.monotonic()` by which the context's git calls must end; None: no bound."""
 
+LAST_DECISION: contextvars.ContextVar[tuple[str, str] | None] = contextvars.ContextVar(
+    "LAST_DECISION", default=None
+)
+"""The call's `(decision, reason)`, as `deny` printed it; None: the call was allowed."""
+
 
 class GitDeadlineError(TimeoutError):
     """A git call reached the deadline `git_deadline` set: not started, or stopped."""
@@ -365,7 +370,11 @@ def checked(check: Callable[[*Ts], T], *args: *Ts) -> T | None:
 
 
 def deny(reason: str, decision: str = "deny") -> int:
-    """Print the PreToolUse hook output that denies (or asks about) the call; 0."""
+    """Print the PreToolUse hook output that denies (or asks about) the call; 0.
+
+    The decision is kept in LAST_DECISION, so the recorder logs what the call printed.
+    """
+    _ = LAST_DECISION.set((decision, reason))
     print(
         json.dumps(
             {

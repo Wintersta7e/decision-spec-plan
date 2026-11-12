@@ -18,6 +18,8 @@ from support import PY, RS, SCRIPTS, ev, jstr
 
 CHECKS = 2  # the version of the decision checks a new ledger entry is bound to
 USAGE = 2  # route_state.py's exit on a usage error
+MON = {"DSP_MONITOR": "1"}  # the monitor switch on
+READ = '"tool_name":"Read"'
 
 
 def route_agent(session: str, kind: str) -> str:
@@ -560,6 +562,9 @@ class RunIdentity(support.Route):
         self.clear()
         b = self.R / ".plan-b"
         _ = self.activate_route()
+        a_run = self.marker().get("run")
+        self.rm(self.HOME / ".claude/dsp-routes/events")
+        _ = self.py(RS, "--hook", input=ev("PostToolUse", "s1", READ) + "\n", env=MON)
         self.activate_plan(b)
         e = self.entry()
         prev = e.get("previous", [])
@@ -567,6 +572,12 @@ class RunIdentity(support.Route):
             f"A then B: the entry is B's, previous ({len(prev)} items) holds A",
             e["planning_dir"] == str(b) and prev == [self.pointer(self.P)],
             e,
+        )
+        runs = [line.get("run") for line in self.events()]
+        self.ok(
+            f"...and A's event ({len(runs)} lines) keeps A's run",
+            a_run is not None and runs == [a_run] == [prev[0]["run"]],
+            (a_run, runs),
         )
         _ = self.activate_route()
         prev = self.entry().get("previous", [])
@@ -632,6 +643,14 @@ class RunIdentity(support.Route):
         self.unthrottle()
         self.rm(*(self.R / ".git").glob("*.last"))
         _ = self.hook("report", ev("PostToolUse", "s1", '"tool_name":"Read"'))
+        self.rm(self.HOME / ".claude/dsp-routes/events")
+        _ = self.py(RS, "--hook", input=ev("PostToolUse", "s1", READ) + "\n", env=MON)
+        runs = [line.get("run", "absent") for line in self.events()]
+        self.ok(
+            f"a run-less entry's {len(runs)} event lines carry run null",
+            runs == [None],
+            runs,
+        )
 
 
 if __name__ == "__main__":

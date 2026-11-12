@@ -5,9 +5,12 @@ Each case runs `record()` in a subprocess with the sandbox's environment, so the
 lands under the sandbox HOME, as a hook's call writes it.
 """
 
+import concurrent.futures
 import contextlib
 import json
 import os
+import stat
+import statistics
 import subprocess
 import time
 from collections.abc import Generator, Mapping
@@ -324,4 +327,582 @@ class Recorder(support.Sandbox):
         self.ok(
             "a day later it is swept",
             not (self.events_dir / "late.jsonl").exists(),
+        )
+
+
+MON = {"DSP_MONITOR": "1"}
+# how much longer a hook call may take with the log's lock held: about 10x the
+# measured worst case
+HANG_S = 0.25
+SENTINEL = "sentinel-5f1e9c"
+A1 = {"agent_id": "a1", "agent_type": "general-purpose"}
+HELPER = {
+    "name": "helper",
+    "description": "look around",
+    "subagent_type": "general-purpose",
+    "run_in_background": "true",
+}
+USAGE = {
+    "input_tokens": 1,
+    "output_tokens": 2,
+    "cache_creation_input_tokens": 3,
+    "cache_read_input_tokens": 4,
+}
+
+
+def lead(hook: str, **fields: object) -> dict[str, object]:
+    """A payload of hook for session s1, as the lead's hook receives it."""
+    return {"session_id": "s1", "hook_event_name": hook, "cwd": "/w", **fields}
+
+
+def kinds() -> list[tuple[dict[str, object], str, dict[str, object]]]:
+    """A payload per kind of line, its kind and fields the line must hold."""
+    launched = {"status": "async_launched", "agentId": "a2"}
+    spawned = {
+        "status": "teammate_spawned",
+        "agentId": "ahelper-1",
+        "name": "helper",
+        "team_name": "t",
+        "agent_type": "general-purpose",
+        "resolvedModel": "m1",
+    }
+    done = {
+        "status": "completed",
+        "agentId": "a3",
+        "resolvedModel": "m1",
+        "totalDurationMs": 1200,
+        "totalToolUseCount": 4,
+        "totalTokens": 900,
+        "usage": {**USAGE, "service_tier": "standard"},
+    }
+    bg = [{"id": "1", "status": "running"}, {"id": "2", "status": "completed"}]
+    return [
+        (
+            lead("PreToolUse", tool_name="Agent", tool_use_id="d1", tool_input=HELPER),
+            "dispatch",
+            {"tuid": "d1", "name": "helper", "desc": "look around", "bg": True},
+        ),
+        (
+            lead(
+                "PostToolUse",
+                tool_name="Agent",
+                tool_use_id="d1",
+                tool_input=HELPER,
+                tool_response=spawned,
+            ),
+            "launch",
+            {
+                "tuid": "d1",
+                "child": "ahelper-1",
+                "mode": "teammate",
+                "name": "helper",
+                "team": "t",
+                "child_type": "general-purpose",
+                "model": "m1",
+            },
+        ),
+        (
+            lead(
+                "PostToolUse",
+                tool_name="Agent",
+                tool_use_id="d2",
+                tool_input={"name": "bg"},
+                tool_response=launched,
+            ),
+            "launch",
+            {"tuid": "d2", "child": "a2", "mode": "background", "name": "bg"},
+        ),
+        (
+            lead(
+                "PostToolUse",
+                tool_name="Agent",
+                tool_use_id="d3",
+                tool_input={"name": "fg"},
+                tool_response=done,
+            ),
+            "return",
+            {
+                "tuid": "d3",
+                "child": "a3",
+                "name": "fg",
+                "model": "m1",
+                "ms": 1200,
+                "tools": 4,
+                "final_tokens": 900,
+                "usage": USAGE,
+            },
+        ),
+        (
+            lead(
+                "PostToolUseFailure",
+                tool_name="Agent",
+                tool_use_id="d4",
+                tool_input={"name": "bad"},
+                error="boom\nat line 2",
+                is_interrupt=False,
+                duration_ms=7,
+            ),
+            "failed",
+            {"tuid": "d4", "name": "bad", "error": "boom", "interrupt": False, "ms": 7},
+        ),
+        (
+            lead("SubagentStart", **A1),
+            "start",
+            {"agent": "a1", "atype": A1["agent_type"]},
+        ),
+        (lead("SubagentStop", **A1), "stop", {"agent": "a1"}),
+        (
+            lead("TeammateIdle", agent_id="a1", teammate_name="helper", team_name="t"),
+            "idle",
+            {"agent": "a1", "teammate": "helper", "team": "t"},
+        ),
+        (
+            lead(
+                "PreToolUse",
+                tool_name="Bash",
+                tool_use_id="b1",
+                tool_input={"command": "ls", "description": "list"},
+            ),
+            "pre",
+            {"tool": "Bash", "tuid": "b1", "desc": "list"},
+        ),
+        (
+            lead(
+                "PreToolUse",
+                tool_name="SendMessage",
+                tool_use_id="m1",
+                tool_input={"to": "helper", "message": "hi"},
+            ),
+            "pre",
+            {"tool": "SendMessage", "tuid": "m1", "to": "helper"},
+        ),
+        (
+            lead(
+                "PreToolUse",
+                tool_name="mcp__notes__create_note",
+                tool_use_id="n1",
+                tool_input={},
+            ),
+            "pre",
+            {"tool": "mcp__notes__create_note", "tuid": "n1"},
+        ),
+        (
+            lead("PostToolUse", tool_name="Read", tool_use_id="r1", duration_ms=3),
+            "post",
+            {"tool": "Read", "tuid": "r1", "ms": 3},
+        ),
+        (
+            lead("UserPromptSubmit", prompt="<agent-message from='x'>done"),
+            "prompt",
+            {"from": "return"},
+        ),
+        (lead("UserPromptSubmit", prompt="go on"), "prompt", {"from": "user"}),
+        (lead("Stop", background_tasks=bg), "turn-end", {"bg_tasks": 1}),
+        (lead("StopFailure", error="rate_limit"), "api-error", {"error": "rate_limit"}),
+        (
+            lead("Notification", notification_type="idle_prompt", message="m"),
+            "notify",
+            {"type": "idle_prompt"},
+        ),
+        (lead("PostCompact", trigger="auto"), "compact", {"trigger": "auto"}),
+        (lead("SessionStart", source="compact"), "session", {"source": "compact"}),
+        (lead("SessionEnd", reason="clear"), "session-end", {"reason": "clear"}),
+    ]
+
+
+class Folded(support.Route):
+    """The recorder through `route_state.py --hook` on s1's route, the switch on.
+
+    The route's phase 1 has a budget the user answered, so `exec-p1-01-a` is allowed and
+    `exec-p2-01-a` is held as another phase's (F74).
+    """
+
+    @override
+    @classmethod
+    def setUpClass(cls) -> None:
+        """Record phase 1's budget, answered."""
+        super().setUpClass()
+        at = support.ts(-60)
+        budget = {
+            "label": "w1",
+            "estimate": 10,
+            "phase": "1",
+            "at": at,
+            "session": "s1",
+            "answered": at,
+        }
+        _ = cls.write(cls.P / "route-budget.json", json.dumps({"budgets": [budget]}))
+
+    @property
+    def events_dir(self) -> Path:
+        """The sandbox's `~/.claude/dsp-routes/events`."""
+        return self.HOME / ".claude/dsp-routes/events"
+
+    @property
+    def log(self) -> Path:
+        """Session s1's log."""
+        return self.events_dir / "s1.jsonl"
+
+    @override
+    def setUp(self) -> None:
+        """Start each case with no log."""
+        self.rm(self.events_dir)
+
+    def run_hook(
+        self, payload: Mapping[str, object], *, on: bool = True, timeout: float = 30
+    ) -> support.Result:
+        """`route_state.py --hook` on payload, the switch on (or unset)."""
+        return self.py(
+            support.RS,
+            "--hook",
+            input=json.dumps(payload) + "\n",
+            env=MON if on else {},
+            timeout=timeout,
+        )
+
+    def held_calls(self) -> list[tuple[str, dict[str, object], str]]:
+        """The three held calls: a name, the payload and the hook's answer."""
+        gate_log = {"file_path": f"{self.P}/lanes/x-gate.log", "content": "exit=0\n"}
+        return [
+            (
+                "gate-log write",
+                lead(
+                    "PreToolUse",
+                    tool_name="Write",
+                    tool_use_id="w1",
+                    tool_input=gate_log,
+                ),
+                "deny:a gate log holds only what the gate printed",
+            ),
+            (
+                "gh pr merge",
+                lead(
+                    "PreToolUse",
+                    tool_name="Bash",
+                    tool_use_id="g1",
+                    tool_input={"command": "gh pr merge 1"},
+                ),
+                "ask:F81",
+            ),
+            (
+                "another phase's exec- dispatch",
+                lead(
+                    "PreToolUse",
+                    tool_name="Agent",
+                    tool_use_id="e2",
+                    tool_input={"name": "exec-p2-01-a"},
+                ),
+                "deny:names another phase",
+            ),
+        ]
+
+    @contextlib.contextmanager
+    def blocked(self, kind: str) -> Generator[None, None, None]:
+        """The log blocked for the block: events a file, the log a FIFO, or held."""
+        if kind == "file":
+            _ = self.write(self.events_dir, "")
+        elif kind == "fifo":
+            self.events_dir.mkdir(parents=True)
+            os.mkfifo(self.log)
+        try:
+            with contextlib.ExitStack() as stack:
+                if kind == "lock":
+                    stack.enter_context(held(self.env, self.log, self.T / "ready"))
+                yield
+        finally:
+            self.rm(self.events_dir)
+
+    def test_decision_output_unchanged(self) -> None:
+        """A deny or ask prints the same, the log raising, blocked or held."""
+        calls = self.held_calls()
+        diffs: list[tuple[str, str, str]] = []
+        for name, payload, want in calls:
+            off = self.run_hook(payload, on=False, timeout=10)
+            self.ok(
+                f"{name}, switch off: {want}",
+                support.hook_matches(want, off.out),
+                off.out,
+            )
+            for kind in ("file", "fifo", "lock"):
+                with self.blocked(kind):
+                    on = self.run_hook(payload, timeout=10)
+                if (on.code, on.out) != (off.code, off.out):
+                    diffs.append((name, kind, on.out))
+        self.ok(
+            f"{len(calls) * 3} blocked runs print as the switched-off ones",
+            not diffs,
+            diffs,
+        )
+
+    def test_hang_ceiling(self) -> None:
+        """A held lock adds at most HANG_S to a routed hook call."""
+        payload = lead("PostToolUse", tool_name="Read", tool_use_id="r1")
+        times: list[float] = []
+        for _ in range(5):
+            self.unthrottle()
+            start = time.monotonic()
+            _ = self.run_hook(payload)
+            times.append(time.monotonic() - start)
+        median = statistics.median(times)
+        with held(self.env, self.log, self.T / "ready"):
+            self.unthrottle()
+            start = time.monotonic()
+            _ = self.run_hook(payload)
+            took = time.monotonic() - start
+        self.ok(
+            f"held {took:.3f} s, unheld median {median:.3f} s",
+            took - median <= HANG_S,
+            times,
+        )
+
+    def test_decisions_recorded(self) -> None:
+        """A held call's line has its decision and hold; an allowed one has neither."""
+        allowed = [
+            lead(
+                "PreToolUse",
+                tool_name="Agent",
+                tool_use_id="e1",
+                tool_input={"name": "exec-p1-01-a"},
+            ),
+            lead(
+                "PreToolUse",
+                tool_name="Agent",
+                tool_use_id="p1",
+                tool_input={"name": "plan-p1-01"},
+            ),
+        ]
+        outs = [self.run_hook(p).out for _, p, _ in self.held_calls()]
+        outs += [self.run_hook(p).out for p in allowed]
+        by = {e.get("tuid"): e for e in self.events()}
+        want = {
+            "w1": ("pre", "deny", "F97"),
+            "g1": ("pre", "ask", "F81"),
+            "e2": ("dispatch", "deny", "F74"),
+        }
+        got = {
+            t: (
+                by.get(t, {}).get("ev"),
+                by.get(t, {}).get("decision"),
+                by.get(t, {}).get("hold"),
+            )
+            for t in want
+        }
+        self.ok(
+            f"{len(want)} held calls recorded with their holds",
+            got == want,
+            (got, outs),
+        )
+        free = [by.get(t) for t in ("e1", "p1")]
+        self.ok(
+            f"{len(free)} allowed dispatches carry no decision",
+            all(
+                e is not None
+                and e.get("ev") == "dispatch"
+                and "decision" not in e
+                and "hold" not in e
+                for e in free
+            ),
+            (free, outs),
+        )
+
+    def test_every_kind(self) -> None:
+        """Each kind's line through the hook: its fields, the common ones, the modes."""
+        table = kinds()
+        for payload, _, _ in table:
+            self.unthrottle()
+            _ = self.run_hook(payload)
+        lines = self.events()
+        entry = self.entry()
+        self.ok(
+            f"{len(lines)} lines for {len(table)} events",
+            len(lines) == len(table),
+            lines,
+        )
+        wrong: list[dict[str, object]] = []
+        for (payload, kind, fields), line in zip(table, lines, strict=False):
+            common = (
+                line.get("v") == 1
+                and line.get("run") == entry.get("run")
+                and line.get("planning_dir") == entry["planning_dir"]
+                and line.get("marker") == entry["marker"]
+                and ("agent" in line) == ("agent_id" in payload)
+            )
+            if (
+                not common
+                or line.get("ev") != kind
+                or any(line.get(k) != v for k, v in fields.items())
+            ):
+                wrong.append(line)
+        self.ok(
+            f"{len(lines) - len(wrong)} of {len(lines)} lines as their kind",
+            not wrong,
+            wrong,
+        )
+        modes = (
+            stat.S_IMODE(self.events_dir.stat().st_mode),
+            stat.S_IMODE(self.log.stat().st_mode),
+        )
+        self.ok(
+            "events 0700, the log 0600",
+            modes == (0o700, 0o600),
+            [oct(m) for m in modes],
+        )
+
+        stamps = self.stamps()
+        outs = [
+            self.run_hook(lead(h)).out for h in ("Stop", "StopFailure", "SessionEnd")
+        ]
+        self.ok(
+            f"lead Stop, StopFailure, SessionEnd: silent, {len(stamps)} stamps kept",
+            outs == ["", "", ""] and self.stamps() == stamps and stamps,
+            (outs, stamps, self.stamps()),
+        )
+
+    def stamps(self) -> set[tuple[str, int]]:
+        """The hook's `.last` and `.checked` stamps of s1, by name and mtime."""
+        reg = self.HOME / ".claude/dsp-routes"
+        found = [*self.MK(self.R).parent.glob("*.s1.last"), *reg.glob("s1.*.checked")]
+        return {(p.name, p.stat().st_mtime_ns) for p in found}
+
+    def test_nothing_private(self) -> None:
+        """No prompt, command, message, output or transcript path reaches the log."""
+        s = SENTINEL
+        payloads = [
+            lead("UserPromptSubmit", prompt=s),
+            lead(
+                "PreToolUse",
+                tool_name="Bash",
+                tool_use_id="b1",
+                tool_input={"command": f"echo {s}"},
+            ),
+            lead(
+                "PreToolUse",
+                tool_name="Agent",
+                tool_use_id="d1",
+                tool_input={"name": "helper", "prompt": s},
+            ),
+            lead(
+                "PreToolUse",
+                tool_name="SendMessage",
+                tool_use_id="m1",
+                tool_input={"to": "helper", "message": s},
+            ),
+            lead(
+                "PostToolUse",
+                tool_name="Read",
+                tool_use_id="r1",
+                tool_response={"content": s},
+            ),
+            lead("Stop", last_assistant_message=s),
+            lead("PostCompact", trigger="auto", compact_summary=s),
+        ]
+        for p in payloads:
+            self.unthrottle()
+            _ = self.run_hook({**p, "transcript_path": s})
+        data = self.log.read_bytes()
+        hits = data.count(s.encode())
+        self.ok(
+            f"{len(data.splitlines())} lines, {hits} sentinel hits",
+            len(data.splitlines()) == len(payloads) and hits == 0,
+            data[:2000],
+        )
+
+    def test_parallel_hooks(self) -> None:
+        """8 parallel streams of 25 hook calls: every one recorded, none torn."""
+        sent = {f"t{i}-{k}" for i in range(8) for k in range(25)}
+
+        def stream(i: int) -> None:
+            for k in range(25):
+                _ = self.run_hook(lead("Notification", notification_type=f"t{i}-{k}"))
+
+        with concurrent.futures.ThreadPoolExecutor(8) as pool:
+            for f in [pool.submit(stream, i) for i in range(8)]:
+                f.result()
+        written = torn = 0
+        types: set[object] = set()
+        for text in self.log.read_text().splitlines():
+            try:
+                types.add(cast("dict[str, object]", json.loads(text)).get("type"))
+                written += 1
+            except ValueError:
+                torn += 1
+        lost = len(sent) - len(types & sent)
+        self.ok(
+            f"written {written}, torn {torn}, lost {lost}",
+            types == sent and torn == 0 and written == len(sent),
+        )
+
+    def scan(self) -> dict[Path, int]:
+        """Each path under HOME and P, by its mtime."""
+        found: dict[Path, int] = {}
+        for root in (self.HOME, self.P):
+            for p in (root, *root.rglob("*")):
+                found[p] = p.lstat().st_mtime_ns
+        return found
+
+    def test_retention(self) -> None:
+        """SubagentStart sweeps old logs once a day; nothing else deletes."""
+        d = self.events_dir
+        old, young = time.time() - 15 * 86400, time.time() - 13 * 86400
+
+        def plant(name: str, t: float) -> None:
+            _ = self.write(d / name, "{}\n")
+            os.utime(d / name, (t, t))
+
+        for name, t in (("old.jsonl", old), ("old.hb", old), ("young.jsonl", young)):
+            plant(name, t)
+        start = lead("SubagentStart", **A1)
+        changed: set[Path] = set()
+        scanned = 0
+
+        def started() -> None:
+            nonlocal scanned
+            before = self.scan()
+            _ = self.run_hook(start)
+            after = self.scan()
+            scanned += len(after)
+            changed.update(
+                p for p in before.keys() | after.keys() if before.get(p) != after.get(p)
+            )
+
+        started()
+        left = sorted(p.name for p in d.iterdir())
+        self.ok(
+            "a SubagentStart removes the two old files",
+            left == [".swept", "s1.jsonl", "young.jsonl"],
+            left,
+        )
+        plant("late.jsonl", old)
+        started()
+        self.ok(
+            "a second within a day keeps a new old file", (d / "late.jsonl").exists()
+        )
+        self.touch(d / ".swept", -25 * 3600)
+        started()
+        self.ok("a day later it is swept", not (d / "late.jsonl").exists())
+        outside = sorted(str(p) for p in changed if p != d and d not in p.parents)
+        self.ok(
+            f"scanned {scanned} paths: {len(changed)} changed, all under events/",
+            changed and not outside,
+            outside,
+        )
+
+        plant("late.jsonl", old)
+        self.touch(d / ".swept", -25 * 3600)
+        others = [
+            lead(
+                "PreToolUse",
+                tool_name="Bash",
+                tool_use_id="b1",
+                tool_input={"command": "ls"},
+            ),
+            lead("PostToolUse", tool_name="Read", tool_use_id="r1"),
+            lead("Stop"),
+            lead("SessionEnd", reason="clear"),
+        ]
+        for p in others:
+            _ = self.run_hook(p)
+        self.ok(
+            f"{len(others)} other events delete nothing",
+            (d / "late.jsonl").exists(),
         )
