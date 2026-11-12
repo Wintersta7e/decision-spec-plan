@@ -10,7 +10,7 @@
 [![Python 3](https://img.shields.io/badge/python-3.11%2B%20%C2%B7%20stdlib%20only-3776ab.svg?logo=python&logoColor=white)](skills/decision-spec-plan/scripts)
 [![Platform](https://img.shields.io/badge/platform-Linux%20%C2%B7%20WSL2-lightgrey.svg)](#requirements)
 
-[What it checks](#what-it-checks) · [Is it worth it](#is-it-worth-it) · [How a route runs](#how-a-route-runs) · [Hooks](#hooks) · [Cost](#cost) · [Install](#install) · [Development](#development)
+[What it checks](#what-it-checks) · [Is it worth it](#is-it-worth-it) · [How a route runs](#how-a-route-runs) · [Hooks](#hooks) · [Monitor](#monitor) · [Cost](#cost) · [Install](#install) · [Development](#development)
 
 </div>
 
@@ -192,6 +192,33 @@ tracking is on. Turn it on with one line in your user settings file, `~/.claude/
   every 60 s, as a heartbeat, and the other events are still recorded.
 - Removing `~/.claude/dsp-routes/events/` is an optional, destructive cleanup that deletes the
   recorded history. It does not turn tracking off: save `"0"` for that.
+
+## Monitor
+
+`dsp-monitor` serves one page that shows every route on this machine, live: each route's stage and
+lanes, the agents its sessions run, what is waiting on you, its ended runs, and the budget recorded
+for it — the label you set, never spend. Agents and waits come from
+[Monitor tracking](#monitor-tracking-optional-off-by-default); without it the page shows routes,
+stages and lanes. It starts only by hand and prints the page's URL; Ctrl-C stops it. Set the
+command up from [INSTALL.md](INSTALL.md) (a shell function and an alias for your rc file).
+
+It writes nothing anywhere: no lock, PID, cache or log file. Its git reads take no lock, so a
+session's commits never wait on it.
+
+Who can read it:
+
+- It listens on `127.0.0.1` only, and it has no authentication: every local user's process on the
+  loopback can connect and read every route's state — home-abbreviated planning-dir and repository
+  paths, session and run ids, agent, model, tool, lane, plan and gate-log names, and the budget
+  label.
+- On WSL2 every distro of the VM shares that loopback, and every Windows process reaches it through
+  `localhost:<port>`. WSL's forwarder listens on Windows' loopback only, so another machine on the
+  LAN does not reach it.
+- It never serves event text beyond names: no task description, working directory, message
+  recipient, error, prompt or transcript.
+- It answers only a request whose `Host` is `127.0.0.1:<port>` or `localhost:<port>`, so a page on
+  another site cannot read it through a rebound DNS name. Another origin's page can send it a
+  request but cannot read the answer, and a request changes nothing.
 
 ## Cost
 

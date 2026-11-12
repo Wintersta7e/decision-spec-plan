@@ -290,6 +290,99 @@ class PluginFiles(support.Sandbox):
             fails,
         )
 
+    def test_install_monitor_command(self) -> None:
+        """INSTALL.md's dsp-monitor function finds the enabled plugin and runs it."""
+        install = (PLUGIN.parents[1] / "INSTALL.md").read_text(encoding="utf-8")
+        lines = install.split("\n")
+        start = next(
+            (i for i, ln in enumerate(lines) if ln == "    dsp_monitor() {"), 0
+        )
+        stop = next(
+            (i for i, ln in enumerate(lines) if ln.startswith("Requires Py")), 0
+        )
+        end = next(
+            (i for i in range(start, stop) if lines[i] and lines[i][:4] != "    "), stop
+        )
+        block = "\n".join(ln[4:] for ln in lines[start:end]).strip("\n")
+        paragraph = "\n".join(lines[start:stop])
+        self.ok(
+            "INSTALL.md defines dsp_monitor() before its Requires line",
+            0 < start < stop and block.startswith("dsp_monitor() {"),
+            block,
+        )
+        for said in (
+            "claude plugin list --json",
+            "scripts/dsp_monitor.py",
+            "alias dsp-monitor=dsp_monitor",
+        ):
+            self.ok(f"the POSIX block says {said!r}", said in block, block)
+        self.ok(
+            "INSTALL.md has the PowerShell form",
+            "function dsp-monitor {" in paragraph,
+        )
+        found = [p for p in ("/home/", "/mnt/", "/Users/", "C:\\") if p in paragraph]
+        self.ok(
+            f"the Monitor blocks hold {len(found)} absolute paths", not found, found
+        )
+
+        bin_ = self.T / "bin"
+        env = {"PATH": f"{bin_}:{self.env['PATH']}"}
+
+        def stub(*, enabled: bool) -> None:
+            plugins = [
+                {"id": "other@skills-dir", "enabled": True, "installPath": "nowhere"},
+                {
+                    "id": "decision-spec-plan@skills-dir",
+                    "version": "0",
+                    "scope": "user",
+                    "enabled": enabled,
+                    "installPath": str(PLUGIN),
+                },
+            ]
+            text = f"#!/bin/sh\ncat <<'EOF'\n{json.dumps(plugins)}\nEOF\n"
+            self.chmod_x(self.write(bin_ / "claude", text))
+
+        doc = ast.get_docstring(ast.parse((SCRIPTS / "dsp_monitor.py").read_text()))
+        last = (doc or "").strip().splitlines()[-1].strip()
+        stub(enabled=True)
+        # dash expands an alias from the next line on; non-interactive bash never does
+        for shell, call in (("sh", "dsp-monitor"), ("bash", "dsp_monitor")):
+            r = self.run_([shell, "-c", f"{block}\n{call} --help"], env=env, merge=True)
+            self.ok(
+                f"{shell}: {call} --help prints dsp_monitor.py's --help",
+                r.code == 0 and last in r.out,
+                r.out,
+            )
+        stub(enabled=False)
+        r = self.run_(["sh", "-c", f"{block}\ndsp-monitor --help"], env=env, merge=True)
+        self.ok(
+            f"no enabled plugin: {len(r.out.splitlines())} line, exit {r.code}",
+            r.code == 1 and len(r.out.splitlines()) == 1,
+            r.out,
+        )
+
+    def test_readme_states_the_monitor_boundary(self) -> None:
+        """README's Monitor section says who can reach the monitor and what it shows."""
+        readme = (PLUGIN.parents[1] / "README.md").read_text(encoding="utf-8")
+        head = re.search(r"^## Monitor$", readme, re.MULTILINE)
+        section = ""
+        if head:
+            rest = readme[head.end() :]
+            nxt = re.search(r"^## ", rest, re.MULTILINE)
+            section = rest[: nxt.start()] if nxt else rest
+        self.ok("README has a ## Monitor section", section.strip())
+        text = " ".join(section.split())
+        for said in (
+            "`127.0.0.1`",
+            "every local user's process on the loopback can connect",
+            "On WSL2",
+            "every Windows process reaches it through `localhost",
+            "budget recorded",
+        ):
+            self.ok(f"README's Monitor section says {said!r}", said in text)
+        nav = next((ln for ln in readme.splitlines() if "[Hooks](#hooks)" in ln), "")
+        self.ok("README's nav links [Monitor](#monitor)", "[Monitor](#monitor)" in nav)
+
     def test_skill_fits_a_compaction(self) -> None:
         """SKILL.md stays under the size a compaction re-attaches."""
         # a compaction re-attaches SKILL.md cut at 20,000 characters (failure-modes F61)

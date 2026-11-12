@@ -59,6 +59,35 @@ A headless run has no user to answer the budget hold, so the hold lets dispatche
 spend with `claude -p --max-budget-usd <USD>` (it counts subagents; past the cap no new agent
 starts and running background agents are stopped — a client-side estimate, and it can overshoot).
 
+The monitor (README, Monitor) is one page that shows every route on this machine. It starts only
+by hand: `dsp-monitor` prints the page's URL, Ctrl-C stops it, and `dsp-monitor --help` lists its
+options. The command finds the enabled plugin through `claude plugin list --json` at every call, so
+it follows an upgrade or a move between the two installs. Put this in your shell's rc file
+(`~/.bashrc`, `~/.zshrc`): an alias works only from the line after the one that defines it and
+never in a script, where you call `dsp_monitor` instead.
+
+    dsp_monitor() {
+        root=$(claude plugin list --json | python3 -c 'import json, sys; ps = [p["installPath"] for p in json.load(sys.stdin) if p["id"].startswith("decision-spec-plan@") and p["enabled"]]; print(ps[0] if ps else "")')
+        if [ -z "$root" ]; then
+            echo "dsp-monitor: no enabled decision-spec-plan plugin in claude plugin list" >&2
+            return 1
+        fi
+        python3 "$root/scripts/dsp_monitor.py" "$@"
+    }
+    alias dsp-monitor=dsp_monitor
+
+PowerShell, in your `$PROFILE` (native Windows is untested, README, Requirements):
+
+    function dsp-monitor {
+        $root = claude plugin list --json | python3 -c 'import json, sys; ps = [p[''installPath''] for p in json.load(sys.stdin) if p[''id''].startswith(''decision-spec-plan@'') and p[''enabled'']]; print(ps[0] if ps else str())'
+        if (-not $root) {
+            [Console]::Error.WriteLine("dsp-monitor: no enabled decision-spec-plan plugin in claude plugin list")
+            $global:LASTEXITCODE = 1
+            return
+        }
+        python3 "$root/scripts/dsp_monitor.py" @args
+    }
+
 Requires Python 3.11+, bash and git (jq only for the one-time migration above). `dsp-deep`'s memory cap uses `systemd-run --user`; without it
 the agent falls back to `timeout` + `setsid`.
 
