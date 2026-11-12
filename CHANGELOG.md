@@ -1,5 +1,14 @@
 # Changelog
 
+## [1.2.0](https://github.com/Wintersta7e/decision-spec-plan/compare/v1.1.3...v1.2.0) (2026-11-12)
+
+
+### Features
+
+* **decision-check:** require a review's Coverage of each changed file ([634ac46](https://github.com/Wintersta7e/decision-spec-plan/commit/634ac46ff12900c8246f8e0501d1319bf9584603))
+* **route-state:** hold a review comment while its Coverage fails ([5d78771](https://github.com/Wintersta7e/decision-spec-plan/commit/5d787711376ade05c1e88d25d0c18ce8f7ed0965))
+* **route-state:** hold a review submitted with no review on record ([c7ccc7e](https://github.com/Wintersta7e/decision-spec-plan/commit/c7ccc7e5322627a427f5eb59eb44855aa2ab26fd))
+
 ## [1.1.3](https://github.com/Wintersta7e/decision-spec-plan/compare/v1.1.2...v1.1.3) (2026-11-11)
 
 
