@@ -343,7 +343,7 @@ class GateLogWrites(support.Route):
     def _linear_time(self) -> None:
         """Long lines are read in linear time; an agent never acts on the host."""
         # a line of many calls is read in linear time
-        start = int(time.monotonic())
+        start = time.monotonic()
         try:
             out = self.py(
                 RS,
@@ -355,14 +355,14 @@ class GateLogWrites(support.Route):
             ).out
         except subprocess.TimeoutExpired:
             out = "timed out after 20 s"
-        took = int(time.monotonic()) - start
+        took = time.monotonic() - start
         self.ok(
             f"20,000 calls on one interpreter line are read in {took} s",
             took < CALLS_SECONDS,
             out,
         )
         for long in ("gh pr x " * 1000, "git x push y " * 1000):
-            start = int(time.monotonic())
+            start = time.monotonic()
             try:
                 r = self.py(
                     RS,
@@ -374,7 +374,7 @@ class GateLogWrites(support.Route):
                 code, out = r.code, r.out
             except subprocess.TimeoutExpired:
                 code, out = 124, "timed out after 20 s"
-            took = int(time.monotonic()) - start
+            took = time.monotonic() - start
             self.ok(
                 f"a {len(long)}-byte command line is read in {took} s",
                 code == 0 and out == "" and took < LINE_SECONDS,
