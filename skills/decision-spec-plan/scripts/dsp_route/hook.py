@@ -19,7 +19,6 @@ from typing import cast
 from .common import (
     EXEC,
     REGISTRY,
-    RETURNS,
     SCRIPT,
     SKILL,
     SKILL_DIR,
@@ -29,6 +28,7 @@ from .common import (
     checked,
     deny,
     emit,
+    is_return,
     load_json,
     parse_json,
     route_args,
@@ -195,10 +195,8 @@ def _quiet(name: str, event: Mapping[str, object], session: str) -> bool:
     """
     if name == "SessionStart" and event.get("source") not in ("compact", "resume"):
         return True
-    if name == "UserPromptSubmit":
-        head = str(event.get("prompt") or "").strip()[:500]
-        if not any(t in head for t in RETURNS):
-            return True
+    if name == "UserPromptSubmit" and not is_return(event.get("prompt")):
+        return True
     if name == "PostToolUse":
         return not _claim(session)
     return False

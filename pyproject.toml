@@ -78,7 +78,7 @@ exhaustive = true
 layers = [
   "hook",
   "activate | agent | budget | gate_log | holds | inject | jobs | lead_edits | outward",
-  "commands | report | switch | transcript",
+  "commands | record | report | switch | transcript",
   "common",
 ]
 
@@ -97,6 +97,6 @@ known_first_party = [
 banned-module-level-imports = [
   "dsp_route.activate", "dsp_route.agent", "dsp_route.budget", "dsp_route.gate_log",
   "dsp_route.holds", "dsp_route.hook", "dsp_route.inject", "dsp_route.jobs",
-  "dsp_route.lead_edits", "dsp_route.outward", "dsp_route.report", "dsp_route.switch",
-  "decision_check", "plan_lint", "push_guard", "usage_report",
+  "dsp_route.lead_edits", "dsp_route.outward", "dsp_route.record", "dsp_route.report",
+  "dsp_route.switch", "decision_check", "plan_lint", "push_guard", "usage_report",
 ]

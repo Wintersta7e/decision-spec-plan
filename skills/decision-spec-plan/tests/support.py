@@ -508,6 +508,22 @@ class Sandbox(unittest.TestCase):
             else:
                 path.unlink(missing_ok=True)
 
+    @classmethod
+    def events(cls, session: str = "s1") -> list[dict[str, object]]:
+        """The lines the recorder wrote to session's log, each parsed.
+
+        An unparseable line fails the test: the recorder writes whole lines only.
+        """
+        path = cls.HOME / ".claude/dsp-routes/events" / f"{session}.jsonl"
+        out: list[dict[str, object]] = []
+        for n, line in enumerate(path.read_text().splitlines(), 1):
+            try:
+                out.append(cast("dict[str, object]", json.loads(line)))
+            except ValueError as e:
+                msg = f"{path.name}:{n} is no JSON line: {line[:200]}"
+                raise AssertionError(msg) from e
+        return out
+
     # --- checks
 
     def ok(self, msg: str, cond: object, detail: object = "") -> None:

@@ -159,6 +159,11 @@ def save_budget(
     _ = path.write_text(json.dumps({"budgets": found}, indent=1) + "\n")
 
 
+def is_return(prompt: object) -> bool:
+    """Return whether a prompt is an agent's return: its head holds one of RETURNS."""
+    return any(t in str(prompt or "").strip()[:500] for t in RETURNS)
+
+
 def ago(seconds: float) -> str:
     """Return a duration as its largest whole unit: `3d`, `2h`, `5m`, `40s`."""
     for unit, size in (("d", 86400), ("h", 3600), ("m", 60)):
