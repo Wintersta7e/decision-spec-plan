@@ -15,6 +15,7 @@ from collections.abc import Iterable, Mapping
 from typing import TypedDict
 
 from .common import (
+    PLAN_ID,
     RouteArgs,
     StrPath,
     ago,
@@ -62,10 +63,245 @@ BASE = re.compile(
     r"^>?\s*\*\*(Base|Assumes)\*\*:\s*`([^`]+)`\s+at\s+`([0-9a-f]{7,40})`", re.MULTILINE
 )
 
+
 # (log, sha, dirty, exit code or None, CI harness or None) of a gate log
 GateLog = tuple[pathlib.Path, str, str, str | None, str | None]
 # (path, HEAD) of a branch's worktree
 Worktree = tuple[str | None, str | None]
+
+# The report's data object (`collect`); bumped when a key changes meaning or type.
+VERSION = 1
+# the enums of its derived facts, in display order; other modules import them
+LANE_STATES = ("queued", "running", "gating", "ready", "red", "merged")
+LANE_BASES = ("planned", "no-sha", "unchecked", "unknown", "open", "merged")
+GATE_STATES = ("green", "red", "dirty", "no-exit", "none")
+FLAG_KINDS = (
+    "main-missing",
+    "handoff-large",
+    "file",
+    "base-drift",
+    "no-manifest",
+    "manifest-invalid",
+    "no-final-sha",
+    "sha-unknown",
+    "lane-moved-past-merge",
+    "checkpoint-long",
+    "rulings-large",
+    "gate-no-exit",
+    "gate-red",
+)
+# an open lane's state by its gate
+BY_GATE = {
+    "red": "red",
+    "no-exit": "gating",
+    "green": "ready",
+    "dirty": "running",
+    "none": "running",
+}
+# the decision round's files the `decisions` line says are there or not
+FIXED = ("00-dispatch", "00-framing-review", "00-seams", "00-arbiter", "spec-returns")
+
+
+class FileFact(TypedDict):
+    """One artefact read: its path as the text prints it, size, age and last line.
+
+    `kind` is decision, spec, reconcile, plan, checkpoint or wave; `problems` are
+    already filtered by `fresh`; `mtime` is the stat that gave `age_s`.
+    """
+
+    path: str
+    kind: str
+    bytes: int
+    age_s: float
+    mtime: float
+    last_line: str
+    problems: list[str]
+
+
+class HandoffFact(TypedDict):
+    """A handoff that exists, and its size."""
+
+    name: str
+    bytes: int
+
+
+class DecisionFacts(TypedDict):
+    """The phase's decision index and D files: {id: path}, ids as strings."""
+
+    index: bool
+    index_ids: list[str]
+    files: dict[str, str]
+    pending: list[str]
+    markers: int
+    headers: int
+    fixed: dict[str, bool]
+
+
+class SpecFacts(TypedDict):
+    """The --sections range (last None: open-ended) and the sections present."""
+
+    first: int
+    last: int | None
+    sections: list[int]
+
+
+class ManifestFact(TypedDict):
+    """A plan's manifest file and whether it parses: ok, missing or invalid."""
+
+    name: str
+    state: str
+
+
+class PlanFacts(TypedDict):
+    """The plan index's ids, the plan files by id, and their manifests."""
+
+    index_ids: list[str]
+    files: dict[str, str]
+    pending: list[str]
+    manifests: dict[str, ManifestFact]
+
+
+class RulingsFact(TypedDict):
+    """A lane's rulings file and its size."""
+
+    name: str
+    bytes: int
+
+
+class CheckpointFact(TypedDict):
+    """A lane checkpoint: id (the stem less `-checkpoint`), plan id, SHA as written."""
+
+    id: str
+    plan: str
+    path: str
+    sha: str | None
+    final_sha_line: bool
+    lines: int
+    rulings: RulingsFact | None
+
+
+class GateLogFact(TypedDict):
+    """What push_guard.py reads of a gate log; dirty and exit None when absent."""
+
+    log: str
+    sha: str
+    dirty: int | None
+    exit: int | None
+    harness: str | None
+
+
+class RecordFact(TypedDict):
+    """The integrator's record of a lane it rebased or squashed."""
+
+    lane_sha: str
+    main_sha: str
+    file: str
+
+
+class WorktreeFact(TypedDict):
+    """A lane branch's worktree: its path and HEAD."""
+
+    path: str | None
+    head: str | None
+
+
+class LaneCheck(TypedDict):
+    """An open lane's commits since main, their trailers, its uncommitted lines.
+
+    uncommitted is None when its worktree is not at the lane's commit.
+    """
+
+    commits: int | None
+    trailers: dict[str, int]
+    uncommitted: int | None
+
+
+class GitLane(TypedDict):
+    """What git says of a lane's checkpoint SHA (`sha`): commit None, not in the repo.
+
+    branch_ahead is None without a worktree or when it sits at the commit.
+    """
+
+    sha: str
+    commit: str | None
+    merged_how: str | None
+    merged_as: str | None
+    record: str | None
+    worktree: WorktreeFact | None
+    branch_ahead: int | None
+    check: LaneCheck | None
+
+
+class GitFacts(TypedDict):
+    """The git half of the object; main_missing is the --main given that is not."""
+
+    as_of: float
+    repo: str
+    main: str
+    main_missing: str | None
+    main_sha: str | None
+    lane_worktrees: int
+    drift: list[str]
+    pushed: bool | None
+    lanes: dict[str, GitLane]
+
+
+class Lane(TypedDict):
+    """A lane as derived: its state, basis and gate (LANE_STATES, ...)."""
+
+    id: str
+    plan: str
+    state: str
+    basis: str
+    gate: str | None
+    gate_exit: int | None
+    gate_dirty: int | None
+    git: bool
+
+
+class Flag(TypedDict):
+    """A flag: its kind, subject, and its line as the text prints it."""
+
+    kind: str
+    subject: str
+    line: str
+
+
+class Stage(TypedDict):
+    """A route stage and its state."""
+
+    name: str
+    state: str
+
+
+class State(TypedDict):
+    """The route report as data: file facts, git facts, and what derive() computes.
+
+    JSON-native: string keys, lists, and every list in production order.
+    """
+
+    version: int
+    planning_dir: str
+    phase: str
+    generated_at: float
+    rung: str | None
+    extra: list[str]
+    handoffs: list[HandoffFact]
+    files: list[FileFact]
+    decisions: DecisionFacts
+    harvest_files: list[str]
+    spec: SpecFacts | None
+    reconcile: list[str]
+    plans: PlanFacts
+    lane_files: bool
+    checkpoints: list[CheckpointFact]
+    gate_logs: list[GateLogFact]
+    records: dict[str, RecordFact]
+    integration_files: list[str]
+    git: GitFacts | None
+    lanes: list[Lane]
+    flags: list[Flag]
+    stages: list[Stage]
 
 
 def merged_path(route: pathlib.Path | None) -> pathlib.Path | None:
@@ -136,11 +372,12 @@ def write_merged(
         tmp.unlink(missing_ok=True)
 
 
-def describe(path: pathlib.Path) -> tuple[list[str], int, float, str]:
-    """Return (problems, size, age, last line) of one artefact."""
+def describe(path: pathlib.Path) -> tuple[list[str], int, float, str, float]:
+    """Return (problems, size, age, last line, mtime) of one artefact, from one stat."""
     text = path.read_text(errors="replace")
     lines = [ln for ln in text.split("\n") if ln.strip()]
-    age = time.time() - path.stat().st_mtime
+    mtime = path.stat().st_mtime
+    age = time.time() - mtime
     problems: list[str] = []
     if not lines:
         problems.append("empty")
@@ -148,7 +385,13 @@ def describe(path: pathlib.Path) -> tuple[list[str], int, float, str]:
         problems.append("unpaired ``` fence")
     if age < FRESH_S:
         problems.append(f"written {int(age)}s ago — still being written?")
-    return problems, len(text.encode()), age, (lines[-1].strip() if lines else "")
+    return (
+        problems,
+        len(text.encode()),
+        age,
+        (lines[-1].strip() if lines else ""),
+        mtime,
+    )
 
 
 def pending(names: Iterable[str]) -> str:
@@ -156,34 +399,6 @@ def pending(names: Iterable[str]) -> str:
     names = list(names)
     more = len(names) - PENDING_MAX
     return " ".join(names[:PENDING_MAX]) + (f" +{more}" if more > 0 else "")
-
-
-class Report:
-    """The report's per-file lines and its flags, gathered while it reads the round."""
-
-    def __init__(self, *, show_all: bool, fresh: bool = True) -> None:
-        """Start an empty report; `show_all` lists each file, `fresh` flags new ones."""
-        self.show_all: bool = show_all
-        self.fresh: bool = fresh
-        self.lines: list[str] = []
-        self.flags: list[str] = []
-
-    def file(self, path: pathlib.Path, base: pathlib.Path) -> None:
-        """Flag an artefact's problems and, with show_all, list it."""
-        problems, size, age, last = describe(path)
-        if not self.fresh:
-            problems = [p for p in problems if not p.startswith("written ")]
-        rel = path.relative_to(base) if path.is_relative_to(base) else path
-        for p in problems:
-            self.flags.append(f"{p:<34} {rel}  ends: {last[:70]!r}")
-        if self.show_all:
-            self.lines.append(
-                f"    {rel!s:<48} {size / 1024:6.1f} KB {ago(age):>5}  {last[:60]!r}"
-            )
-
-    def flag(self, text: str) -> None:
-        """Add a flag."""
-        self.flags.append(text)
 
 
 def lane_checkpoints(lanes: pathlib.Path, phase: str) -> list[pathlib.Path]:
@@ -229,45 +444,6 @@ def gate_logs(lanes: pathlib.Path, phase: str) -> list[GateLog]:
         for log in sorted(lanes.glob("*-gate*.log"))
         if not ((m := re.match(r"p(\d+)-", log.name)) and m[1] != phase)
     ]
-
-
-def lane_check(
-    repo: StrPath,
-    main: str,
-    full: str,
-    gates: Iterable[GateLog],
-    worktree: Worktree | None,
-) -> str:
-    """Return what the lead checked by hand on a group's return (F80).
-
-    The lane's commits since the main branch, the gate at its SHA, their trailers, and
-    what its worktree left uncommitted.
-    """
-    parts = [f"{git(repo, 'rev-list', '--count', f'{main}..{full}')[1]} commits"]
-    at = [(dirty, code) for _, sha, dirty, code, ci in gates if sha == full and not ci]
-    if any(at_ == ("0", "0") for at_ in at):
-        parts.append("gate exit=0")
-    elif at:
-        parts.append(f"gate exit={at[-1][1] or 'none yet'} dirty={at[-1][0]}")
-    else:
-        parts.append("no gate log at this SHA")
-    trailers = git(repo, "log", "--format=%(trailers:only,unfold)", f"{main}..{full}")[
-        1
-    ]
-    keys: dict[str, int] = {}
-    for key in (ln.split(":", 1)[0] for ln in trailers.splitlines() if ":" in ln):
-        keys[key] = keys.get(key, 0) + 1
-    parts.append(
-        "trailers "
-        + (", ".join(f"{k} ×{n}" for k, n in sorted(keys.items())) or "none")
-    )
-    if worktree and worktree[1] == full:
-        changed = git(
-            str(worktree[0]), "status", "--porcelain", "--untracked-files=no"
-        )[1]
-        if changed:
-            parts.append(f"{len(changed.splitlines())} uncommitted in its worktree")
-    return " · ".join(parts)
 
 
 def _base_rows(text: str) -> list[tuple[str, str, str]]:
@@ -364,99 +540,16 @@ def round_moved(planning_dir: StrPath, route: RouteArgs) -> list[str]:
     return moved_under(route.repo, index.read_text(errors="replace"))
 
 
-def _main_branch(a: RouteArgs, rep: Report) -> tuple[str, str | None]:
-    """Return the main branch the report checks lanes against, and its tip.
+def _main_branch(a: RouteArgs, repo: str) -> tuple[str, str | None, str | None]:
+    """Return the main branch lanes are checked against, its tip, the --main missing.
 
-    The tip is None without --repo, and on a missing --main, which is flagged.
+    On a missing --main the default branch stands in, with no tip.
     """
-    main = a.main or (default_branch(a.repo) if a.repo else "main")
-    if not a.repo:
-        return main, None
-    rc, tip = git(a.repo, "rev-parse", "--verify", "--quiet", f"refs/heads/{main}")
+    main = a.main or default_branch(repo)
+    rc, tip = git(repo, "rev-parse", "--verify", "--quiet", f"refs/heads/{main}")
     if rc:
-        fallback = default_branch(a.repo)
-        rep.flag(f"{'--main ' + main + ' does not exist':<34} using {fallback}")
-        return fallback, None
-    return main, tip
-
-
-def _handoff_flags(base: pathlib.Path, rep: Report) -> None:
-    """Flag a handoff past HANDOFF_MAX (F76)."""
-    for name in HANDOFFS:
-        handoff = base / name
-        if handoff.exists() and handoff.stat().st_size > HANDOFF_MAX:
-            rep.flag(
-                f"{name + ' over 40 KB':<34} {handoff.stat().st_size / 1024:.0f} KB — "
-                "move closed lanes and settled history to HANDOFF-archive.md (F76)"
-            )
-
-
-def _decisions(
-    a: RouteArgs, base: pathlib.Path, route: pathlib.Path | None, rep: Report
-) -> str:
-    """Return the report's `decisions` line; flag the D files and the base's drift.
-
-    route is the route's marker path.
-    """
-    dec = base / "decisions" / f"phase{a.phase}"
-    index = dec / "00-index.md"
-    index_text = index.read_text(errors="replace") if index.exists() else ""
-    wanted = sorted(
-        {m[1] for m in re.finditer(r"^\|\s*\*{0,2}D(\d+)\b", index_text, re.MULTILINE)},
-        key=int,
-    )
-    have = {
-        m[1]: f for f in sorted(dec.glob("D*.md")) if (m := re.match(r"D(\d+)", f.name))
-    }
-    # At rung S the index holds the decisions themselves: no D file follows
-    # (templates.md §1).
-    rung = a.rung or (load_json(route).get("rung") if route else None)
-    waiting = [f"D{n}" for n in wanted if n not in have and rung != "S"]
-    markers = headers = 0
-    for f in have.values():
-        rep.file(f, base)
-        text = f.read_text(errors="replace")
-        markers += text.count("> **SUPERSEDED BY")
-        headers += "> **Read 00-arbiter.md first.**" in text
-    fixed = [
-        "00-dispatch",
-        "00-framing-review",
-        "00-seams",
-        "00-arbiter",
-        "spec-returns",
-    ]
-    present = " ".join(
-        f"{n} {'yes' if (dec / (n + '.md')).exists() else 'no'}" for n in fixed
-    )
-    if a.repo and index.exists():
-        for line in base_drift(a.repo, index_text):
-            rep.flag(line)
-    return (
-        f"decisions  {len(have)} D files ({len(wanted)} in the index"
-        + (f"; pending {pending(waiting)}" if waiting else "")
-        + f") · markers {markers}, header in {headers}/{len(have)} · {present}"
-    )
-
-
-def _spec(a: RouteArgs, sections: str, base: pathlib.Path, rep: Report) -> str:
-    """Return the report's `spec` line for --sections; flag the section files."""
-    lo, sep, hi = sections.replace("–", "-").partition("-")
-    first, last = int(lo), (int(hi) if hi else (None if sep else int(lo)))
-    spec = [
-        f
-        for f in sorted(pathlib.Path(a.spec_dir or base / "spec").glob("*.md"))
-        if (m := re.match(r"0*(\d+)-", f.name))
-        and first <= int(m[1]) <= (last if last is not None else 10**6)
-    ]
-    got = {int(m[1]) for f in spec if (m := re.match(r"0*(\d+)-", f.name))}
-    for f in spec:
-        rep.file(f, base)
-    if last is None:
-        return f"spec       {len(got)} sections from §{first}"
-    waiting = [f"§{s}" for s in range(first, last + 1) if s not in got]
-    return f"spec       {len(got)}/{last - first + 1} sections" + (
-        f" (pending {pending(waiting)})" if waiting else ""
-    )
+        return default_branch(repo), None, main
+    return main, tip, None
 
 
 def _manifest(
@@ -467,42 +560,6 @@ def _manifest(
     if not m.exists() and (base / "manifests" / f"p{p}-{plan_id}.json").exists():
         m = base / "manifests" / f"p{p}-{plan_id}.json"
     return m
-
-
-def _plans(base: pathlib.Path, p: str, rep: Report) -> tuple[str, list[str]]:
-    """Return the report's `plans` line and the plan ids the index names."""
-    plans_dir = base / "plans"
-    pindex = plans_dir / f"p{p}-00-index.md"
-    ids = sorted(
-        set(re.findall(rf"\bp{p}-(\d+[a-z]?)\b", pindex.read_text(errors="replace")))
-        - {"00"}
-        if pindex.exists()
-        else set[str]()
-    )
-    plans = {
-        m[1]: f
-        for f in sorted(plans_dir.glob(f"p{p}-*.md"))
-        if (m := re.match(rf"p{p}-(\d+[a-z]?)-", f.name))
-        and not f.name.startswith(f"p{p}-00")
-    }
-    waiting = [f"p{p}-{i}" for i in ids if i not in plans]
-    manifests_ok = 0
-    for i, f in plans.items():
-        rep.file(f, base)
-        m = _manifest(base, p, i, f)
-        try:
-            _ = parse_json(m.read_text())
-            manifests_ok += 1
-        except FileNotFoundError:
-            rep.flag(f"{'no manifest':<34} manifests/{m.name}")
-        except ValueError:
-            rep.flag(f"{'manifest is not valid JSON':<34} manifests/{m.name}")
-    line = (
-        f"plans      {len(plans)} plans ({len(ids)} in the index"
-        + (f"; pending {pending(waiting)}" if waiting else "")
-        + f") · {manifests_ok} manifests parse"
-    )
-    return line, ids
 
 
 def _worktrees(repo: StrPath) -> dict[str, Worktree]:
@@ -590,11 +647,9 @@ class _Cache:
             self.path.with_name("dsp-cherry.json").unlink(missing_ok=True)
 
 
-def _cache(
-    a: RouteArgs, route: pathlib.Path | None, main: str, tip: str | None
-) -> _Cache:
+def _cache(route: pathlib.Path | None, main: str, tip: str | None) -> _Cache:
     """Return the report's cache of the route at route (its marker) for main's tip."""
-    path = merged_path(route) if a.repo and tip else None
+    path = merged_path(route) if tip else None
     known, raw = read_merged(path) if path else ({}, None)
     return _Cache(path if raw is not None else None, main, tip or "", known, raw)
 
@@ -603,9 +658,8 @@ def _cache(
 class _Lanes:
     """What each lane checkpoint is checked against."""
 
-    repo: str | None
+    repo: str
     main: str
-    gates: list[GateLog]
     worktrees: dict[str, Worktree]
     records: dict[str, tuple[str, str, str]]
     # each checkpoint SHA's full commit SHA, and every commit on main: one git call
@@ -614,7 +668,7 @@ class _Lanes:
     commits: dict[str, str]
     on_main: frozenset[str]
     cache: _Cache
-    # {checkpoint file name: (full SHA, entry)} of the lanes the cache answered
+    # {lane id: (full SHA, entry)} of the lanes the cache answered
     hits: dict[str, tuple[str, MergedLane]]
 
 
@@ -646,17 +700,17 @@ def _answered(
 ) -> tuple[dict[str, tuple[str, MergedLane]], dict[str, str]]:
     """Return the lanes the cache answers, and the full SHA of every other lane's SHA.
 
-    found is {checkpoint file name: its SHA}. A 40-hex SHA is looked up as written;
-    the rest are resolved first, all in one batched call, which a report whose every
-    lane hits never makes.
+    found is {lane id: its SHA}. A 40-hex SHA is looked up as written; the rest are
+    resolved first, all in one batched call, which a report whose every lane hits
+    never makes.
     """
 
     def hits(shas: Mapping[str, str]) -> dict[str, tuple[str, MergedLane]]:
         return {
-            name: (full, e)
-            for name, full in shas.items()
+            lane_id: (full, e)
+            for lane_id, full in shas.items()
             if FULL_SHA.fullmatch(full)
-            and (e := cache.hit(repo, full, name[: -len("-checkpoint.md")], records))
+            and (e := cache.hit(repo, full, lane_id, records))
         }
 
     answered = hits(found)
@@ -667,12 +721,12 @@ def _answered(
     return answered | hits(resolved), commits
 
 
-def _merged(lanes: _Lanes, repo: str, plan_id: str, full: str) -> MergedLane | None:
+def _merged(lanes: _Lanes, plan_id: str, full: str) -> MergedLane | None:
     """Return how a lane's commit got onto the main branch, None when it is not on it.
 
     As the cache keeps it, proven against main's tip.
     """
-    tip = lanes.cache.tip
+    repo, tip = lanes.repo, lanes.cache.tip
     if full in lanes.on_main:
         return {"main": tip, "how": "ancestor", "as": None, "record": None}
     # A rebased lane: every commit's patch is already on main.
@@ -689,69 +743,133 @@ def _merged(lanes: _Lanes, repo: str, plan_id: str, full: str) -> MergedLane | N
     return None
 
 
-def _how(entry: MergedLane) -> str:
-    """Return how a merged lane got onto main, as its state says it."""
-    if entry["how"] == "record":
-        return f" as {entry['as']} ({entry['record']})"
-    return " (by patch)" if entry["how"] == "patch" else ""
+def _count(out: str) -> int | None:
+    """Return a count git printed, None when it printed none."""
+    return int(out) if out.isdigit() else None
 
 
-def _branch_note(
-    lanes: _Lanes, repo: str, plan_id: str, full: str, *, inside: bool
-) -> tuple[str, str | None]:
-    """Return the state note for a lane branch whose tip is not its checkpoint's.
+def _lane_check(
+    repo: str, main: str, full: str, worktree: Worktree | None
+) -> LaneCheck:
+    """Return what the lead checked by hand on a group's return (F80).
 
-    With the flag for a merged lane that moved past its SHA (F41), else None.
+    The lane's commits since the main branch, their trailers, and what its worktree
+    left uncommitted; the gate at its SHA is derived from the gate logs.
     """
-    head = lanes.worktrees[plan_id][1]
-    if head == full:
-        return "", None
-    # the branch's commits main lacks, by patch: a lane the integrator rebased and
-    # merged has none, though its tip is not the checkpoint's
-    ahead = git(
-        repo,
-        "rev-list",
-        "--count",
-        "--right-only",
-        "--cherry-pick",
-        f"{lanes.main}...{head}",
-    )[1]
-    flag = None
-    if inside and ahead not in ("", "0"):
-        flag = (
-            f"{'lane moved past its merged SHA':<34} {plan_id} ({ahead} commits, F41)"
-        )
-    return f", branch {ahead} not on main", flag
+    commits = _count(git(repo, "rev-list", "--count", f"{main}..{full}")[1])
+    trailers = git(repo, "log", "--format=%(trailers:only,unfold)", f"{main}..{full}")[
+        1
+    ]
+    keys: dict[str, int] = {}
+    for key in (ln.split(":", 1)[0] for ln in trailers.splitlines() if ":" in ln):
+        keys[key] = keys.get(key, 0) + 1
+    uncommitted = None
+    if worktree and worktree[1] == full:
+        changed = git(
+            str(worktree[0]), "status", "--porcelain", "--untracked-files=no"
+        )[1]
+        uncommitted = len(changed.splitlines())
+    return {
+        "commits": commits,
+        "trailers": dict(sorted(keys.items())),
+        "uncommitted": uncommitted,
+    }
 
 
-def _lane_state(
-    lanes: _Lanes, plan_id: str, sha: str | None, name: str, rep: Report
-) -> tuple[str, bool, str | None]:
-    """Return a lane's (state, merged, full SHA) from its checkpoint's SHA."""
-    if not sha:
-        return "no SHA", False, None
-    if not lanes.repo:
-        return sha, False, None
-    repo = lanes.repo
-    if hit := lanes.hits.get(name):
+def _git_lane(lanes: _Lanes, lane_id: str, sha: str) -> GitLane:
+    """Return what git says of one lane's checkpoint SHA.
+
+    A lane the cache answers takes its commit and how it merged from the entry.
+    """
+    wt = lanes.worktrees.get(lane_id)
+    fact: GitLane = {
+        "sha": sha,
+        "commit": None,
+        "merged_how": None,
+        "merged_as": None,
+        "record": None,
+        "worktree": {"path": wt[0], "head": wt[1]} if wt else None,
+        "branch_ahead": None,
+        "check": None,
+    }
+    if hit := lanes.hits.get(lane_id):
         # kept with the main it was proven against, so the next report checks that
         full, entry = hit
     else:
-        full = lanes.commits.get(sha)
-        if full is None:
-            rep.flag(f"{'checkpoint SHA not in the repo':<34} lanes/{name} ({sha})")
-            return f"{sha} unknown", False, None
-        entry = _merged(lanes, repo, plan_id, full)
-    inside = entry is not None
+        commit = lanes.commits.get(sha)
+        if commit is None:
+            return fact
+        full, entry = commit, _merged(lanes, lane_id, commit)
+    fact["commit"] = full
     if entry:
         lanes.cache.keep[full] = entry
-    state = f"{sha} {'merged' + _how(entry) if entry else 'not merged'}"
-    if plan_id in lanes.worktrees:
-        note, flag = _branch_note(lanes, repo, plan_id, full, inside=inside)
-        state += note
-        if flag:
-            rep.flag(flag)
-    return state, inside, full
+        fact["merged_how"], fact["merged_as"] = entry["how"], entry["as"]
+        fact["record"] = entry["record"]
+    if wt and wt[1] != full:
+        # the branch's commits main lacks, by patch: a lane the integrator rebased and
+        # merged has none, though its tip is not the checkpoint's
+        fact["branch_ahead"] = _count(
+            git(
+                lanes.repo,
+                "rev-list",
+                "--count",
+                "--right-only",
+                "--cherry-pick",
+                f"{lanes.main}...{wt[1]}",
+            )[1]
+        )
+    if entry is None:
+        fact["check"] = _lane_check(lanes.repo, lanes.main, full, wt)
+    return fact
+
+
+def _git_facts(
+    a: RouteArgs,
+    repo: str,
+    route: pathlib.Path | None,
+    state: State,
+    index_text: str | None,
+) -> tuple[GitFacts, _Cache]:
+    """Return the state's git facts, and the cache the merged lanes are kept in.
+
+    The lanes the cache answers are not checked again; it then keeps every lane proven
+    merged, written by the caller.
+    """
+    as_of = time.time()
+    main, tip, missing = _main_branch(a, repo)
+    drift = base_drift(repo, index_text) if index_text is not None else []
+    cache = _cache(route, main, tip)
+    found = {c["id"]: s for c in state["checkpoints"] if (s := c["sha"])}
+    records = {
+        k: (r["lane_sha"], r["main_sha"], r["file"])
+        for k, r in state["records"].items()
+    }
+    hits, commits = _answered(repo, cache, found, records)
+    rest = any(i not in hits for i in found)
+    # `--`: main names a revision even where a file of that name exists
+    on_main = git(repo, "rev-list", main, "--")[1].split() if rest else []
+    lanes = _Lanes(
+        repo=repo,
+        main=main,
+        worktrees=_worktrees(repo),
+        records=records,
+        commits=commits,
+        on_main=frozenset(on_main),
+        cache=cache,
+        hits=hits,
+    )
+    facts: GitFacts = {
+        "as_of": as_of,
+        "repo": repo,
+        "main": main,
+        "main_missing": missing,
+        "main_sha": tip,
+        "lane_worktrees": sum(1 for b in lanes.worktrees if b != main),
+        "drift": drift,
+        "pushed": None,
+        "lanes": {i: _git_lane(lanes, i, s) for i, s in found.items()},
+    }
+    return facts, cache
 
 
 def _checkpoint_sha(text: str) -> tuple[str | None, bool]:
@@ -761,111 +879,579 @@ def _checkpoint_sha(text: str) -> tuple[str | None, bool]:
     return (shas[-1] if shas else None), bool(final)
 
 
-def _checkpoint(
-    c: pathlib.Path, text: str, base: pathlib.Path, lanes: _Lanes, rep: Report
-) -> bool:
-    """Report one lane checkpoint, whose text is text; return whether it is merged."""
-    rep.file(c, base)
-    plan_id = c.name[: -len("-checkpoint.md")]
-    sha, final = _checkpoint_sha(text)
-    if not final:
-        rep.flag(
-            f"{'no `Final SHA:` line':<34} lanes/{c.name} (last SHA in the text used)"
+def _rel(path: pathlib.Path, base: pathlib.Path) -> str:
+    """Return path from the planning dir base, as the text prints it."""
+    return str(path.relative_to(base) if path.is_relative_to(base) else path)
+
+
+def _file(
+    path: pathlib.Path, base: pathlib.Path, kind: str, *, fresh: bool
+) -> FileFact:
+    """Return one artefact's facts; without fresh, no `written …s ago` problem."""
+    problems, size, age, last, mtime = describe(path)
+    if not fresh:
+        problems = [p for p in problems if not p.startswith("written ")]
+    return {
+        "path": _rel(path, base),
+        "kind": kind,
+        "bytes": size,
+        "age_s": age,
+        "mtime": mtime,
+        "last_line": last,
+        "problems": problems,
+    }
+
+
+def _rung(a: RouteArgs, route: pathlib.Path | None) -> str | None:
+    """Return the route's rung: --rung, else its marker's."""
+    if a.rung:
+        return a.rung
+    rung = load_json(route).get("rung") if route else None
+    return rung if isinstance(rung, str) else None
+
+
+def _decision_facts(
+    a: RouteArgs,
+    base: pathlib.Path,
+    rung: str | None,
+    files: list[FileFact],
+    *,
+    fresh: bool,
+) -> tuple[str | None, DecisionFacts]:
+    """Return the decision index's text (None without one) and the decisions' facts.
+
+    Each D file's facts go to files.
+    """
+    dec = base / "decisions" / f"phase{a.phase}"
+    index = dec / "00-index.md"
+    index_text = index.read_text(errors="replace") if index.exists() else None
+    wanted = sorted(
+        {
+            m[1]
+            for m in re.finditer(
+                r"^\|\s*\*{0,2}D(\d+)\b", index_text or "", re.MULTILINE
+            )
+        },
+        key=int,
+    )
+    have = {
+        m[1]: f for f in sorted(dec.glob("D*.md")) if (m := re.match(r"D(\d+)", f.name))
+    }
+    # At rung S the index holds the decisions themselves: no D file follows
+    # (templates.md §1).
+    waiting = [f"D{n}" for n in wanted if n not in have and rung != "S"]
+    markers = headers = 0
+    for f in have.values():
+        files.append(_file(f, base, "decision", fresh=fresh))
+        text = f.read_text(errors="replace")
+        markers += text.count("> **SUPERSEDED BY")
+        headers += "> **Read 00-arbiter.md first.**" in text
+    return index_text, {
+        "index": index_text is not None,
+        "index_ids": wanted,
+        "files": {i: _rel(f, base) for i, f in have.items()},
+        "pending": waiting,
+        "markers": markers,
+        "headers": headers,
+        "fixed": {n: (dec / (n + ".md")).exists() for n in FIXED},
+    }
+
+
+def _spec_facts(
+    a: RouteArgs, base: pathlib.Path, files: list[FileFact], *, fresh: bool
+) -> SpecFacts:
+    """Return the facts of the --sections range; each section file's go to files."""
+    lo, sep, hi = (a.sections or "").replace("–", "-").partition("-")
+    first, last = int(lo), (int(hi) if hi else (None if sep else int(lo)))
+    spec = [
+        f
+        for f in sorted(pathlib.Path(a.spec_dir or base / "spec").glob("*.md"))
+        if (m := re.match(r"0*(\d+)-", f.name))
+        and first <= int(m[1]) <= (last if last is not None else 10**6)
+    ]
+    files.extend(_file(f, base, "spec", fresh=fresh) for f in spec)
+    got = {int(m[1]) for f in spec if (m := re.match(r"0*(\d+)-", f.name))}
+    return {"first": first, "last": last, "sections": sorted(got)}
+
+
+def _manifest_state(m: pathlib.Path) -> str:
+    """Return whether a manifest parses: ok, missing or invalid."""
+    try:
+        _ = parse_json(m.read_text())
+    except FileNotFoundError:
+        return "missing"
+    except ValueError:
+        return "invalid"
+    return "ok"
+
+
+def _plan_facts(
+    base: pathlib.Path, p: str, files: list[FileFact], *, fresh: bool
+) -> PlanFacts:
+    """Return the plans' facts and the plan ids the index names; plan files to files."""
+    plans_dir = base / "plans"
+    pindex = plans_dir / f"p{p}-00-index.md"
+    ids = sorted(
+        set(re.findall(rf"\bp{p}-(\d+[a-z]?)\b", pindex.read_text(errors="replace")))
+        - {"00"}
+        if pindex.exists()
+        else set[str]()
+    )
+    plans = {
+        m[1]: f
+        for f in sorted(plans_dir.glob(f"p{p}-*.md"))
+        if (m := re.match(rf"p{p}-(\d+[a-z]?)-", f.name))
+        and not f.name.startswith(f"p{p}-00")
+    }
+    manifests: dict[str, ManifestFact] = {}
+    for i, f in plans.items():
+        files.append(_file(f, base, "plan", fresh=fresh))
+        m = _manifest(base, p, i, f)
+        manifests[i] = {"name": m.name, "state": _manifest_state(m)}
+    return {
+        "index_ids": ids,
+        "files": {i: _rel(f, base) for i, f in plans.items()},
+        "pending": [f"p{p}-{i}" for i in ids if i not in plans],
+        "manifests": manifests,
+    }
+
+
+def _checkpoint_facts(
+    base: pathlib.Path, p: str, files: list[FileFact], *, fresh: bool
+) -> list[CheckpointFact]:
+    """Return each lane checkpoint's facts; its file's go to files. No git."""
+    out: list[CheckpointFact] = []
+    for c in lane_checkpoints(base / "lanes", p):
+        text = c.read_text(errors="replace")
+        files.append(_file(c, base, "checkpoint", fresh=fresh))
+        lane_id = c.name[: -len("-checkpoint.md")]
+        sha, final = _checkpoint_sha(text)
+        rulings = c.with_name(lane_id + "-rulings.md")
+        plan = PLAN_ID.match(lane_id)
+        out.append(
+            {
+                "id": lane_id,
+                "plan": plan[0] if plan else lane_id,
+                "path": files[-1]["path"],
+                "sha": sha,
+                "final_sha_line": final,
+                "lines": len(text.splitlines()),
+                "rulings": (
+                    {"name": rulings.name, "bytes": rulings.stat().st_size}
+                    if rulings.exists()
+                    else None
+                ),
+            }
         )
-    state, inside, full = _lane_state(lanes, plan_id, sha, c.name, rep)
-    size = len(text.splitlines())
+    return out
+
+
+def _gate_fact(gate: GateLog) -> GateLogFact:
+    """Return one gate log's facts, its dirty count and exit code as int."""
+    log, sha, dirty, code, harness = gate
+    return {
+        "log": log.name,
+        "sha": sha,
+        "dirty": int(dirty) if dirty else None,
+        "exit": int(code) if code is not None else None,
+        "harness": harness,
+    }
+
+
+def _file_facts(
+    a: RouteArgs, rung: str | None, *, fresh: bool, extra: Iterable[str]
+) -> tuple[State, str | None]:
+    """Return the state's file facts, git None, and the decision index's text.
+
+    No git: files in the text's order, every checkpoint's text read.
+    """
+    base, p = pathlib.Path(a.planning_dir), a.phase
+    generated_at = time.time()
+    files: list[FileFact] = []
+    index_text, decisions = _decision_facts(a, base, rung, files, fresh=fresh)
+    spec = _spec_facts(a, base, files, fresh=fresh) if a.sections else None
+    reconcile = sorted((base / "reconcile").glob(f"p{p}-*.md"))
+    files.extend(_file(f, base, "reconcile", fresh=fresh) for f in reconcile)
+    plans = _plan_facts(base, p, files, fresh=fresh)
+    lanes = base / "lanes"
+    checkpoints = _checkpoint_facts(base, p, files, fresh=fresh)
+    waves = sorted(lanes.glob("wave*-integration.md"))
+    files.extend(_file(w, base, "wave", fresh=fresh) for w in waves)
+    harvest = sorted((base / "decisions" / f"phase{p}").glob("harvest-*.md"))
+    state: State = {
+        "version": VERSION,
+        "planning_dir": a.planning_dir,
+        "phase": p,
+        "generated_at": generated_at,
+        "rung": rung,
+        "extra": list(extra),
+        "handoffs": [
+            {"name": n, "bytes": (base / n).stat().st_size}
+            for n in HANDOFFS
+            if (base / n).exists()
+        ],
+        "files": files,
+        "decisions": decisions,
+        "harvest_files": [_rel(f, base) for f in harvest],
+        "spec": spec,
+        "reconcile": [_rel(f, base) for f in reconcile],
+        "plans": plans,
+        "lane_files": any(lanes.glob(f"p{p}-*")),
+        "checkpoints": checkpoints,
+        "gate_logs": [_gate_fact(g) for g in gate_logs(lanes, p)],
+        "records": {
+            k: {"lane_sha": lane, "main_sha": main, "file": file}
+            for k, (lane, main, file) in _merge_records(lanes).items()
+        },
+        "integration_files": [_rel(w, base) for w in waves],
+        "git": None,
+        "lanes": [],
+        "flags": [],
+        "stages": [],
+    }
+    return state, index_text
+
+
+def gate_state(log: GateLogFact) -> str:
+    """Return a gate log's own state: green (exit 0), red, or no-exit."""
+    if log["exit"] is None:
+        return "no-exit"
+    return "green" if log["exit"] == 0 else "red"
+
+
+def _lane_gate(logs: list[GateLogFact]) -> str:
+    """Return an open lane's gate from the full-gate logs at its commit, in order."""
+    if any(g["dirty"] == 0 and g["exit"] == 0 for g in logs):
+        return "green"
+    if not logs:
+        return "none"
+    code = logs[-1]["exit"]
+    if code is None:
+        return "no-exit"
+    return "red" if code else "dirty"
+
+
+def _lane(c: CheckpointFact, state: State) -> Lane:
+    """Return one checkpoint's lane: its basis, then its gate and state."""
+    lane: Lane = {
+        "id": c["id"],
+        "plan": c["plan"],
+        "state": "running",
+        "basis": "no-sha",
+        "gate": None,
+        "gate_exit": None,
+        "gate_dirty": None,
+        "git": False,
+    }
+    g = state["git"]
+    facts = g["lanes"].get(c["id"]) if g else None
+    if c["sha"] is None:
+        return lane
+    if facts is None or facts["sha"] != c["sha"]:
+        lane["basis"] = "unchecked"
+        return lane
+    lane["git"] = True
+    commit = facts["commit"]
+    if commit is None:
+        lane["basis"] = "unknown"
+    elif facts["merged_how"]:
+        lane["basis"] = lane["state"] = "merged"
+    else:
+        # a harness log ran only that suite: no full gate
+        logs = [
+            x for x in state["gate_logs"] if x["sha"] == commit and not x["harness"]
+        ]
+        gate = _lane_gate(logs)
+        lane["basis"], lane["gate"], lane["state"] = "open", gate, BY_GATE[gate]
+        if logs:
+            lane["gate_exit"], lane["gate_dirty"] = logs[-1]["exit"], logs[-1]["dirty"]
+    return lane
+
+
+def _flag(kind: str, subject: str, line: str) -> Flag:
+    """Return one flag."""
+    return {"kind": kind, "subject": subject, "line": line}
+
+
+def _file_flags(files: Iterable[FileFact]) -> list[Flag]:
+    """Return a flag per problem of each file."""
+    return [
+        _flag("file", f["path"], f"{p:<34} {f['path']}  ends: {f['last_line'][:70]!r}")
+        for f in files
+        for p in f["problems"]
+    ]
+
+
+def _plan_flags(state: State, by_path: Mapping[str, FileFact]) -> list[Flag]:
+    """Return each plan file's problems, then its manifest's flag."""
+    out: list[Flag] = []
+    for i, rel in state["plans"]["files"].items():
+        out += _file_flags([by_path[rel]])
+        m = state["plans"]["manifests"][i]
+        path = f"manifests/{m['name']}"
+        if m["state"] == "missing":
+            out.append(_flag("no-manifest", path, f"{'no manifest':<34} {path}"))
+        elif m["state"] == "invalid":
+            what = "manifest is not valid JSON"
+            out.append(_flag("manifest-invalid", path, f"{what:<34} {path}"))
+    return out
+
+
+def _checkpoint_flags(c: CheckpointFact, lane: Lane, g: GitFacts | None) -> list[Flag]:
+    """Return a lane checkpoint's own flags, after its file's."""
+    out: list[Flag] = []
+    path, lane_id = c["path"], c["id"]
+    if not c["final_sha_line"]:
+        what = "no `Final SHA:` line"
+        line = f"{what:<34} {path} (last SHA in the text used)"
+        out.append(_flag("no-final-sha", path, line))
+    if lane["basis"] == "unknown":
+        what = "checkpoint SHA not in the repo"
+        out.append(_flag("sha-unknown", lane_id, f"{what:<34} {path} ({c['sha']})"))
+    facts = g["lanes"].get(lane_id) if g and lane["basis"] == "merged" else None
+    if facts and (ahead := facts["branch_ahead"]):
+        what = "lane moved past its merged SHA"
+        line = f"{what:<34} {lane_id} ({ahead} commits, F41)"
+        out.append(_flag("lane-moved-past-merge", lane_id, line))
+    if lane["basis"] == "merged":
+        return out
     # A merged lane has no next group to read its checkpoint (F76).
-    if size > CHECKPOINT_MAX and not inside:
-        rep.flag(
-            f"{f'checkpoint over {CHECKPOINT_MAX} lines':<34} lanes/{c.name} ({size} — "
-            "the next group overwrites it with the lane's state and map)"
+    if c["lines"] > CHECKPOINT_MAX:
+        what = f"checkpoint over {CHECKPOINT_MAX} lines"
+        line = (
+            f"{what:<34} {path} ({c['lines']} — the next group overwrites it with the "
+            "lane's state and map)"
         )
+        out.append(_flag("checkpoint-long", path, line))
     # Every group reads its lane's rulings file whole; applied rulings belong in the
     # archive, read only for an id the dispatch names (F67).
-    rulings = c.with_name(plan_id + "-rulings.md")
-    if not inside and rulings.exists() and rulings.stat().st_size > RULINGS_MAX:
-        rep.flag(
-            f"{f'rulings over {RULINGS_MAX // 1000} KB':<34} lanes/{rulings.name} "
-            f"({rulings.stat().st_size // 1000} KB — between groups, move the applied "
-            f"ones to {plan_id}-rulings-archive.md)"
+    if (r := c["rulings"]) and r["bytes"] > RULINGS_MAX:
+        what, rel = f"rulings over {RULINGS_MAX // 1000} KB", f"lanes/{r['name']}"
+        line = (
+            f"{what:<34} {rel} ({r['bytes'] // 1000} KB — between groups, move the "
+            f"applied ones to {lane_id}-rulings-archive.md)"
         )
-    # Every open lane gets its line, so a group's return changes it and the next
-    # injection carries the check the lead used to make by hand (F80).
-    if full and not inside and lanes.repo:
-        state += " · " + lane_check(
-            lanes.repo,
-            lanes.main,
-            full,
-            lanes.gates,
-            lanes.worktrees.get(plan_id),
-        )
-    if rep.show_all or not inside:
-        rep.lines.append(f"    {plan_id:<48} {state}")
-    return inside
+        out.append(_flag("rulings-large", rel, line))
+    return out
 
 
-def _lanes_line(
-    a: RouteArgs, cache: _Cache, gates: list[GateLog], plans: int, rep: Report
-) -> str:
-    """Return the report's `lanes` line; report each lane checkpoint.
+def _gate_flags(logs: Iterable[GateLogFact]) -> list[Flag]:
+    """Return a flag per red or unfinished gate log."""
+    out: list[Flag] = []
+    for x in logs:
+        rel, code, ci = f"lanes/{x['log']}", x["exit"], x["harness"]
+        if code is None:
+            what = "gate log has no exit= line"
+            out.append(_flag("gate-no-exit", x["log"], f"{what:<34} {rel}"))
+        elif code:
+            what = f"RED harness={ci} exit={code}" if ci else f"RED exit={code}"
+            out.append(_flag("gate-red", x["log"], f"{what:<34} {rel}"))
+    return out
 
-    The lanes cache answers are not checked again; the cache then keeps every lane
-    proven merged.
+
+def _flags(state: State, lanes: list[Lane]) -> list[Flag]:
+    """Return the state's flags, in the text's order."""
+    out: list[Flag] = []
+    g = state["git"]
+    if g and (given := g["main_missing"]) is not None:
+        what = "--main " + given + " does not exist"
+        out.append(_flag("main-missing", given, f"{what:<34} using {g['main']}"))
+    for h in state["handoffs"]:
+        if h["bytes"] > HANDOFF_MAX:
+            line = (
+                f"{h['name'] + ' over 40 KB':<34} {h['bytes'] / 1024:.0f} KB — move "
+                "closed lanes and settled history to HANDOFF-archive.md (F76)"
+            )
+            out.append(_flag("handoff-large", h["name"], line))
+
+    def of(kind: str) -> list[FileFact]:
+        return [f for f in state["files"] if f["kind"] == kind]
+
+    out += _file_flags(of("decision"))
+    index = f"decisions/phase{state['phase']}/00-index.md"
+    out += [_flag("base-drift", index, line) for line in (g["drift"] if g else [])]
+    out += _file_flags(of("spec")) + _file_flags(of("reconcile"))
+    by_path = {f["path"]: f for f in state["files"]}
+    out += _plan_flags(state, by_path)
+    for c, lane in zip(state["checkpoints"], lanes, strict=False):
+        out += _file_flags([by_path[c["path"]]]) + _checkpoint_flags(c, lane, g)
+    return out + _gate_flags(state["gate_logs"]) + _file_flags(of("wave"))
+
+
+def derive(state: State) -> State:
+    """Return a new state whose lanes and flags are computed from its facts alone.
+
+    Pure: no I/O, no git, no clock. The input's own lanes, flags and stages are
+    recomputed, so derive(derive(s)) == derive(s), and older git facts can be laid
+    over newer file facts.
+    """
+    lanes = [_lane(c, state) for c in state["checkpoints"]]
+    started = {c["plan"] for c in state["checkpoints"]}
+    for i in state["plans"]["index_ids"]:
+        plan = f"p{state['phase']}-{i}"
+        if plan not in started:
+            lanes.append(
+                {
+                    "id": plan,
+                    "plan": plan,
+                    "state": "queued",
+                    "basis": "planned",
+                    "gate": None,
+                    "gate_exit": None,
+                    "gate_dirty": None,
+                    "git": False,
+                }
+            )
+    return {**state, "lanes": lanes, "flags": _flags(state, lanes), "stages": []}
+
+
+def _how(lane: GitLane) -> str:
+    """Return how a merged lane got onto main, as its state says it."""
+    if lane["merged_how"] == "record":
+        return f" as {lane['merged_as']} ({lane['record']})"
+    return " (by patch)" if lane["merged_how"] == "patch" else ""
+
+
+def _check_text(check: LaneCheck, lane: Lane) -> str:
+    """Return an open lane's check: commits, gate at its SHA, trailers, uncommitted."""
+    if lane["gate"] == "green":
+        gate = "gate exit=0"
+    elif lane["gate"] in (None, "none"):
+        gate = "no gate log at this SHA"
+    else:
+        code = "none yet" if lane["gate_exit"] is None else lane["gate_exit"]
+        gate = f"gate exit={code} dirty={lane['gate_dirty']}"
+    n = check["commits"]
+    trailers = ", ".join(f"{k} ×{v}" for k, v in check["trailers"].items())
+    parts = [
+        f"{'' if n is None else n} commits",
+        gate,
+        f"trailers {trailers or 'none'}",
+    ]
+    if check["uncommitted"]:
+        parts.append(f"{check['uncommitted']} uncommitted in its worktree")
+    return " · ".join(parts)
+
+
+def _lane_text(c: CheckpointFact, lane: Lane, g: GitFacts | None) -> str:
+    """Return a lane's state as its line prints it."""
+    facts = g["lanes"].get(lane["id"]) if g else None
+    if lane["basis"] == "no-sha":
+        return "no SHA"
+    if facts is None or lane["basis"] == "unchecked":
+        return f"{c['sha']}"
+    if lane["basis"] == "unknown":
+        return f"{c['sha']} unknown"
+    merged = lane["basis"] == "merged"
+    text = f"{c['sha']} {'merged' + _how(facts) if merged else 'not merged'}"
+    wt = facts["worktree"]
+    if wt and wt["head"] != facts["commit"]:
+        ahead = facts["branch_ahead"]
+        text += f", branch {'' if ahead is None else ahead} not on main"
+    if not merged and (check := facts["check"]) is not None:
+        text += " · " + _check_text(check, lane)
+    return text
+
+
+def _summary(state: State) -> list[str]:
+    """Return the report's summary lines, after its header."""
+    d, pl, g = state["decisions"], state["plans"], state["git"]
+    present = " ".join(f"{n} {'yes' if ok else 'no'}" for n, ok in d["fixed"].items())
+    out = [
+        f"decisions  {len(d['files'])} D files ({len(d['index_ids'])} in the index"
+        + (f"; pending {pending(d['pending'])}" if d["pending"] else "")
+        + f") · markers {d['markers']}, header in {d['headers']}/{len(d['files'])}"
+        + f" · {present}"
+    ]
+    if (spec := state["spec"]) is not None:
+        first, last, got = spec["first"], spec["last"], spec["sections"]
+        if last is None:
+            out.append(f"spec       {len(got)} sections from §{first}")
+        else:
+            waiting = [f"§{s}" for s in range(first, last + 1) if s not in got]
+            out.append(
+                f"spec       {len(got)}/{last - first + 1} sections"
+                + (f" (pending {pending(waiting)})" if waiting else "")
+            )
+    out.append(f"reconcile  {len(state['reconcile'])} files")
+    ok = sum(m["state"] == "ok" for m in pl["manifests"].values())
+    out.append(
+        f"plans      {len(pl['files'])} plans ({len(pl['index_ids'])} in the index"
+        + (f"; pending {pending(pl['pending'])}" if pl["pending"] else "")
+        + f") · {ok} manifests parse"
+    )
+    merged = sum(ln["basis"] == "merged" for ln in state["lanes"])
+    lanes = f"lanes      {len(state['checkpoints'])} checkpoints "
+    lanes += f"({len(pl['index_ids'])} plans)"
+    if g:
+        lanes += f" · {merged} merged into {g['main']} · "
+        lanes += f"{g['lane_worktrees']} lane worktrees"
+    out.append(lanes)
+    logs = [gate_state(x) for x in state["gate_logs"]]
+    out.append(
+        f"gates      {logs.count('green')} green · {logs.count('red')} red · "
+        f"{logs.count('no-exit')} without exit= · "
+        f"{len(state['integration_files'])} integration files"
+    )
+    return out
+
+
+def render(state: State, *, show_all: bool) -> str:
+    """Return the route report's text of a state, header included, no final newline.
+
+    With show_all, each file's line and every lane's; else the lanes not merged.
+    """
+    at = time.strftime("%Y-%m-%d %H:%M", time.localtime(state["generated_at"]))
+    base = pathlib.Path(state["planning_dir"])
+    out = [f"route state · {base} · phase {state['phase']} · {at}"]
+    out += _summary(state) + state["extra"]
+    lanes = {
+        c["path"]: (c, lane)
+        for c, lane in zip(state["checkpoints"], state["lanes"], strict=False)
+    }
+    for f in state["files"]:
+        if show_all:
+            out.append(
+                f"    {f['path']:<48} {f['bytes'] / 1024:6.1f} KB "
+                f"{ago(f['age_s']):>5}  {f['last_line'][:60]!r}"
+            )
+        row = lanes.get(f["path"]) if f["kind"] == "checkpoint" else None
+        if row and (show_all or row[1]["basis"] != "merged"):
+            c, lane = row
+            out.append(f"    {lane['id']:<48} {_lane_text(c, lane, state['git'])}")
+    out.append(f"flags      {len(state['flags'])}")
+    out += [f"  {x['line']}" for x in state["flags"]]
+    return "\n".join(out)
+
+
+def collect(
+    a: RouteArgs,
+    *,
+    fresh: bool = True,
+    extra: Iterable[str] = (),
+    use_git: bool = True,
+    write_cache: bool = False,
+) -> State | None:
+    """Return the route report of a round as data, None with no planning dir.
+
+    Prints nothing. File facts first, then git facts (None without --repo or with
+    use_git False: then no git spawn at all, the marker lookup included), then derive.
+    Only with write_cache, and only after derive returns, does it write the
+    merged-result cache.
     """
     base = pathlib.Path(a.planning_dir)
-    lanes_dir = base / "lanes"
-    main = cache.main
-    checkpoints = lane_checkpoints(lanes_dir, a.phase)
-    texts = {c: c.read_text(errors="replace") for c in checkpoints}
-    found = {c.name: s for c, t in texts.items() if (s := _checkpoint_sha(t)[0])}
-    records = _merge_records(lanes_dir)
-    hits, commits = _answered(a.repo, cache, found, records) if a.repo else ({}, {})
-    rest = any(n not in hits for n in found)
-    # `--`: main names a revision even where a file of that name exists
-    on_main = git(a.repo, "rev-list", main, "--")[1].split() if a.repo and rest else []
-    lanes = _Lanes(
-        repo=a.repo,
-        main=main,
-        gates=gates,
-        worktrees=_worktrees(a.repo) if a.repo else {},
-        records=records,
-        commits=commits,
-        on_main=frozenset(on_main),
-        cache=cache,
-        hits=hits,
-    )
-    merged = sum(_checkpoint(c, texts[c], base, lanes, rep) for c in checkpoints)
-    cache.save()
-    lane_trees = sum(1 for b in lanes.worktrees if b != main)
-    return f"lanes      {len(checkpoints)} checkpoints ({plans} plans)" + (
-        f" · {merged} merged into {main} · {lane_trees} lane worktrees"
-        if a.repo
-        else ""
-    )
-
-
-def _gates_line(
-    gates: list[GateLog], lanes: pathlib.Path, base: pathlib.Path, rep: Report
-) -> str:
-    """Return the report's `gates` line; flag a red or unfinished gate log."""
-    green = red = running = 0
-    for log, _, _, code, ci in gates:
-        if code is None:
-            running += 1
-            rep.flag(f"{'gate log has no exit= line':<34} lanes/{log.name}")
-        elif code == "0":
-            green += 1
-        else:
-            red += 1
-            what = f"RED harness={ci} exit={code}" if ci else f"RED exit={code}"
-            rep.flag(f"{what:<34} lanes/{log.name}")
-    waves = sorted(lanes.glob("wave*-integration.md"))
-    for w in waves:
-        rep.file(w, base)
-    return (
-        f"gates      {green} green · {red} red · {running} without exit= · "
-        f"{len(waves)} integration files"
-    )
+    if not base.is_dir():
+        return None
+    # Without --repo, --activate wrote the marker in the planning dir's repository.
+    route = marker_path(a.repo or base, str(base.resolve())) if use_git else None
+    state, index_text = _file_facts(a, _rung(a, route), fresh=fresh, extra=extra)
+    cache = None
+    if use_git and a.repo:
+        state["git"], cache = _git_facts(a, a.repo, route, state, index_text)
+    state = derive(state)
+    if write_cache and cache is not None:
+        cache.save()
+    return state
 
 
 def report(a: RouteArgs, *, fresh: bool = True, extra: Iterable[str] = ()) -> int:
@@ -874,37 +1460,9 @@ def report(a: RouteArgs, *, fresh: bool = True, extra: Iterable[str] = ()) -> in
     Returns:
         The exit code: 2 with no planning dir, else 0.
     """
-    base, p = pathlib.Path(a.planning_dir), a.phase
-    if not base.is_dir():
-        print(f"no planning dir at {base}")
+    state = collect(a, fresh=fresh, extra=extra, write_cache=True)
+    if state is None:
+        print(f"no planning dir at {pathlib.Path(a.planning_dir)}")
         return 2
-    rep = Report(show_all=a.all, fresh=fresh)
-    out = [f"route state · {base} · phase {p} · {time.strftime('%Y-%m-%d %H:%M')}"]
-    main, tip = _main_branch(a, rep)
-    _handoff_flags(base, rep)
-    # Without --repo, --activate wrote the marker in the planning dir's repository.
-    route = marker_path(a.repo or base, str(base.resolve()))
-    out.append(_decisions(a, base, route, rep))
-    if a.sections:
-        out.append(_spec(a, a.sections, base, rep))
-
-    rec = sorted((base / "reconcile").glob(f"p{p}-*.md"))
-    for f in rec:
-        rep.file(f, base)
-    out.append(f"reconcile  {len(rec)} files")
-
-    plans_line, ids = _plans(base, p, rep)
-    out.append(plans_line)
-    lanes = base / "lanes"
-    gates = gate_logs(lanes, p)
-    out.append(_lanes_line(a, _cache(a, route, main, tip), gates, len(ids), rep))
-    out.append(_gates_line(gates, lanes, base, rep))
-    out.extend(extra)
-
-    print("\n".join(out))
-    if rep.lines:
-        print("\n".join(rep.lines))
-    print(f"flags      {len(rep.flags)}")
-    for f in rep.flags:
-        print(f"  {f}")
+    print(render(state, show_all=a.all))
     return 0

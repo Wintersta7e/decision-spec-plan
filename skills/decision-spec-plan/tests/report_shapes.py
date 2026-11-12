@@ -8,16 +8,20 @@ build on `Shapes` live in the test files.
 """
 
 import datetime as dt
+import json
 import os
 import re
 from collections.abc import Callable
 from pathlib import Path
-from typing import TypedDict
+from typing import TYPE_CHECKING, TypedDict, cast
 
 from typing_extensions import override
 
 import support
-from support import RS
+from support import PY, RS, SCRIPTS
+
+if TYPE_CHECKING:
+    from dsp_route.report import State
 
 DATE = "2026-01-01T00:00:00+0000"
 GOLDEN_DIR = support.TESTS / "golden"
@@ -27,6 +31,13 @@ HEADER = re.compile(r"route state · .*")
 WRITTEN = re.compile(r"written \d+s ago")
 AGED_S = 3 * 86400
 FRESH_FILE_S = 61
+# argv: "git" or "nogit", then the route's CLI arguments; prints collect()'s object
+RUNNER = f"""import json, sys
+sys.path.insert(0, {str(SCRIPTS)!r})
+from dsp_route import report
+from dsp_route.common import RouteArgs, parser
+a = parser().parse_args(sys.argv[2:], namespace=RouteArgs())
+print(json.dumps(report.collect(a, use_git=sys.argv[1] == "git")))"""
 
 
 class Shape(TypedDict):
@@ -294,3 +305,53 @@ def _odd(cls: type[Shapes], root: Path) -> tuple[list[str], list[str]]:
     _ = cls.write(plan / "plans/p1-02-a.md", "# p1-02-a\n")
     _ = cls.write(plan / "manifests/p1-02-a.json", "{not json\n")
     return _repo_argv(r, plan, "--main", "nope", "--sections", "1-3"), []
+
+
+def collect_json(
+    cls: type[support.Sandbox],
+    argv: list[str],
+    *,
+    use_git: bool = True,
+    env: dict[str, str] | None = None,
+) -> "State":
+    """Return `report.collect()`'s object of a route, run in a subprocess as JSON."""
+    r = cls.run_(
+        [PY, "-c", RUNNER, "git" if use_git else "nogit", *argv], env=env, merge=True
+    )
+    if r.code != 0:
+        msg = f"collect_json {argv}: exit {r.code}: {r.out}"
+        raise AssertionError(msg)
+    return cast("State", json.loads(r.out))
+
+
+def lane_states(cls: type[Shapes], root: Path) -> list[str]:
+    """Return the CLI arguments of a route whose nine plan ids cover every lane state.
+
+    p1-01 merged, its branch then one commit on; p1-02 red; p1-03 gating; p1-04 ready;
+    p1-05 no gate log; p1-06 a dirty gate; p1-07 no SHA; p1-08 a SHA not in the
+    repository; p1-09 only in the plan index.
+    """
+    r, plan, _ = cls.base(root)
+    lanes = plan / "lanes"
+    shas = {n: cls.lane(r, f"p1-0{n}-a", n) for n in range(1, 7)}
+    _ = cls.git("-C", r, "merge", "-q", "--no-ff", "-m", "merge p1-01-a", "p1-01-a")
+    _ = cls.git("-C", r, "worktree", "add", "-q", root / "wt-01", "p1-01-a")
+    _ = cls.commit(root / "wt-01", "g1", "more\n", "p1-01-a more")
+    gates = {
+        2: "dirty=0\nexit=1\n",
+        3: "dirty=0\nrunning\n",
+        4: "dirty=0\nexit=0\n",
+        6: "dirty=1\nexit=0\n",
+    }
+    for n, body in gates.items():
+        _ = cls.write(lanes / f"p1-0{n}-a-gate.log", f"sha={shas[n]} {body}")
+    for n, sha in shas.items():
+        _ = cls.write(lanes / f"p1-0{n}-a-checkpoint.md", f"Final SHA: {sha}\n")
+    _ = cls.write(lanes / "p1-07-a-checkpoint.md", "- [ ] Task 1\n")
+    _ = cls.write(lanes / "p1-08-a-checkpoint.md", f"Final SHA: {'deadbeef' * 5}\n")
+    _ = cls.write(
+        plan / "plans/p1-00-index.md",
+        "# Phase 1 plans\n\n| Plan | Wave | Depends on |\n|---|---|---|\n"
+        + "".join(f"| p1-0{n}-a | 1 | — |\n" for n in range(1, 10)),
+    )
+    return _repo_argv(r, plan, "--main", "main")
