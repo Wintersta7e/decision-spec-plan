@@ -52,6 +52,16 @@ RECORD_ONLY = frozenset(
         "SessionEnd",
     }
 )
+# The PreToolUse tools hooks.json registers for the monitor alone, guarded the same way:
+# no check may see them, as no other PreToolUse entry matches them.
+RECORD_ONLY_TOOLS = frozenset({"AskUserQuestion"})
+
+
+def record_only(name: str, event: Mapping[str, object]) -> bool:
+    """Return whether the event came from a guarded, recording-only registration."""
+    if name == "PreToolUse":
+        return event.get("tool_name") in RECORD_ONLY_TOOLS
+    return name in RECORD_ONLY
 
 
 def unrouted(event: Mapping[str, object], entry_path: pathlib.Path) -> bool:
@@ -342,13 +352,13 @@ def _agent_stop(event: Mapping[str, object], session: str) -> int:
         return 0
 
 
-def _switched_off(name: str) -> bool:
-    """Return whether name is an event only the monitor wants, and the monitor is off.
+def _switched_off(name: str, event: Mapping[str, object]) -> bool:
+    """Return whether the event is one only the monitor wants, and the monitor is off.
 
     hooks.json runs those only with the switch on; a hand run or an edited hooks.json
     then records nothing, and touches no file.
     """
-    if name not in RECORD_ONLY:
+    if not record_only(name, event):
         return False
     from .switch import on
 
@@ -384,7 +394,7 @@ def _registered(
     # --activate wrote the entry; a check that finds a key missing fails on its own
     entry = cast("RegistryEntry", cast("object", load_json(entry_path)))
     try:
-        if name in RECORD_ONLY:
+        if record_only(name, event):
             return 0  # recorded below; a lead's Stop must never reach the report
         return _dispatch(name, event, session, entry_path, entry)
     finally:
@@ -464,6 +474,6 @@ def hook() -> int:
         if line := checked(unloaded, event):
             emit(name, line)
             return 0
-    if not session or _switched_off(name) or not entry_path.exists():
+    if not session or _switched_off(name, event) or not entry_path.exists():
         return 0
     return _registered(name, event, session, entry_path, t0)

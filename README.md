@@ -120,7 +120,7 @@ every option states its consequence.
 ## Hooks
 
 While the plugin is enabled, its hooks load in **every** session but act only in a session that ran
-`route_state.py --activate`. Any other session pays about 0.02 s per tool call. Each of the seven
+`route_state.py --activate`. Any other session pays about 0.02 s per tool call. Each of the eight
 recording-only hooks costs one `sh` and no Python while tracking is off.
 
 ```mermaid
@@ -163,7 +163,7 @@ status.
 
 ### Monitor tracking (optional, off by default)
 
-The seven recording-only hooks record a routed session's events for the monitor, and only while
+The eight recording-only hooks record a routed session's events for the monitor, and only while
 tracking is on. Turn it on with one line in your user settings file, `~/.claude/settings.json`
 (recommended):
 
@@ -175,7 +175,7 @@ tracking is on. Turn it on with one line in your user settings file, `~/.claude/
   only after a relaunch.
 - The same line in a committed project settings file (`.claude/settings.json`) turns tracking on
   for everyone who clones the repository.
-- Off, each of the seven costs one `sh` test (about 0.4–0.6 ms) and no Python. On, a hook waits for
+- Off, each of the eight costs one `sh` test (about 0.4–0.6 ms) and no Python. On, a hook waits for
   the event log's lock at most 50 attempts, about 28 ms in the worst case, then drops the event
   rather than wait longer.
 - Recording needs a **POSIX hook shell** (Linux, macOS, Windows with Git Bash). Elsewhere the guard
@@ -183,7 +183,7 @@ tracking is on. Turn it on with one line in your user settings file, `~/.claude/
 - Recorded, one line per hook event of a routed session: the event and its time, the route's run,
   the agent it fires in, a tool's name and call id, a dispatch's name, short description and agent
   type, a launch's or return's agent id, model, duration and token counts, a Bash call's
-  description and a message's recipient. Never stored: a prompt, a message's content, any other
+  description, a message's recipient and the agent name or task id a TaskStop names. Never stored: a prompt, a message's content, any other
   tool input, a tool's output, the last assistant message, a compaction summary, a transcript path.
 - The logs live in `~/.claude/dsp-routes/events/`, one `<session-id>.jsonl` per session.
 - Expiry is **opportunistic**: a log untouched for 14 days is removed the next time a subagent

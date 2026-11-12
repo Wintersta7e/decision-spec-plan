@@ -3,9 +3,11 @@
 
 import ast
 import hashlib
+import io
 import json
 import os
 import re
+import unittest.mock
 from pathlib import Path
 from typing import NamedTuple, Required, TypedDict, cast
 
@@ -130,6 +132,7 @@ EXPECTED = [
     "pre",
     "dispatch",
     "pre",
+    "pre",
     "stop",
     "idle",
     "start",
@@ -170,13 +173,16 @@ def hooks_file() -> dict[str, list[_Registration]]:
     return cast("dict[str, list[_Registration]]", data["hooks"])
 
 
-def guarded(event: str) -> bool:
-    """Whether event's registrations are the recording-only ones the switch guards.
+def guarded(event: str, matcher: str | None) -> bool:
+    """Whether the registration is a recording-only one the switch guards.
 
-    Told by the event, not by the command: an entry that lost its guard is still one.
+    Told by event and matcher, not by the command: an entry that lost its guard is
+    still one.
     """
     from dsp_route import hook  # imported lazily by route_state.py (TID253)
 
+    if event == "PreToolUse":
+        return matcher in hook.RECORD_ONLY_TOOLS
     return event in hook.RECORD_ONLY
 
 
@@ -215,6 +221,13 @@ def sequence(cwd: str) -> list[dict[str, object]]:
             tool_use_id="n1",
             tool_input={},
         ),
+        # only the guarded `AskUserQuestion` entry matches it
+        lead(
+            "PreToolUse",
+            tool_name="AskUserQuestion",
+            tool_use_id="q1",
+            tool_input={"questions": []},
+        ),
         lead("SubagentStop", **a1),
         lead("TeammateIdle", agent_id="a1", teammate_name="helper", team_name="t"),
         lead("SubagentStart", **a1),
@@ -247,12 +260,12 @@ class Ran(NamedTuple):
 
 def existing(outputs: dict[Key, tuple[str, int]]) -> dict[Key, tuple[str, int]]:
     """The outputs of the registrations the switch does not guard."""
-    return {k: v for k, v in outputs.items() if not guarded(k[1])}
+    return {k: v for k, v in outputs.items() if not guarded(k[1], k[2])}
 
 
 def loud(outputs: dict[Key, tuple[str, int]]) -> list[Key]:
     """The guarded registrations' runs that printed something or did not exit 0."""
-    return [k for k, v in outputs.items() if guarded(k[1]) and v != ("", 0)]
+    return [k for k, v in outputs.items() if guarded(k[1], k[2]) and v != ("", 0)]
 
 
 class OffIsToday(support.Sandbox):
@@ -298,7 +311,7 @@ class OffIsToday(support.Sandbox):
             for event, regs in hooks.items()
             for e in regs
             for h in e["hooks"]
-            if not (drop_guarded and guarded(event))
+            if not (drop_guarded and guarded(event, e.get("matcher")))
         ]
 
     @staticmethod
@@ -406,6 +419,30 @@ class OffIsToday(support.Sandbox):
             a.scanned > 0 and not any(differ.values()),
             differ,
         )
+
+    def test_asked_reaches_no_check(self) -> None:
+        """A PreToolUse of AskUserQuestion is only recorded: no PreToolUse check."""
+        from dsp_route import hook, switch  # imported lazily by the hook (TID253)
+
+        registry = self.T / "asked"
+        _ = self.write(registry / "s1.json", "{}")
+        checks = unittest.mock.Mock(return_value=0)
+        # each tool: how often the PreToolUse checks run for it
+        payloads = {"AskUserQuestion": 0, "Bash": 1}
+        for tool, want in payloads.items():
+            event = {"session_id": "s1", "hook_event_name": "PreToolUse"}
+            checks.reset_mock()
+            with (
+                unittest.mock.patch.dict(os.environ, {switch.NAME: "0"}),
+                unittest.mock.patch.object(hook, "REGISTRY", registry),
+                unittest.mock.patch.object(hook, "_pre_tool_use", checks),
+                unittest.mock.patch(
+                    "sys.stdin", io.StringIO(json.dumps({**event, "tool_name": tool}))
+                ),
+            ):
+                code = hook.hook()
+            self.ok(f"{tool}: exit 0", code == 0, code)
+            self.ok(f"{tool}: {want} check runs", checks.call_count == want)
 
     def test_monitor_on_is_observed_and_silent(self) -> None:
         """Switch on: a line per payload, the same outputs, the guarded ones silent."""

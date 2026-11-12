@@ -92,7 +92,12 @@ _USAGE = (
     "cache_read_input_tokens",
 )
 # (kind, field): the field's length limit
-_LIMITS = {("dispatch", "desc"): 200, ("pre", "desc"): 120, ("failed", "error"): 200}
+_LIMITS = {
+    ("dispatch", "desc"): 200,
+    ("pre", "desc"): 120,
+    ("failed", "error"): 200,
+    ("post", "target"): 128,
+}
 # what goes, in turn, while a line is over LINE_MAX; then only _JOIN stays
 _DROPS = (("desc", "error", "cwd"), ("planning_dir", "marker"))
 _JOIN = ("v", "ts", "session", "run", "hook", "ev")
@@ -196,6 +201,10 @@ def _post(event: Mapping[str, object]) -> Built:
         unknown = "" if status is None else f"={str(status)[:_GAP_VALUE]}"
         gaps.append(f"tool_response.status{unknown}")
     _copy(fields, event, ("tool", "tool_name", str), ("ms", "duration_ms", int))
+    if event.get("tool_name") == "TaskStop":
+        # the agent's name when the lead stopped it by name, else a task id: a stopped
+        # agent fires no SubagentStop, so this is the only trace of its end
+        _copy(fields, _sub(event, "tool_input"), ("target", "task_id", str))
     return "post", fields, gaps
 
 

@@ -17,7 +17,13 @@ from support import PLUGIN, SCRIPTS
 
 SKILL_LIMIT = 19000  # characters of SKILL.md, under the 20,000 a compaction keeps
 # the guarded events hooks.json runs in the background: none can block the session
-ASYNC = {"SubagentStart", "PostToolUseFailure", "PostCompact", "Notification"}
+ASYNC = [
+    "Notification",
+    "PostCompact",
+    "PostToolUseFailure",
+    "PreToolUse",
+    "SubagentStart",
+]
 
 # one command of a hooks.json entry; the functional form, as `async` is a keyword
 _Hook = TypedDict(
@@ -99,6 +105,8 @@ class PluginFiles(support.Sandbox):
                 "PreToolUse Agent|Bash|Write|Edit|MultiEdit|NotebookEdit|SendMessage "
                 f"{route}"
             ),
+            # recorded for the monitor's `asked` state; no check sees it
+            f"PreToolUse AskUserQuestion {g}",
             'PreToolUse Bash python3 "${CLAUDE_PLUGIN_ROOT}/scripts/push_guard.py"',
             # an MCP tool's review note, held like `glab mr note` (F104); a matcher with
             # `^` or `$` is an unanchored regex, so both anchors are needed
@@ -140,10 +148,20 @@ class PluginFiles(support.Sandbox):
 
         from dsp_route import hook  # imported lazily by route_state.py (TID253)
 
-        guarded = {event for event, h in cmds if h["command"] == g}
+        guarded = {
+            (event, e.get("matcher") or "")
+            for event, entries in hooks.items()
+            for e in entries
+            for h in e["hooks"]
+            if h["command"] == g
+        }
+        owned = {
+            (e, "Agent" if e == "PostToolUseFailure" else "") for e in hook.RECORD_ONLY
+        } | {("PreToolUse", t) for t in hook.RECORD_ONLY_TOOLS}
         self.ok(
-            f"the {len(guarded)} guarded events are hook.RECORD_ONLY",
-            frozenset(guarded) == hook.RECORD_ONLY,
+            f"the {len(guarded)} guarded entries are hook.RECORD_ONLY and "
+            "hook.RECORD_ONLY_TOOLS",
+            guarded == owned,
             sorted(guarded),
         )
         bare = re.compile(r'subagent_type: "dsp-|agentType: .dsp-')

@@ -92,11 +92,11 @@ SessionStart matcher `compact|resume`, PostToolUse matcher `*`, UserPromptSubmit
 PreToolUse matcher `Agent|Bash|Write|Edit|MultiEdit|NotebookEdit|SendMessage`,
 PreToolUse matcher `^mcp__.*create_note$` (a review note posted through an MCP tool,
 held as a `gh` or `glab` review comment is), SubagentStop and TeammateIdle; and
-`push_guard.py` under PreToolUse matcher `Bash`. Seven more run `--hook` only when the
+`push_guard.py` under PreToolUse matcher `Bash`. Eight more run `--hook` only when the
 hook shell sees `DSP_MONITOR=1`: SubagentStart, PostToolUseFailure matcher `Agent`,
-PostCompact, Notification, Stop, StopFailure and SessionEnd. They record the session's
-events under `~/.claude/dsp-routes/events/` (README, Monitor tracking).
-Those seven print nothing.
+PostCompact, Notification, Stop, StopFailure, SessionEnd and PreToolUse matcher
+`AskUserQuestion`. They record the session's events under `~/.claude/dsp-routes/events/`
+(README, Monitor tracking). Those eight print nothing.
 """
 
 import sys

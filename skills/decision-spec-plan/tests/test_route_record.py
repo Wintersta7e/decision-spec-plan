@@ -220,6 +220,28 @@ class Recorder(support.Sandbox):
             not self.events_dir.exists(),
         )
 
+    def test_task_stop_target(self) -> None:
+        """A TaskStop post keeps the name or id it stopped (128 chars); others none."""
+        long = "w" * 200
+
+        def stop(tuid: str, tool: str, task: str) -> dict[str, object]:
+            return event(
+                "PostToolUse",
+                tool_name=tool,
+                tool_use_id=tuid,
+                tool_input={"task_id": task},
+            )
+
+        calls = [
+            stop("t1", "TaskStop", "worker-1"),
+            stop("t2", "TaskStop", long),
+            stop("t3", "Bash", "worker-1"),
+        ]
+        self.rec(*((c, ENTRY, 1.0, None) for c in calls))
+        got = [x.get("target") for x in self.events()]
+        want = ["worker-1", long[: len("w" * 128)], None]
+        self.ok(f"{len(calls)} posts: targets {got}", got == want, got)
+
     def test_parallel_writers(self) -> None:
         """40 processes x 200 lines on one log: none torn, none lost."""
         procs, lines = 40, 200
