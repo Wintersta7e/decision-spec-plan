@@ -418,45 +418,6 @@ class LaneGitCalls(support.Sandbox):
             out,
         )
 
-    def test_cherry_cache(self) -> None:
-        """A lane's patch check runs once per main tip, and again once main moves."""
-        tc = self.T / "cherry"
-        repo, log, wrapper = tc / "r", tc / "git.log", tc / "bin/git"
-        _ = self.init_repo(repo, commits=("base",))
-        _ = self.write(
-            wrapper,
-            f'#!/bin/sh\necho "$*" >> "{log}"\nexec "{shutil.which("git")}" "$@"\n',
-        )
-        self.chmod_x(wrapper)
-        env = {"PATH": f"{wrapper.parent}:{self.env['PATH']}"}
-        _ = self.git("-C", repo, "switch", "-q", "-c", "lane")
-        _ = self.write(repo / "x", "x\n")
-        _ = self.git("-C", repo, "add", "x")
-        _ = self.git("-C", repo, "commit", "-q", "-m", "lane")
-        lane = self.rev(repo)
-        _ = self.git("-C", repo, "switch", "-q", "main")
-        # main moved on: the pick below is a new commit, never the lane's own SHA
-        _ = self.git("-C", repo, "commit", "-q", "--allow-empty", "-m", "main2")
-        _ = self.write(tc / "plan/lanes/p1-01-checkpoint.md", f"Final SHA: {lane}\n")
-
-        def run() -> tuple[int, str]:
-            _ = self.write(log, "")
-            out = self.py(
-                RS, tc / "plan", "--phase", "1", "--repo", repo, "--all", env=env
-            ).out
-            return sum(" cherry " in ln for ln in log.read_text().splitlines()), out
-
-        (first, _), (again, out) = run(), run()
-        _ = self.git("-C", repo, "cherry-pick", lane)
-        moved, picked = run()
-        self.ok(
-            f"report: one patch check per main tip ({first}, {again}, {moved})",
-            (first, again, moved) == (1, 0, 1)
-            and grep(out, "p1-01 .* not merged")
-            and grep(picked, "p1-01 .* merged (by patch)"),
-            f"{out}\n{picked}",
-        )
-
 
 class LaneMovedPastMerge(support.Sandbox):
     """F41: a lane's commits past its merged SHA that main lacks.

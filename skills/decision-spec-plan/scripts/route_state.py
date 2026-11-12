@@ -29,8 +29,7 @@ Usage:
 --main defaults to the repository's default branch. --sections `38-` counts every
 section from §38 on (a phase whose last section is not known yet). --all lists every
 file with its size, age and last line. Exit 0 on a report, 2 when the planning dir does
-not exist. The report keeps whether main holds each lane's patches, for main's current
-tip, in <git-common-dir>/dsp-cherry.json: a cache, safe to delete.
+not exist.
 
 --activate also writes the arguments to <git-common-dir>/dsp-route-<id>.json, one per
 planning dir, which marks the repository as running that route (push_guard.py then holds

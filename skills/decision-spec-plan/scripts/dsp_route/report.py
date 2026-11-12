@@ -11,7 +11,8 @@ import os
 import pathlib
 import re
 import time
-from collections.abc import Iterable
+from collections.abc import Iterable, Mapping
+from typing import TypedDict
 
 from .common import (
     RouteArgs,
@@ -36,10 +37,17 @@ RULINGS_MAX = 12_000
 PENDING_MAX = 8
 # the head of a gate log, where its `sha=` and `harness=` lines are read
 GATE_HEAD = 20
-# Each lane's `git cherry` answer, kept in the git common dir for one main tip: a
-# cherry walks main's trees since the lane's base, 4-5 s each on a slow drive. Not
-# `dsp-route*.json`, which push_guard.py reads as route markers.
-CHERRIES = "dsp-cherry.json"
+# The merged-result cache, `<marker stem>.merged` beside the route's marker: each lane
+# commit proven merged, with the main tip it was proven against. A cherry walks main's
+# trees since the lane's base, 4-5 s each on a slow drive; a lane once merged stays
+# merged while that tip stays an ancestor of main. Not `dsp-route*.json`, which
+# push_guard.py reads as route markers.
+MERGED_V = 1
+FULL_SHA = re.compile(r"[0-9a-f]{40}")
+# `as` and `record`: the integrator's main SHA and record file, for a `record` merge
+MergedLane = TypedDict(
+    "MergedLane", {"main": str, "how": str, "as": str | None, "record": str | None}
+)
 SHA = re.compile(r"\b[0-9a-f]{7,40}\b")
 FINAL_SHA = re.compile(
     r"^\W*Final SHA:\W*([0-9a-f]{7,40})\b", re.MULTILINE | re.IGNORECASE
@@ -58,6 +66,74 @@ BASE = re.compile(
 GateLog = tuple[pathlib.Path, str, str, str | None, str | None]
 # (path, HEAD) of a branch's worktree
 Worktree = tuple[str | None, str | None]
+
+
+def merged_path(route: pathlib.Path | None) -> pathlib.Path | None:
+    """Return the route's merged-result cache file, None without a marker file."""
+    if route is None or not route.exists():
+        return None
+    return route.with_name(route.stem + ".merged")
+
+
+def _merged_lane(value: object) -> MergedLane | None:
+    """Return one cache entry as read, None when it is malformed."""
+    e = as_dict(value) or {}
+    main, how, as_, record = e.get("main"), e.get("how"), e.get("as"), e.get("record")
+    if not (isinstance(main, str) and FULL_SHA.fullmatch(main)):
+        return None
+    if how == "record" and isinstance(as_, str) and isinstance(record, str):
+        return {"main": main, "how": "record", "as": as_, "record": record}
+    if how in ("ancestor", "patch") and as_ is None and record is None:
+        return {"main": main, "how": str(how), "as": None, "record": None}
+    return None
+
+
+def read_merged(path: pathlib.Path) -> tuple[dict[str, MergedLane], str | None]:
+    """Return the cache's entries and its text: ({}, "") absent, ({}, None) unreadable.
+
+    An unparsable file, another version, or one malformed entry reads as empty whole;
+    the next report rewrites it.
+    """
+    try:
+        raw = path.read_text(errors="replace")
+    except FileNotFoundError:
+        return {}, ""
+    except OSError:
+        return {}, None
+    try:
+        data = as_dict(parse_json(raw)) or {}
+    except ValueError:
+        return {}, raw
+    lanes = as_dict(data.get("lanes"))
+    if data.get("v") != MERGED_V or lanes is None:
+        return {}, raw
+    entries = {
+        k: e
+        for k, v in lanes.items()
+        if FULL_SHA.fullmatch(k) and (e := _merged_lane(v))
+    }
+    return (entries if len(entries) == len(lanes) else {}), raw
+
+
+def write_merged(
+    path: pathlib.Path, lanes: Mapping[str, MergedLane], raw: str | None
+) -> None:
+    """Replace the cache whole with lanes, unless it was unreadable or is unchanged.
+
+    Through a tmp file and a rename, so a concurrent report never reads half of it. A
+    failed write never fails the report: the next one recomputes what it lacks.
+    """
+    if raw is None:
+        return
+    text = json.dumps({"v": MERGED_V, "lanes": lanes}, indent=1, sort_keys=True) + "\n"
+    if text == raw:
+        return
+    tmp = path.with_name(f"{path.name}.{os.getpid()}.tmp")
+    try:
+        _ = tmp.write_text(text)
+        _ = tmp.replace(path)
+    except OSError:
+        tmp.unlink(missing_ok=True)
 
 
 def describe(path: pathlib.Path) -> tuple[list[str], int, float, str]:
@@ -288,17 +364,20 @@ def round_moved(planning_dir: StrPath, route: RouteArgs) -> list[str]:
     return moved_under(route.repo, index.read_text(errors="replace"))
 
 
-def _main_branch(a: RouteArgs, rep: Report) -> str:
-    """Return the main branch the report checks lanes against; flag a missing --main."""
+def _main_branch(a: RouteArgs, rep: Report) -> tuple[str, str | None]:
+    """Return the main branch the report checks lanes against, and its tip.
+
+    The tip is None without --repo, and on a missing --main, which is flagged.
+    """
     main = a.main or (default_branch(a.repo) if a.repo else "main")
-    if (
-        a.repo
-        and git(a.repo, "rev-parse", "--verify", "--quiet", f"refs/heads/{main}")[0]
-    ):
+    if not a.repo:
+        return main, None
+    rc, tip = git(a.repo, "rev-parse", "--verify", "--quiet", f"refs/heads/{main}")
+    if rc:
         fallback = default_branch(a.repo)
         rep.flag(f"{'--main ' + main + ' does not exist':<34} using {fallback}")
-        main = fallback
-    return main
+        return fallback, None
+    return main, tip
 
 
 def _handoff_flags(base: pathlib.Path, rep: Report) -> None:
@@ -312,8 +391,13 @@ def _handoff_flags(base: pathlib.Path, rep: Report) -> None:
             )
 
 
-def _decisions(a: RouteArgs, base: pathlib.Path, rep: Report) -> str:
-    """Return the report's `decisions` line; flag the D files and the base's drift."""
+def _decisions(
+    a: RouteArgs, base: pathlib.Path, route: pathlib.Path | None, rep: Report
+) -> str:
+    """Return the report's `decisions` line; flag the D files and the base's drift.
+
+    route is the route's marker path.
+    """
     dec = base / "decisions" / f"phase{a.phase}"
     index = dec / "00-index.md"
     index_text = index.read_text(errors="replace") if index.exists() else ""
@@ -325,9 +409,7 @@ def _decisions(a: RouteArgs, base: pathlib.Path, rep: Report) -> str:
         m[1]: f for f in sorted(dec.glob("D*.md")) if (m := re.match(r"D(\d+)", f.name))
     }
     # At rung S the index holds the decisions themselves: no D file follows
-    # (templates.md §1). Without --repo, --activate wrote the marker in the planning
-    # dir's repository.
-    route = marker_path(a.repo or base, str(base.resolve()))
+    # (templates.md §1).
     rung = a.rung or (load_json(route).get("rung") if route else None)
     waiting = [f"D{n}" for n in wanted if n not in have and rung != "S"]
     markers = headers = 0
@@ -450,6 +532,73 @@ def _merge_records(lanes: pathlib.Path) -> dict[str, tuple[str, str, str]]:
     return records
 
 
+@dataclasses.dataclass
+class _Cache:
+    """One report's merged-result cache: what it read, what it keeps, its checks.
+
+    path is None when the report keeps no cache: no --repo, no marker file, no main
+    tip, or a file it cannot read.
+    """
+
+    path: pathlib.Path | None
+    main: str
+    tip: str
+    known: dict[str, MergedLane]
+    raw: str | None
+    # the entries of this report's merged lanes: the next file
+    keep: dict[str, MergedLane] = dataclasses.field(default_factory=dict)
+    # {cached main: whether it is an ancestor of the tip}, one check each per report
+    ancestry: dict[str, bool] = dataclasses.field(default_factory=dict)
+
+    def hit(
+        self,
+        repo: str,
+        full: str,
+        plan_id: str,
+        records: Mapping[str, tuple[str, str, str]],
+    ) -> MergedLane | None:
+        """Return the entry that proves a lane merged, None when it proves nothing.
+
+        Valid while its main is the tip or an ancestor of it and, for a `record` merge,
+        while the integration files hold the same record.
+        """
+        e = self.known.get(full)
+        if e is None:
+            return None
+        rec = records.get(plan_id)
+        if e["how"] == "record" and not (
+            rec
+            and full.startswith(rec[0])
+            and (rec[1], rec[2]) == (e["as"], e["record"])
+        ):
+            return None
+        main = e["main"]
+        if main != self.tip and main not in self.ancestry:
+            self.ancestry[main] = (
+                git(repo, "merge-base", "--is-ancestor", main, self.tip)[0] == 0
+            )
+        return e if main == self.tip or self.ancestry[main] else None
+
+    def save(self) -> None:
+        """Write the kept entries; drop an older version's cache of unmerged answers."""
+        if self.path is None:
+            return
+        write_merged(self.path, self.keep, self.raw)
+        # dsp-cherry.json kept unmerged lanes' answers too, which a later merge leaves
+        # wrong
+        with contextlib.suppress(OSError):
+            self.path.with_name("dsp-cherry.json").unlink(missing_ok=True)
+
+
+def _cache(
+    a: RouteArgs, route: pathlib.Path | None, main: str, tip: str | None
+) -> _Cache:
+    """Return the report's cache of the route at route (its marker) for main's tip."""
+    path = merged_path(route) if a.repo and tip else None
+    known, raw = read_merged(path) if path else ({}, None)
+    return _Cache(path if raw is not None else None, main, tip or "", known, raw)
+
+
 @dataclasses.dataclass(frozen=True)
 class _Lanes:
     """What each lane checkpoint is checked against."""
@@ -460,30 +609,13 @@ class _Lanes:
     worktrees: dict[str, Worktree]
     records: dict[str, tuple[str, str, str]]
     # each checkpoint SHA's full commit SHA, and every commit on main: one git call
-    # each for all lanes, where one per lane cost a hook 24 s at 47 lanes
+    # each for all lanes the cache does not answer, where one per lane cost a hook
+    # 24 s at 47 lanes
     commits: dict[str, str]
     on_main: frozenset[str]
-    # {lane commit: whether main holds its every patch} at main's tip; _merged adds
-    cherries: dict[str, bool]
-
-
-def _cherries(repo: str, tip: str) -> tuple[pathlib.Path | None, dict[str, bool]]:
-    """Return the cherry cache's file and the answers it holds for main's tip."""
-    route = marker_path(repo)
-    if route is None:
-        return None, {}
-    path = route.with_name(CHERRIES)
-    held = as_dict(load_json(path).get(tip)) or {}
-    return path, {k: v for k, v in held.items() if isinstance(v, bool)}
-
-
-def _save_cherries(path: pathlib.Path, tip: str, cherries: dict[str, bool]) -> None:
-    """Replace the cherry cache whole, so a concurrent hook never reads half of it."""
-    tmp = path.with_name(f"{path.name}.{os.getpid()}")
-    # a cache: a read-only git dir costs the next report its cherries, nothing else
-    with contextlib.suppress(OSError):
-        _ = tmp.write_text(json.dumps({tip: cherries}))
-        _ = tmp.replace(path)
+    cache: _Cache
+    # {checkpoint file name: (full SHA, entry)} of the lanes the cache answered
+    hits: dict[str, tuple[str, MergedLane]]
 
 
 def _commits(repo: str, shas: list[str]) -> dict[str, str]:
@@ -506,27 +638,62 @@ def _commits(repo: str, shas: list[str]) -> dict[str, str]:
     }
 
 
-def _merged(lanes: _Lanes, repo: str, plan_id: str, full: str) -> tuple[bool, str]:
-    """Return whether a lane's commit is on the main branch, and how it got there."""
-    main = lanes.main
-    inside = full in lanes.on_main
-    how = ""
-    if not inside:
-        # A rebased lane: every commit's patch is already on main.
-        held = lanes.cherries.get(full)
-        if held is None:
-            rc, cherry = git(repo, "cherry", main, full)
-            held = rc == 0 and not any(ln.startswith("+") for ln in cherry.splitlines())
-            # a failed cherry is asked again, never kept as an answer
-            if rc == 0:
-                lanes.cherries[full] = held
-        inside = held
-        how = " (by patch)" if inside else ""
+def _answered(
+    repo: str,
+    cache: _Cache,
+    found: Mapping[str, str],
+    records: Mapping[str, tuple[str, str, str]],
+) -> tuple[dict[str, tuple[str, MergedLane]], dict[str, str]]:
+    """Return the lanes the cache answers, and the full SHA of every other lane's SHA.
+
+    found is {checkpoint file name: its SHA}. A 40-hex SHA is looked up as written;
+    the rest are resolved first, all in one batched call, which a report whose every
+    lane hits never makes.
+    """
+
+    def hits(shas: Mapping[str, str]) -> dict[str, tuple[str, MergedLane]]:
+        return {
+            name: (full, e)
+            for name, full in shas.items()
+            if FULL_SHA.fullmatch(full)
+            and (e := cache.hit(repo, full, name[: -len("-checkpoint.md")], records))
+        }
+
+    answered = hits(found)
+    commits = _commits(repo, sorted({s for n, s in found.items() if n not in answered}))
+    resolved = {
+        n: commits[s] for n, s in found.items() if n not in answered and s in commits
+    }
+    return answered | hits(resolved), commits
+
+
+def _merged(lanes: _Lanes, repo: str, plan_id: str, full: str) -> MergedLane | None:
+    """Return how a lane's commit got onto the main branch, None when it is not on it.
+
+    As the cache keeps it, proven against main's tip.
+    """
+    tip = lanes.cache.tip
+    if full in lanes.on_main:
+        return {"main": tip, "how": "ancestor", "as": None, "record": None}
+    # A rebased lane: every commit's patch is already on main.
+    rc, cherry = git(repo, "cherry", lanes.main, full)
+    if rc == 0 and not any(ln.startswith("+") for ln in cherry.splitlines()):
+        return {"main": tip, "how": "patch", "as": None, "record": None}
     rec = lanes.records.get(plan_id)
-    if not inside and rec and full.startswith(rec[0]):
-        inside = git(repo, "merge-base", "--is-ancestor", rec[1], main)[0] == 0
-        how = f" as {rec[1]} ({rec[2]})" if inside else ""
-    return inside, how
+    if (
+        rec
+        and full.startswith(rec[0])
+        and git(repo, "merge-base", "--is-ancestor", rec[1], lanes.main)[0] == 0
+    ):
+        return {"main": tip, "how": "record", "as": rec[1], "record": rec[2]}
+    return None
+
+
+def _how(entry: MergedLane) -> str:
+    """Return how a merged lane got onto main, as its state says it."""
+    if entry["how"] == "record":
+        return f" as {entry['as']} ({entry['record']})"
+    return " (by patch)" if entry["how"] == "patch" else ""
 
 
 def _branch_note(
@@ -566,12 +733,19 @@ def _lane_state(
     if not lanes.repo:
         return sha, False, None
     repo = lanes.repo
-    full = lanes.commits.get(sha)
-    if full is None:
-        rep.flag(f"{'checkpoint SHA not in the repo':<34} lanes/{name} ({sha})")
-        return f"{sha} unknown", False, None
-    inside, how = _merged(lanes, repo, plan_id, full)
-    state = f"{sha} {'merged' + how if inside else 'not merged'}"
+    if hit := lanes.hits.get(name):
+        # kept with the main it was proven against, so the next report checks that
+        full, entry = hit
+    else:
+        full = lanes.commits.get(sha)
+        if full is None:
+            rep.flag(f"{'checkpoint SHA not in the repo':<34} lanes/{name} ({sha})")
+            return f"{sha} unknown", False, None
+        entry = _merged(lanes, repo, plan_id, full)
+    inside = entry is not None
+    if entry:
+        lanes.cache.keep[full] = entry
+    state = f"{sha} {'merged' + _how(entry) if entry else 'not merged'}"
     if plan_id in lanes.worktrees:
         note, flag = _branch_note(lanes, repo, plan_id, full, inside=inside)
         state += note
@@ -631,31 +805,37 @@ def _checkpoint(
 
 
 def _lanes_line(
-    a: RouteArgs, main: str, gates: list[GateLog], plans: int, rep: Report
+    a: RouteArgs, cache: _Cache, gates: list[GateLog], plans: int, rep: Report
 ) -> str:
-    """Return the report's `lanes` line; report each lane checkpoint."""
+    """Return the report's `lanes` line; report each lane checkpoint.
+
+    The lanes cache answers are not checked again; the cache then keeps every lane
+    proven merged.
+    """
     base = pathlib.Path(a.planning_dir)
     lanes_dir = base / "lanes"
+    main = cache.main
     checkpoints = lane_checkpoints(lanes_dir, a.phase)
     texts = {c: c.read_text(errors="replace") for c in checkpoints}
-    shas = sorted({s for t in texts.values() if (s := _checkpoint_sha(t)[0])})
-    # `--`: main names a revision even where a file of that name exists; newest first
-    on_main = git(a.repo, "rev-list", main, "--")[1].split() if a.repo and shas else []
-    tip = on_main[0] if on_main else ""
-    store, cherries = _cherries(a.repo, tip) if a.repo and tip else (None, {})
+    found = {c.name: s for c, t in texts.items() if (s := _checkpoint_sha(t)[0])}
+    records = _merge_records(lanes_dir)
+    hits, commits = _answered(a.repo, cache, found, records) if a.repo else ({}, {})
+    rest = any(n not in hits for n in found)
+    # `--`: main names a revision even where a file of that name exists
+    on_main = git(a.repo, "rev-list", main, "--")[1].split() if a.repo and rest else []
     lanes = _Lanes(
         repo=a.repo,
         main=main,
         gates=gates,
         worktrees=_worktrees(a.repo) if a.repo else {},
-        records=_merge_records(lanes_dir),
-        commits=_commits(a.repo, shas) if a.repo else {},
+        records=records,
+        commits=commits,
         on_main=frozenset(on_main),
-        cherries=dict(cherries),
+        cache=cache,
+        hits=hits,
     )
     merged = sum(_checkpoint(c, texts[c], base, lanes, rep) for c in checkpoints)
-    if store and lanes.cherries != cherries:
-        _save_cherries(store, tip, lanes.cherries)
+    cache.save()
     lane_trees = sum(1 for b in lanes.worktrees if b != main)
     return f"lanes      {len(checkpoints)} checkpoints ({plans} plans)" + (
         f" · {merged} merged into {main} · {lane_trees} lane worktrees"
@@ -700,9 +880,11 @@ def report(a: RouteArgs, *, fresh: bool = True, extra: Iterable[str] = ()) -> in
         return 2
     rep = Report(show_all=a.all, fresh=fresh)
     out = [f"route state · {base} · phase {p} · {time.strftime('%Y-%m-%d %H:%M')}"]
-    main = _main_branch(a, rep)
+    main, tip = _main_branch(a, rep)
     _handoff_flags(base, rep)
-    out.append(_decisions(a, base, rep))
+    # Without --repo, --activate wrote the marker in the planning dir's repository.
+    route = marker_path(a.repo or base, str(base.resolve()))
+    out.append(_decisions(a, base, route, rep))
     if a.sections:
         out.append(_spec(a, a.sections, base, rep))
 
@@ -715,7 +897,7 @@ def report(a: RouteArgs, *, fresh: bool = True, extra: Iterable[str] = ()) -> in
     out.append(plans_line)
     lanes = base / "lanes"
     gates = gate_logs(lanes, p)
-    out.append(_lanes_line(a, main, gates, len(ids), rep))
+    out.append(_lanes_line(a, _cache(a, route, main, tip), gates, len(ids), rep))
     out.append(_gates_line(gates, lanes, base, rep))
     out.extend(extra)
 
