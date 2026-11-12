@@ -366,6 +366,40 @@ def wave_no(wave: str) -> int | None:
     return int(m[0]) if m else None
 
 
+def edges(rows: PlanTable) -> dict[str, tuple[set[str], set[int]]]:
+    """{plan stem: (the plans its `Depends on` cell names, the waves it waits for)}.
+
+    A cell opening with `all` waits for the waves it names (`all of wave 1`), else for
+    every earlier wave in the table — never its own wave, which runs beside it.
+    """
+    ident = {s: m.group(0) if (m := PLAN_ID.match(s)) else s for s in rows}
+    present = {w for wave, _ in rows.values() if (w := wave_no(wave)) is not None}
+
+    def waves(s: str, text: str) -> set[int]:
+        if not text.strip().lower().startswith("all"):
+            return set()
+        named = {
+            int(n.group(1))
+            for n in re.finditer(r"\bwaves?[\s-]*(\d+)", text, re.IGNORECASE)
+        }
+        mine = wave_no(rows[s][0])
+        return named or (
+            {w for w in present if w < mine} if mine is not None else set()
+        )
+
+    return {
+        s: (
+            {
+                o
+                for o in rows
+                if o != s and re.search(rf"(?<![\w-]){re.escape(ident[o])}(?!\w)", text)
+            },
+            waves(s, text),
+        )
+        for s, (_, text) in rows.items()
+    }
+
+
 def depends(rows: PlanTable) -> dict[str, set[str]]:
     """{plan stem: every plan it waits for}, directly or through others.
 
@@ -373,34 +407,9 @@ def depends(rows: PlanTable) -> dict[str, set[str]]:
     (`all of wave 1`), else of every earlier wave — never its own wave's, which run
     beside it.
     """
-    ident = {s: m.group(0) if (m := PLAN_ID.match(s)) else s for s in rows}
-
-    def everything(s: str, text: str) -> set[str]:
-        named = {
-            int(n.group(1))
-            for n in re.finditer(r"\bwaves?[\s-]*(\d+)", text, re.IGNORECASE)
-        }
-        mine = wave_no(rows[s][0])
-        return {
-            o
-            for o in rows
-            if o != s
-            and (w := wave_no(rows[o][0])) is not None
-            and (w in named if named else mine is not None and w < mine)
-        }
-
     direct = {
-        s: {
-            o
-            for o in rows
-            if o != s and re.search(rf"(?<![\w-]){re.escape(ident[o])}(?!\w)", text)
-        }
-        | (
-            everything(s, text)
-            if text.strip().lower().startswith("all")
-            else set[str]()
-        )
-        for s, (_, text) in rows.items()
+        s: plans | {o for o in rows if o != s and wave_no(rows[o][0]) in waves}
+        for s, (plans, waves) in edges(rows).items()
     }
     reach: dict[str, set[str]] = {}
     for s in rows:
