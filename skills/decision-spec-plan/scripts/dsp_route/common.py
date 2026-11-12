@@ -42,6 +42,10 @@ PLAN_ID = re.compile(r"p\d+-\d+[a-z]?(?=-|$)")
 # session in the marker, both were asked again after a lead moved to another machine
 # (F74).
 BUDGETS = "route-budget.json"
+# How long a reader waits before reading a missing marker once more: on drvfs a reader
+# of an os.replace'd file saw it briefly missing (1 FileNotFoundError and 2 OSError in
+# about 8,100 reads), and a missed read there splits a live run.
+ABSENT_RETRY_S = 0.02
 
 StrPath = str | os.PathLike[str]
 T = TypeVar("T")
@@ -312,6 +316,21 @@ def load_json(path: pathlib.Path) -> dict[str, object]:
         return as_dict(parse_json(path.read_text())) or {}
     except (OSError, ValueError):
         return {}
+
+
+def write_atomic(path: pathlib.Path, text: str) -> None:
+    """Replace path's contents with text, so a reader never sees a torn file.
+
+    The text goes to `<name>.<pid>.tmp` beside path, which then replaces path; a failed
+    write leaves path untouched and removes the temp file. It raises what the write
+    raises.
+    """
+    tmp = path.with_name(f"{path.name}.{os.getpid()}.tmp")
+    try:
+        _ = tmp.write_text(text)
+        _ = tmp.replace(path)
+    finally:
+        tmp.unlink(missing_ok=True)
 
 
 def checked(check: Callable[[*Ts], T], *args: *Ts) -> T | None:

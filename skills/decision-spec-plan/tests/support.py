@@ -80,6 +80,8 @@ class Marker(TypedDict, total=False):
     ci_none: bool
     sins: str
     ledger: Required[dict[str, bool | int]]
+    run: str
+    run_upgraded: bool
 
 
 class _BudgetFile(TypedDict):

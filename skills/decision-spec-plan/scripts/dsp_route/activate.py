@@ -5,11 +5,13 @@ import json
 import os
 import pathlib
 import re
+import secrets
 import sys
 import time
 from collections.abc import Mapping
 
 from .common import (
+    ABSENT_RETRY_S,
     LEDGER_CHECKS,
     MARKER,
     REGISTRY,
@@ -21,8 +23,10 @@ from .common import (
     checked,
     load_json,
     marker_path,
+    parse_json,
     route_args,
     routes,
+    write_atomic,
 )
 from .transcript import session_transcripts, shape_line
 
@@ -174,7 +178,7 @@ def _register(
         "ledger": ledger,
     }
     entry["skill_seen"] = seen if isinstance(seen, int | float) else time.time()
-    _ = entry_path.write_text(json.dumps(entry) + "\n")
+    write_atomic(entry_path, json.dumps(entry) + "\n")
     print(f"hooks registered for session {session}")
 
 
@@ -196,6 +200,46 @@ def _print_other_routes(session: str, path: pathlib.Path) -> None:
         )
 
 
+def new_run() -> str:
+    """Return a new run id: the UTC time, sortable across zones, and 16 hex digits."""
+    return time.strftime("%Y%m%dT%H%M%S", time.gmtime()) + "-" + secrets.token_hex(8)
+
+
+def _old_marker(path: pathlib.Path) -> dict[str, object]:
+    """Return the marker this activation replaces, or {} when there is none.
+
+    A file missing or unreadable is read once more after ABSENT_RETRY_S: on drvfs an
+    os.replace'd file looks briefly missing, and taking it for absent would mint a
+    second run for a live route. A file that does not parse is no marker, at once.
+    """
+    try:
+        try:
+            return as_dict(parse_json(path.read_text())) or {}
+        except OSError:
+            time.sleep(ABSENT_RETRY_S)
+            return as_dict(parse_json(path.read_text())) or {}
+    except (OSError, ValueError):
+        return {}
+
+
+def _identity(old: Mapping[str, object], marker: dict[str, object]) -> None:
+    """Keep the old marker's run id in marker, or mint one.
+
+    A marker without one (an older version's, or the legacy per-repository marker) is
+    an upgrade: the new id carries `run_upgraded`, which every later activation keeps,
+    because readers treat the route's run-less entries as this run while it is set.
+    """
+    run = old.get("run")
+    if isinstance(run, str) and run:
+        marker["run"] = run
+        if old.get("run_upgraded") is True:
+            marker["run_upgraded"] = True
+        return
+    marker["run"] = new_run()
+    if old:
+        marker["run_upgraded"] = True
+
+
 def activate(a: RouteArgs, main: str) -> int:
     """Record this round's arguments where the hooks and push_guard.py find them.
 
@@ -212,7 +256,7 @@ def activate(a: RouteArgs, main: str) -> int:
         return 2
     # A route activated before markers were per planning dir moves to its own.
     legacy = path.with_name(MARKER)
-    old = load_json(path)
+    old = _old_marker(path)
     if not old and load_json(legacy).get("planning_dir") == planning:
         old = load_json(legacy)
         legacy.unlink()
@@ -225,9 +269,10 @@ def activate(a: RouteArgs, main: str) -> int:
         "activated": time.time(),
     }
     _kept_fields(a, old, marker, same_phase=same_phase)
+    _identity(old, marker)
     ledger = _ledger(a, old, planning)
     marker["ledger"] = ledger
-    _ = path.write_text(json.dumps(marker) + "\n")
+    write_atomic(path, json.dumps(marker) + "\n")
     print(f"route active: {path}")
     import push_guard  # only --activate needs it: the hook runs on every tool call
 
