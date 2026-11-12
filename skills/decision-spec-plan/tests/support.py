@@ -475,7 +475,14 @@ class Sandbox(unittest.TestCase):
         Sandbox.touch(path, -3600)
 
     @classmethod
-    def git_shim(cls, root: Path, sleep: float = 0) -> tuple[dict[str, str], Path]:
+    def git_shim(
+        cls,
+        root: Path,
+        sleep: float = 0,
+        *,
+        ends: bool = False,
+        slow: tuple[Path, Path] | None = None,
+    ) -> tuple[dict[str, str], Path]:
         """A logging git at root/git: the env that puts it first on PATH, and its log.
 
         The scripts resolve git by `shutil.which`, so the shim sees every spawn they
@@ -483,6 +490,11 @@ class Sandbox(unittest.TestCase):
         `<epoch ns> <args>`, the first field `date +%s%N` and the rest `$*`. A count is
         the number of lines; a time stamp is `int(line.split(" ", 1)[0])`. With sleep,
         it waits that many seconds before running git.
+
+        With ends, a spawn logs `start <pid> <epoch ns> <args>`, then, once git exits,
+        `end <pid> <epoch ns>`. With slow (a repository, a flag file), a spawn whose
+        `-C` names that repository first sleeps the seconds the flag file holds, while
+        the file exists. Stdin passes through to git unread.
         """
         real = shutil.which("git", path=cls.env["PATH"])
         if real is None:
@@ -490,12 +502,25 @@ class Sandbox(unittest.TestCase):
             raise AssertionError(msg)
         log = root / "git.log"
         wait = f"sleep {sleep}\n" if sleep else ""
-        shim = cls.write(
-            root / "git",
-            "#!/bin/sh\n"
-            f"printf '%s %s\\n' \"$(date +%s%N)\" \"$*\" >> '{log}'\n"
-            f"{wait}exec '{real}' \"$@\"\n",
-        )
+        if slow is not None:
+            repo, flag = slow
+            wait += (
+                'prev=\nfor a in "$@"; do\n'
+                f"  if [ \"$prev\" = -C ] && [ \"$a\" = '{repo}' ] && [ -f '{flag}' ];"
+                f" then sleep \"$(cat '{flag}')\"; fi\n"
+                "  prev=$a\ndone\n"
+            )
+        stamp = '"$(date +%s%N)"'
+        if ends:
+            head = f"printf 'start %s %s %s\\n' \"$$\" {stamp} \"$*\" >> '{log}'\n"
+            run = (
+                f"'{real}' \"$@\"\nrc=$?\n"
+                f"printf 'end %s %s\\n' \"$$\" {stamp} >> '{log}'\nexit $rc\n"
+            )
+        else:
+            head = f"printf '%s %s\\n' {stamp} \"$*\" >> '{log}'\n"
+            run = f"exec '{real}' \"$@\"\n"
+        shim = cls.write(root / "git", f"#!/bin/sh\n{head}{wait}{run}")
         cls.chmod_x(shim)
         return {"PATH": f"{root}{os.pathsep}{cls.env['PATH']}"}, log
 
@@ -696,8 +721,9 @@ class Route(Sandbox):
 # The monitor's test entry: `PY -c MONITOR_ENTRY <options as JSON>`. It sets the
 # module's constants named in "set" (a name the module lacks exits 3), points PAGE at
 # "page", deletes os.nice with "delete_nice", and with "probe" appends one JSON line
-# per report.collect and subprocess.run call to that file: what ran, its thread,
-# use_git, whether no git deadline was set, its argv and timeout, and its start and end.
+# per report.collect and subprocess.run call to that file: what ran, its thread and
+# the thread's name, use_git and the planning dir (collect), whether no git deadline
+# was set, its argv and timeout (run), and its start and end.
 MONITOR_ENTRY: Final[str] = """
 import json, os, pathlib, sys, threading, time
 opts = json.loads(sys.argv[1])
@@ -717,6 +743,7 @@ if opts["probe"] is not None:
     lock = threading.Lock()
     def note(what, t0, **extra):
         line = {"what": what, "thread": threading.get_ident(),
+                "thread_name": threading.current_thread().name,
                 "deadline_unset": common.GIT_DEADLINE.get() is None,
                 "t0": t0, "t1": time.time(), **extra}
         with lock, open(opts["probe"], "a", encoding="utf-8") as f:
@@ -727,7 +754,8 @@ if opts["probe"] is not None:
         try:
             return collect(*a, **k)
         finally:
-            note("collect", t0, use_git=k.get("use_git"))
+            note("collect", t0, use_git=k.get("use_git"),
+                 planning_dir=a[0].planning_dir)
     def run_probe(*a, **k):
         t0 = time.time()
         try:

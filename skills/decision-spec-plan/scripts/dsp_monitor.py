@@ -25,6 +25,7 @@ beside it) is missing or malformed.
 
 import argparse
 import base64
+import concurrent.futures
 import contextlib
 import dataclasses
 import datetime as dt
@@ -53,6 +54,8 @@ from dsp_route import common
 
 if TYPE_CHECKING:
     from typing_extensions import override
+
+    from dsp_route.report import State
 else:
     _F = TypeVar("_F", bound=Callable[..., object])
 
@@ -1040,6 +1043,12 @@ class Route:
     dir_missing: bool = False
     status: Literal["active", "idle"] | None = None
     errors: list[dict[str, str]] = dataclasses.field(default_factory=list)
+    args: common.RouteArgs | None = None
+
+    @property
+    def reported(self) -> Run | None:
+        """The run a report is kept for: the live one, else the newest ended one."""
+        return self.live or (self.runs[0] if self.runs else None)
 
     @property
     def live(self) -> Run | None:
@@ -1054,6 +1063,18 @@ class Route:
         if marker.parent.name == ".git":
             return f"{marker.parent.parent.name} · {plan}"
         return plan
+
+
+# a marker's `rung` as the route's arguments type it
+_RUNGS: dict[object, Literal["S", "M", "L"]] = {"S": "S", "M": "M", "L": "L"}
+
+
+def _marker_args(data: dict[str, object]) -> common.RouteArgs | None:
+    """A marker's route arguments, its `rung` among them; None when it has none."""
+    args = common.checked(common.route_args, data)
+    if args is not None:
+        args.rung = args.rung or _RUNGS.get(data.get("rung"))
+    return args
 
 
 @dataclasses.dataclass
@@ -1166,7 +1187,7 @@ def _route(
     ]
     if out.live is not None:
         out.dir_missing = not scan.dirs[planning]
-        args = common.checked(common.route_args, mf.read.data)
+        args = out.args = _marker_args(mf.read.data)
         out.repo = args.repo if args is not None and claim is not None else None
         quiet = now - out.live.last_activity_at
         out.status = "active" if quiet < IDLE_S else "idle"
@@ -1379,12 +1400,13 @@ def _stuck(route: Route, run: Run) -> list[Item]:
     return out
 
 
-def attention(route: Route, run: Run) -> list[Item]:
+def attention(route: Route, run: Run, reports: "Reports | None" = None) -> list[Item]:
     """Return a live run's attention items (§4.5), red before amber, oldest first.
 
     Args:
         route: The run's route.
         run: The run; an ended one has none.
+        reports: The route's report refreshes, None before its first.
 
     Returns:
         Its items of every kind but the waiting ones.
@@ -1408,8 +1430,32 @@ def attention(route: Route, run: Run) -> list[Item]:
     for name in names:
         text = COPY["unreadable"].format(name=name)
         out.append(_item("unreadable", (route, run), name, None, text))
+    if reports is not None and route.repo is not None and reports.git_state == "slow":
+        at = _git_as_of(reports)
+        text = (
+            COPY["git-slow-none"]
+            if at is None
+            else COPY["git-slow"].format(at=hhmm(at))
+        )
+        out.append(_item("git-slow", (route, run), None, at, text))
     out += _stuck(route, run)
     return sorted(out, key=_urgent)
+
+
+def _git_as_of(reports: "Reports") -> float | None:
+    """The as_of of the route's last good git facts, None without any."""
+    git = None if reports.git is None else reports.git["git"]
+    return None if git is None else git["as_of"]
+
+
+def _git_json(route: Route, run: Run, reports: "Reports | None") -> dict[str, object]:
+    """A run's `git`: not tracked when ended or without --repo; pending before."""
+    if not run.live or route.repo is None:
+        return {"state": "not_tracked", "as_of": None, "ms": None}
+    if reports is None:
+        return {"state": "pending", "as_of": None, "ms": None}
+    at = _git_as_of(reports)
+    return {"state": reports.git_state, "as_of": iso(at), "ms": reports.git_ms}
 
 
 def _gaps(run: Run, sid: str) -> tuple[float, list[str]] | None:
@@ -1485,12 +1531,15 @@ def _agent_json(a: Agent, *, stuck: bool) -> dict[str, object]:
     }
 
 
-def run_detail(route: Route, run: Run) -> dict[str, object]:
+def run_detail(
+    route: Route, run: Run, reports: "Reports | None" = None
+) -> dict[str, object]:
     """Return a run's detail as `/api/state` and `/api/run` send it.
 
     Args:
         route: The run's route.
         run: The run.
+        reports: The route's report refreshes, None before its first.
 
     Returns:
         The RunDetail object.
@@ -1502,6 +1551,8 @@ def run_detail(route: Route, run: Run) -> dict[str, object]:
     unknown = run.recording in {"none", "expired"}
     running = sum(a.state in _RUNNING for a in agents)
     hint = COPY["recording_none"].format(name=switch.NAME)
+    mine = reports if run is route.reported else None
+    rep = None if mine is None else mine.report()
     return {
         "key": run.key,
         "run": run.run,
@@ -1513,16 +1564,20 @@ def run_detail(route: Route, run: Run) -> dict[str, object]:
         "recording": run.recording,
         "recording_hint": hint if run.recording == "none" else None,
         "blind_since": None if blind is None else iso(blind[0]),
+        "report": rep,
+        "report_as_of": None if rep is None else iso(rep["generated_at"]),
+        "report_error": None if mine is None else mine.error,
+        "git": _git_json(route, run, mine),
         "summary": {"agents_running": None if unknown else running},
         "agents": [
             _agent_json(a, stuck=stuck_call(route, run, a) is not None) for a in agents
         ],
         "waiting": waiting(route, run),
-        "attention": attention(route, run),
+        "attention": attention(route, run, mine),
     }
 
 
-def _route_json(route: Route) -> dict[str, object]:
+def _route_json(route: Route, reports: "Reports | None") -> dict[str, object]:
     """Return a route with a live run as `routes` and `idle` list it."""
     live = route.live or route.runs[0]
     return {
@@ -1534,7 +1589,7 @@ def _route_json(route: Route) -> dict[str, object]:
         "last_activity_at": iso(live.last_activity_at),
         "planning_dir_missing": route.dir_missing,
         "runs": len(route.runs),
-        "run": run_detail(route, live),
+        "run": run_detail(route, live, reports),
     }
 
 
@@ -1558,6 +1613,207 @@ def _ended_json(route: Route) -> dict[str, object]:
     }
 
 
+# --- the refresher: reports of each route, in worker threads, under limits
+
+
+def git_signature(marker: str) -> tuple[tuple[str, int, int], ...]:
+    """Return the stat signature of the refs and worktrees a marker's `.git` holds.
+
+    Args:
+        marker: The route's marker; its parent is the git-common-dir.
+
+    Returns:
+        (path, mtime ns, size) of packed-refs, refs/heads/** and each worktree's HEAD
+        and index that exist, sorted.
+    """
+    top = pathlib.Path(marker).parent
+    paths = [
+        top / "packed-refs",
+        *(top / "refs" / "heads").rglob("*"),
+        *top.glob("worktrees/*/HEAD"),
+        *top.glob("worktrees/*/index"),
+    ]
+    out: list[tuple[str, int, int]] = []
+    for p in paths:
+        try:
+            st = p.stat()
+        except OSError:
+            continue
+        out.append((str(p), st.st_mtime_ns, st.st_size))
+    return tuple(sorted(out))
+
+
+@dataclasses.dataclass
+class Reports:
+    """One route's report refreshes (§4.8): each tier's newest object, its limits.
+
+    files: the newest object of either tier; git: the newest good git-tier object;
+    deadline, interval: the git tier's current deadline and interval; *_at: when
+    each tier was last submitted; *_sig: what it last saw.
+    """
+
+    deadline: float
+    interval: float
+    files: "State | None" = None
+    git: "State | None" = None
+    git_state: str = "pending"
+    git_ms: int | None = None
+    error: str | None = None
+    busy: bool = False
+    free_at: float | None = None
+    git_at: float | None = None
+    free_sig: tuple[object, ...] = ()
+    git_sig: tuple[tuple[str, int, int], ...] = ()
+
+    def report(self) -> "State | None":
+        """The run's report: the newest file facts with the newest good git facts."""
+        from dsp_route import report
+
+        if self.files is None or self.git is None:
+            return self.files or self.git
+        merged: State = {**self.files, "git": self.git["git"]}
+        return report.derive(merged)
+
+
+@dataclasses.dataclass
+class Job:
+    """One refresh in a worker: its route, its tier, its deadline and its time."""
+
+    key: str
+    args: common.RouteArgs
+    git: bool
+    deadline: float
+    elapsed: float = 0.0
+
+    def __call__(self) -> "State | None":
+        """Collect the report; the git tier under the route's deadline."""
+        from dsp_route import report
+
+        t0 = time.monotonic()
+        try:
+            if not self.git:
+                return report.collect(self.args, use_git=False, write_cache=False)
+            with common.git_deadline(self.deadline):
+                return report.collect(self.args, use_git=True, write_cache=False)
+        finally:
+            self.elapsed = time.monotonic() - t0
+
+
+def _run_args(route: Route, run: Run) -> common.RouteArgs | None:
+    """The arguments a run's report is collected with: marker's, else entry's."""
+    if run.live:
+        return route.args
+    if run.args is None:
+        return None
+    return common.checked(common.route_args, {"args": list(run.args)})
+
+
+class Refresher:
+    """Runs due report refreshes in WORKERS threads, at most one per route."""
+
+    def __init__(self, done: Callable[[], None]) -> None:
+        """Start no thread until a refresh is due; call done after each one.
+
+        Args:
+            done: Called in the worker after each refresh, to publish it.
+        """
+        self.done: Callable[[], None] = done
+        self.lock: threading.Lock = threading.Lock()
+        self.routes: dict[str, Reports] = {}
+        self.pool: concurrent.futures.ThreadPoolExecutor = (
+            concurrent.futures.ThreadPoolExecutor(
+                WORKERS, thread_name_prefix="dsp-worker"
+            )
+        )
+
+    def due(self, model: Model, now: float) -> None:
+        """Submit each route's refresh that has come due (§4.8's tier table).
+
+        Args:
+            model: The newest model.
+            now: The scan's time.
+        """
+        for route in model.routes.values():
+            run = route.reported
+            args = None if run is None else _run_args(route, run)
+            if run is None or args is None:
+                continue
+            with self.lock:
+                r = self.routes.setdefault(route.key, Reports(DEADLINE_S, GIT_TTL_S))
+                job = None if r.busy else self._job(route, run, args, r, now)
+                if job is not None:
+                    r.busy = True
+            if job is not None:
+                fut = self.pool.submit(job)
+                fut.add_done_callback(lambda f, job=job: self._done(job, f))
+
+    @staticmethod
+    def _job(
+        route: Route, run: Run, args: common.RouteArgs, r: Reports, now: float
+    ) -> Job | None:
+        """The refresh due for route, None when neither tier is."""
+        quiet = route.status != "active"
+        if run.live and route.repo is not None:
+            sig = git_signature(route.marker)
+            since = None if r.git_at is None else now - r.git_at
+            interval = GIT_IDLE_S if quiet else r.interval
+            moved = sig != r.git_sig and (since is None or since >= GIT_FLOOR_S)
+            if since is None or since >= interval or moved:
+                r.git_at, r.git_sig = now, sig
+                r.free_at = now
+                return Job(route.key, args, git=True, deadline=r.deadline)
+        mtime = _mtime(route.marker)
+        sig = (sum(g.lines for g in _groups(run)), mtime if run.live else None)
+        since = None if r.free_at is None else now - r.free_at
+        ttl = FREE_IDLE_S if quiet else FREE_TTL_S
+        if since is None or since >= ttl or sig != r.free_sig:
+            r.free_at, r.free_sig = now, sig
+            return Job(route.key, args, git=False, deadline=r.deadline)
+        return None
+
+    def _done(self, job: Job, fut: "concurrent.futures.Future[State | None]") -> None:
+        """Keep a finished refresh's object, or the last good one and why not."""
+        from dsp_route import report
+
+        exc = fut.exception()
+        state = None if exc is not None else fut.result()
+        with self.lock:
+            r = self.routes[job.key]
+            r.busy = False
+            # a git that ran out of time, or a report that came back past it; a
+            # None report (no planning dir) is not slow
+            late = isinstance(exc, common.GitDeadlineError) or (
+                state is not None and job.elapsed > job.deadline
+            )
+            if job.git and late:
+                r.git_state = "slow"
+                r.deadline = min(2 * r.deadline, DEADLINE_MAX_S)
+                r.interval = min(2 * r.interval, GIT_IDLE_S)
+            elif exc is not None:
+                first = (str(exc).splitlines() or [""])[0]
+                r.error = f"{type(exc).__name__}: {first}"
+            elif state is None:
+                r.error = "no planning dir"
+            elif state["version"] != report.VERSION:
+                r.files = r.git = None
+                r.error = f"report version {state['version']} is not {report.VERSION}"
+            else:
+                r.error = None
+                r.files = state
+                if job.git:
+                    r.git, r.git_state = state, "fresh"
+                    r.git_ms = round(job.elapsed * 1000)
+                    r.interval = GIT_TTL_S
+                    if job.elapsed <= r.deadline / 2:
+                        r.deadline = max(r.deadline / 2, DEADLINE_S)
+        self.done()
+
+    def of(self, route: Route) -> Reports | None:
+        """The route's refreshes so far, None before its first."""
+        with self.lock:
+            return self.routes.get(route.key)
+
+
 class Live:
     """What the request handlers serve: bytes built once, read by every thread."""
 
@@ -1577,6 +1833,10 @@ class Live:
         self.runs: dict[str, bytes] = {}
         # set by a poll; the scan thread waits on it
         self.due: threading.Event = threading.Event()
+        self.refresher: Refresher | None = None
+        self.model: Model | None = None
+        # the scan thread and each worker publish
+        self.lock: threading.Lock = threading.Lock()
 
     def bound(self, port: int) -> None:
         """Take the port a server bound and build the answers that name it.
@@ -1601,13 +1861,21 @@ class Live:
         Args:
             model: The newest model.
         """
+        with self.lock:
+            self.model = model
+            self._build(model)
+
+    def _build(self, model: Model | None) -> None:
+        """Build the answers of a model, with each route's newest reports."""
         routes = [] if model is None else list(model.routes.values())
+        refresher = self.refresher
+        reports = {r.key: refresher.of(r) if refresher else None for r in routes}
         live = sorted(
             (r for r in routes if r.live is not None),
             key=lambda r: r.runs[0].last_activity_at,
             reverse=True,
         )
-        idle = [_route_json(r) for r in live if r.status == "idle"]
+        idle = [_route_json(r, reports[r.key]) for r in live if r.status == "idle"]
         ended = sorted(
             (r for r in routes if any(not run.live for run in r.runs)),
             key=lambda r: max(run.last_activity_at for run in r.runs if not run.live),
@@ -1615,7 +1883,10 @@ class Live:
         )
         runs = [(r, run) for r in live if (run := r.live) is not None]
         waits = sorted((i for r, run in runs for i in waiting(r, run)), key=_oldest)
-        items = sorted((i for r, run in runs for i in attention(r, run)), key=_urgent)
+        items = sorted(
+            (i for r, run in runs for i in attention(r, run, reports[r.key])),
+            key=_urgent,
+        )
         self.state = as_json(
             {
                 "version": API_VERSION,
@@ -1625,7 +1896,9 @@ class Live:
                 "monitor": {"pid": self.pid, "port": self.port},
                 "waiting": waits,
                 "attention": items,
-                "routes": [_route_json(r) for r in live if r.status == "active"],
+                "routes": [
+                    _route_json(r, reports[r.key]) for r in live if r.status == "active"
+                ],
                 "idle": idle,
                 "ended": [_ended_json(r) for r in ended],
                 "counts": {
@@ -1648,7 +1921,7 @@ class Live:
                         "planning_dir": home(r.planning_dir),
                         "repo": home(r.repo),
                     },
-                    "run": run_detail(r, run),
+                    "run": run_detail(r, run, reports[r.key]),
                 }
             )
             for r in routes
@@ -1657,7 +1930,7 @@ class Live:
 
 
 def scan_forever(live: Live, scanner: Scanner) -> None:
-    """Scan when a poll asks, at most once per SCAN_S, and publish each model.
+    """Scan when a poll asks, at most once per SCAN_S; submit what came due; publish.
 
     Args:
         live: The answers to rebuild; its `due` event wakes the scan.
@@ -1669,6 +1942,8 @@ def scan_forever(live: Live, scanner: Scanner) -> None:
         live.due.clear()
         now = time.time()
         model = discover(scanner.scan(now), model, now)
+        if live.refresher is not None:
+            live.refresher.due(model, now)
         live.publish(model)
         time.sleep(SCAN_S)
 
@@ -1921,7 +2196,10 @@ def main(argv: list[str] | None = None) -> int:
     from dsp_route import record
 
     scanner = Scanner(common.REGISTRY, record.EVENTS)
-    threading.Thread(target=scan_forever, args=(live, scanner), daemon=True).start()
+    live.refresher = Refresher(lambda: live.publish(live.model))
+    threading.Thread(
+        target=scan_forever, args=(live, scanner), name="dsp-scan", daemon=True
+    ).start()
     try:
         _show(f"http://localhost:{live.port}/", open_tab=args.open_tab)
         with contextlib.suppress(KeyboardInterrupt):

@@ -7,12 +7,15 @@ import dataclasses
 import hashlib
 import ipaddress
 import json
+import math
 import os
 import re
 import shlex
 import socket
+import threading
 import time
 import unittest.mock
+from collections.abc import Callable
 from http import HTTPStatus
 from pathlib import Path
 from typing import cast
@@ -904,6 +907,14 @@ class Events(support.MonitorSandbox):
             running = cast("dict[str, object]", got["summary"])["agents_running"]
             unknown = want in {"none", "expired"}
             self.ok(f"{label}: agents_running", (running is None) == unknown, running)
+        ref = refreshed(model)
+        for label, r in {"none": a, "reduced": b}.items():
+            route = model.routes[r.key]
+            run = route.live
+            got = (
+                {} if run is None else dsp_monitor.run_detail(route, run, ref.of(route))
+            )
+            self.ok(f"{label}: still carries its report", got.get("report"), got)
         live = dsp_monitor.Live(dsp_monitor.read_page(dsp_monitor.PAGE), "n")
         live.bound(0)
         live.publish(model)
@@ -1264,3 +1275,223 @@ class Attention(support.MonitorSandbox):
         kinds = [x["kind"] for x in top]
         order = ["blind", "dir-missing", "reduced", "unreadable"]
         self.ok(f"{len(top)} items: red, oldest first, then amber", kinds == order, top)
+
+
+# every interval of the refresher at most 1 s, so a test sees several cycles
+QUICK = {"SCAN_S": 0.05, "FREE_TTL_S": 1, "GIT_TTL_S": 1, "GIT_FLOOR_S": 1}
+
+
+def probed(path: Path) -> list[dict[str, object]]:
+    """The probe's records so far."""
+    if not path.exists():
+        return []
+    return [
+        cast("dict[str, object]", json.loads(x)) for x in path.read_text().splitlines()
+    ]
+
+
+def live_runs(state: dict[str, object]) -> list[dict[str, object]]:
+    """The live run of every route /api/state lists as active or idle."""
+    return [
+        cast("dict[str, object]", r["run"])
+        for group in ("routes", "idle")
+        for r in cast("list[dict[str, object]]", state[group])
+    ]
+
+
+def git_of(state: dict[str, object], key: str) -> dict[str, object]:
+    """The `git` of route key's live run; {} while it is not listed."""
+    runs = [r for r in live_runs(state) if str(r["key"]).startswith(f"{key}-")]
+    return cast("dict[str, object]", runs[0]["git"]) if runs else {}
+
+
+def refreshed(model: dsp_monitor.Model) -> dsp_monitor.Refresher:
+    """A refresher that ran, in-process, every refresh due on model."""
+    ref = dsp_monitor.Refresher(lambda: None)
+    ref.due(model, time.time())
+    ref.pool.shutdown(wait=True)
+    return ref
+
+
+class Refresh(support.MonitorSandbox):
+    """Report refreshes: only after polls, under per-route limits and deadlines."""
+
+    def machine(self) -> tuple[support.Machine, Path]:
+        """This test's own machine, and its own directory for the shim and probe."""
+        d = self.T / self._testMethodName
+        return support.build_machine(d), d
+
+    def test_no_work_without_polls(self) -> None:
+        """Once every live run's git is in, no poll means no git and no collect."""
+        m, d = self.machine()
+        _, log = self.git_shim(d / "shim")
+        probe = d / "probe.jsonl"
+        mon = self.monitor_on(m, consts=QUICK, probe=probe, path_prefix=[d / "shim"])
+        _ = mon.wait(
+            lambda s: (
+                live_runs(s)
+                and all(
+                    cast("dict[str, object]", r["git"])["state"] != "pending"
+                    for r in live_runs(s)
+                )
+            ),
+            timeout=60,
+        )
+
+        def counts() -> tuple[int, int]:
+            spawns = len(log.read_text().splitlines()) if log.exists() else 0
+            return spawns, len(probed(probe))
+
+        # what the last polls made due finishes first
+        before, end = counts(), time.monotonic() + 30
+        while time.monotonic() < end:
+            time.sleep(1)
+            now = counts()
+            if now == before:
+                break
+            before = now
+        time.sleep(3 * max(QUICK.values()))
+        after = counts()
+        spawned, collected = after[0] - before[0], after[1] - before[1]
+        self.ok(f"{before[0]} spawns before; {spawned} without polls", spawned == 0)
+        self.ok(f"{before[1]} probe lines before; {collected} without", collected == 0)
+        self.ok("work was done while polled", before[0] and before[1], before)
+
+    def test_limits_apply_to_every_poll(self) -> None:
+        """Three clients polling: git refreshes per route and git processes capped."""
+        m, d = self.machine()
+        _, log = self.git_shim(d / "shim", ends=True)
+        probe = d / "probe.jsonl"
+        mon = self.monitor_on(m, consts=QUICK, probe=probe, path_prefix=[d / "shim"])
+        window = 6.0
+        w0 = time.time()
+
+        def poll() -> None:
+            while time.time() < w0 + window:
+                _ = mon.get("/api/state")
+                time.sleep(0.2)
+
+        threads = [threading.Thread(target=poll) for _ in range(3)]
+        for t in threads:
+            t.start()
+        for t in threads:
+            t.join()
+        w1 = time.time()
+        per_route: dict[str, int] = {}
+        for x in probed(probe):
+            t0 = cast("float", x["t0"])
+            if x["what"] == "collect" and x["use_git"] and w0 <= t0 <= w1:
+                key = str(x["planning_dir"])
+                per_route[key] = per_route.get(key, 0) + 1
+        cap = math.ceil(window / QUICK["GIT_FLOOR_S"]) + 1
+        most = max(per_route.values(), default=0)
+        self.ok(f"{len(per_route)} routes: at most {most} git refreshes", per_route)
+        self.ok(f"each at most {cap}", 0 < most <= cap, per_route)
+        time.sleep(1)
+        events: list[tuple[int, int]] = []
+        for line in log.read_text().splitlines():
+            kind, _, stamp = line.split(" ", 3)[:3]
+            events.append((int(stamp), 1 if kind == "start" else -1))
+        running = peak = 0
+        for _, step in sorted(events):
+            running += step
+            peak = max(peak, running)
+        workers = dsp_monitor.WORKERS
+        self.ok(f"{len(events)} git stamps: {peak} at once", 0 < peak <= workers)
+
+    def test_slow_repo_bounded_by_deadline(self) -> None:
+        """route-d slow: kept git, deadline doubled, answers fast, git off handlers."""
+        m, d = self.machine()
+        flag = d / "slow"
+        repo, plan = m.routes["route-d"].repo, str(m.routes["route-d"].plan)
+        _, _log = self.git_shim(d / "shim", slow=(repo, flag))
+        probe = d / "probe.jsonl"
+        consts = {**QUICK, "DEADLINE_S": 3, "DEADLINE_MAX_S": 12, "WORKERS": 1}
+        mon = self.monitor_on(m, consts=consts, probe=probe, path_prefix=[d / "shim"])
+        key_d, key_a = m.routes["route-d"].key, m.routes["route-a"].key
+        answers: list[float] = []
+
+        def until(
+            pred: Callable[[dict[str, object]], object], limit: float
+        ) -> dict[str, object]:
+            end = time.monotonic() + limit
+            while True:
+                t0 = time.monotonic()
+                s = mon.state()
+                answers.append(time.monotonic() - t0)
+                if pred(s) or time.monotonic() > end:
+                    return s
+                time.sleep(0.2)
+
+        s = until(lambda s: git_of(s, key_d).get("state") == "fresh", 60)
+        good = git_of(s, key_d)
+        self.ok("route-d: a good refresh first", good["state"] == "fresh", good)
+        _ = flag.write_text("8")
+        t_flag = time.time()
+
+        def slow_d() -> list[dict[str, object]]:
+            return [
+                x
+                for x in probed(probe)
+                if x["what"] == "collect"
+                and x["use_git"]
+                and x["planning_dir"] == plan
+                and cast("float", x["t0"]) > t_flag
+            ]
+
+        s = until(lambda _: len(slow_d()) >= len(["3 s", "6 s"]), 60)
+        flag.unlink()
+        s = mon.state()
+        got = git_of(s, key_d)
+        self.ok("route-d: slow", got["state"] == "slow", got)
+        self.ok("route-d: the good refresh's as_of", got["as_of"] == good["as_of"], got)
+        took = [cast("float", x["t1"]) - cast("float", x["t0"]) for x in slow_d()]
+        self.ok(f"route-d's slow refreshes took {took}", len(took) >= len(["3", "6"]))
+        first, second = [*took, 0.0, 0.0][:2]
+        self.ok("the first ends by its deadline + 1 s", first <= 3 + 1, took)
+        self.ok("the next one's deadline doubled", 3 + 1 < second <= 6 + 1, took)
+        self.ok(
+            "route-a: fresh", git_of(s, key_a)["state"] == "fresh", git_of(s, key_a)
+        )
+        slowest = max(answers)
+        self.ok(f"{len(answers)} answers, slowest {slowest:.3f} s", slowest < 1)
+        records = probed(probe)
+        runs = [x for x in records if x["what"] == "run"]
+        off = [x for x in runs if not str(x["thread_name"]).startswith("dsp-worker")]
+        self.ok(f"{len(runs)} spawns, {len(off)} off a worker", runs and not off, off)
+        free = [x for x in records if x["what"] == "collect" and not x["use_git"]]
+        bound = [x for x in free if not x["deadline_unset"]]
+        self.ok(
+            f"{len(free)} git-free collects, none under a deadline", free and not bound
+        )
+
+    def test_deadline_halves_only_when_fast(self) -> None:
+        """A refresh between d and 2 d: slow once, then fresh, and fresh again."""
+        from dsp_route import report
+
+        m = support.Machine(self.T / self._testMethodName)
+        a = m.fixture_route("route-a")
+        _ = m.put_entry("s1", a)
+        model = model_of(m)
+
+        def slower(*_a: object, **_k: object) -> dict[str, object]:
+            time.sleep(2.5)
+            return {"version": report.VERSION, "generated_at": time.time(), "git": None}
+
+        seen: list[tuple[str, float]] = []
+        with (
+            unittest.mock.patch.multiple(dsp_monitor, DEADLINE_S=2, DEADLINE_MAX_S=12),
+            unittest.mock.patch.object(report, "collect", slower),
+        ):
+            ref = dsp_monitor.Refresher(lambda: None)
+            for i in range(3):
+                # a scan far enough on that the git tier is due each time
+                ref.due(model, time.time() + 10_000 * (i + 1))
+                end = time.monotonic() + 20
+                while ref.routes[a.key].busy and time.monotonic() < end:
+                    time.sleep(0.05)
+                r = ref.routes[a.key]
+                seen.append((r.git_state, r.deadline))
+            ref.pool.shutdown(wait=True)
+        want = [("slow", 4), ("fresh", 4), ("fresh", 4)]
+        self.ok(f"three cycles: {seen}", seen == want, seen)
