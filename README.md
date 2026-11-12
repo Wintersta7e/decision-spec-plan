@@ -129,7 +129,7 @@ sequenceDiagram
     L->>RS: --activate (route registered)
     Note over RS,PG: hooks are now armed for this session
     L->>RS: each tool call (PostToolUse)
-    RS-->>L: route state, wave spend vs quota
+    RS-->>L: route state changes, budget recorded
     L->>PG: git push (PreToolUse:Bash)
     alt no full gate passed this commit
         PG-->>L: hold, names the missing gate
@@ -144,7 +144,7 @@ sequenceDiagram
 |---|---|---|
 | `push_guard.py --pre-push` | git's `pre-push`, written into the repository by `--activate` | A push of any commit that no full gate passed, read from the exact refs git sends |
 | `push_guard.py` | PreToolUse:Bash | A push that would skip the git hook (`--no-verify`); a bypass (`DSP_SKIP_*`), which you approve and agents may not use; every push, where the repository's hooks live elsewhere (`core.hooksPath`) |
-| `route_state.py --hook` | PreToolUse, PostToolUse, UserPromptSubmit, SessionStart, SubagentStop, TeammateIdle | Route state and wave spend; outward actions held for your answer; hand-written gate logs refused; an agent stopping while its own background jobs still run |
+| `route_state.py --hook` | PreToolUse, PostToolUse, UserPromptSubmit, SessionStart, SubagentStop, TeammateIdle | Route state and the recorded budget; a wave's dispatch held once its spend passes the budget; outward actions held for your answer; hand-written gate logs refused; an agent stopping while its own background jobs still run |
 
 The guards target careless agents, not adversaries:
 [`references/gates.md`](skills/decision-spec-plan/references/gates.md) says what each check

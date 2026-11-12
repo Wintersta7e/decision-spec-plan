@@ -191,6 +191,20 @@ class PluginFiles(support.Sandbox):
             support.grep(crit, "__tests__", F=True),
         )
 
+    def test_readme_tells_what_the_hook_shows(self) -> None:
+        """README says the hook shows the recorded budget, not a wave's spend."""
+        readme = (PLUGIN.parents[1] / "README.md").read_text(encoding="utf-8")
+        for gone in ("wave spend", "spend vs quota"):
+            self.ok(f"README: no {gone!r}", gone not in readme)
+        for said in (
+            "route state changes, budget recorded",
+            (
+                "Route state and the recorded budget; a wave's dispatch held once its "
+                "spend passes the budget;"
+            ),
+        ):
+            self.ok(f"README says {said!r}", said in readme)
+
     def test_skill_fits_a_compaction(self) -> None:
         """SKILL.md stays under the size a compaction re-attaches."""
         # a compaction re-attaches SKILL.md cut at 20,000 characters (failure-modes F61)
