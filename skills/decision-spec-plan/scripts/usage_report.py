@@ -28,7 +28,9 @@ agents without `--until`: 53 and 87 of them cost two runs 3.0M each in a day, un
 So are those in the lead's repository and its worktrees when the lead ran outside it:
 the repository is `--repo`'s, else the one the lead's route was activated for
 (`route_state.py --activate`) — two rounds led from outside the repository reported
-none of their 28 and 118.
+none of their 28 and 118. A worktree removed from inside the checkout still counts; one
+removed from beside it does not, as nothing it recorded tells it from another clone
+named alike.
 `--groups` adds a line per Stage 5 task group (`exec-*`, not an integrator
 `exec-wave*`): its context at its first edit, its peak, its `git commit` calls, the
 context each commit added, minutes and units; then the medians, and how many commits

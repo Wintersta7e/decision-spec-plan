@@ -559,6 +559,41 @@ class HookSessions(support.Sandbox):
             out,
         )
 
+    def test_removed_worktrees(self) -> None:
+        """A removed worktree inside the checkout counts; a removed sibling does not.
+
+        A wave removes its worktrees, so their hook sessions stopped counting after
+        the cleanup. A gone directory beside the checkout may have been another clone.
+        """
+        tmp, home = self.T, self.HOME
+        repo = self.init_repo(tmp / "gone")
+        projects = home / ".claude/projects"
+        lead = projects / slug(repo) / "lead.jsonl"
+        lead.parent.mkdir(parents=True)
+        self.append(
+            lead,
+            crec(-100, "a1", 1000000, str(repo)),
+            crec(-50, "a2", 1000000, str(repo)),
+        )
+        inside, beside = repo / ".dev/wt-x", tmp / "gone-x"
+        _ = self.write(
+            projects / slug(inside) / "hook.jsonl",
+            crec(-80, "c1", 2000000, str(inside), "sdk-ts") + "\n",
+        )
+        _ = self.write(
+            projects / slug(beside) / "hook.jsonl",
+            crec(-80, "c2", 3000000, str(beside), "sdk-ts") + "\n",
+        )
+        out = self.py(UR, "lead", "--project-dir", lead.parent, merge=True).out
+        self.ok(
+            "usage_report: a removed worktree's hook sessions count only inside "
+            "the checkout",
+            support.grep(
+                out, "^total 4.0M = lead 2.0M + 0 agents 0.0M + 1 hook sessions 2.0M"
+            ),
+            out,
+        )
+
 
 if __name__ == "__main__":
     _ = unittest.main()

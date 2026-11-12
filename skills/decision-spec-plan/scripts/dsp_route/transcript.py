@@ -233,11 +233,33 @@ def common_dir(path: StrPath) -> str | None:
 
     None when it is gone or in no repository.
     """
+    cwd = first_cwd(path)
+    return repository(cwd) if cwd else None
+
+
+def first_cwd(path: StrPath) -> str | None:
+    """Return the first `cwd` a transcript records, or None."""
     with pathlib.Path(path).open(encoding="utf-8", errors="replace") as fh:
         for _, line in zip(range(20), fh, strict=False):
             if m := CWD.search(line):
-                return repository(m[1])
+                return m[1]
     return None
+
+
+def ran_in(path: StrPath, repo: str, checkout: pathlib.Path | None) -> bool:
+    """Return whether a transcript's session ran in `repo`, checked out at `checkout`.
+
+    A directory gone from inside the checkout was one of its worktrees: a wave removes
+    its own, and their hook sessions stopped counting. One gone from anywhere else is
+    unknown — beside the checkout it may have been another clone named alike, and no
+    record ties its sessions to this repository (their `gitBranch` is deleted with it).
+    """
+    cwd = first_cwd(path)
+    if cwd is None:
+        return False
+    if not pathlib.Path(cwd).is_dir():
+        return checkout is not None and pathlib.Path(cwd).is_relative_to(checkout)
+    return repository(cwd) == repo
 
 
 def repository(directory: StrPath) -> str | None:
@@ -325,16 +347,18 @@ def sdk_transcripts(
     too, as a lead run from outside the repository has its hooks run inside it — two
     such rounds reported none of theirs. A route's lead is a lead even when headless
     (`sdk-cli`). A dir other than the project's counts only for the sessions that ran
-    in the lead's repository: one named alike, or whose repository is unknown, is
-    another project — counted, its headless sessions held a route's wave over a budget
-    it had not spent.
+    in the lead's repository (ran_in: a removed worktree inside the checkout did): one
+    named alike, or whose repository is unknown, is another project — counted, its
+    headless sessions held a route's wave over a budget it had not spent.
     """
     floor = epoch(since)
     repo = repo or common_dir(lead) or route_repository(lead.stem)
     dirs = [project, *sorted(project.parent.glob(project.name + "-*"))]
+    checkout = None
     if repo and (git_dir := pathlib.Path(repo)).name == ".git":
-        checkout = project.parent / slug(git_dir.parent)
-        dirs += [checkout, *sorted(project.parent.glob(checkout.name + "-*"))]
+        checkout = git_dir.parent
+        home = project.parent / slug(checkout)
+        dirs += [home, *sorted(project.parent.glob(home.name + "-*"))]
     for directory in dict.fromkeys(dirs):
         for path in sorted(directory.glob("*.jsonl")):
             if path == lead or (floor and path.stat().st_mtime < floor):
@@ -343,7 +367,7 @@ def sdk_transcripts(
                 continue
             if not entrypoint(path).startswith("sdk"):
                 continue
-            if directory == project or (repo and common_dir(path) == repo):
+            if directory == project or (repo and ran_in(path, repo, checkout)):
                 yield path
 
 
