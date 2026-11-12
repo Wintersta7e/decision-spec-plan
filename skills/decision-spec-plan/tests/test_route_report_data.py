@@ -13,9 +13,10 @@ import hashlib
 import io
 import os
 import re
+import subprocess
 import sys
 import threading
-import time
+from collections.abc import Generator
 from pathlib import Path
 from unittest import mock
 
@@ -506,8 +507,22 @@ class Enums(report_shapes.Shapes):
 DEADLINE_LANES = 11
 # 1.0 s over a 0.2 s git: five spawns finish, the sixth is stopped
 DEADLINE_SPAWNS = 6
-# a spawn the shim stamps this long after git() started it
-SHIM_START_S = 0.1
+
+
+@contextlib.contextmanager
+def spawns() -> Generator[list[float | None], None, None]:
+    """The timeout of each `subprocess.run` inside the block, filled as it exits.
+
+    git() passes the time left on its deadline, so one with none left, or none at all,
+    started after the deadline. Taken in this process: the shim's own stamp trails a
+    spawn by however long the host takes to schedule it.
+    """
+    left: list[float | None] = []
+    with mock.patch.object(subprocess, "run", wraps=subprocess.run) as run:
+        try:
+            yield left
+        finally:
+            left.extend(c.kwargs.get("timeout") for c in run.call_args_list)
 
 
 class Deadline(support.Sandbox):
@@ -538,7 +553,10 @@ class Deadline(support.Sandbox):
         return argv
 
     def test_deadline(self) -> None:
-        """No deadline: a full state; 1.0 s: the error, no late spawn, no cache."""
+        """No deadline: a full state; 1.0 s: the error, no late spawn, no cache.
+
+        A deadline already passed: the error before any spawn, no cache.
+        """
         from dsp_route import report
 
         argv = self.route(self.T / "d")
@@ -571,18 +589,14 @@ class Deadline(support.Sandbox):
             merged.unlink()
             log.unlink()
             err: GitDeadlineError | None = None
-            start = time.time()
-            try:
-                with git_deadline(1.0):
-                    _ = report.collect(a, write_cache=True)
-            except GitDeadlineError as e:
-                err = e
+            with spawns() as left:
+                try:
+                    with git_deadline(1.0):
+                        _ = report.collect(a, write_cache=True)
+                except GitDeadlineError as e:
+                    err = e
             lines = log.read_text().splitlines() if log.exists() else []
-            late = [
-                ln
-                for ln in lines
-                if int(ln.split(" ", 1)[0]) / 1e9 > start + 1.0 + SHIM_START_S
-            ]
+            late = [t for t in left if t is None or t <= 0]
             self.ok(
                 f"deadline 1.0 s: GitDeadlineError after {len(lines)} spawns, "
                 f"{len(late)} late, no cache",
@@ -590,7 +604,19 @@ class Deadline(support.Sandbox):
                 and 0 < len(lines) <= DEADLINE_SPAWNS
                 and not late
                 and not merged.exists(),
-                f"{err!r}\n{lines}",
+                f"{err!r}\n{lines}\n{left}",
+            )
+            err = None
+            with spawns() as left:
+                try:
+                    with git_deadline(0.0):
+                        _ = report.collect(a, write_cache=True)
+                except GitDeadlineError as e:
+                    err = e
+            self.ok(
+                f"deadline passed: GitDeadlineError after {len(left)} spawns, no cache",
+                err is not None and not left and not merged.exists(),
+                f"{err!r}\n{left}",
             )
             threads = [threading.Thread(target=run, args=(s,)) for s in (1.0, 30.0)]
             for t in threads:
