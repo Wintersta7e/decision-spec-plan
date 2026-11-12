@@ -3,14 +3,18 @@
 
 import base64
 import contextlib
+import dataclasses
 import hashlib
 import ipaddress
 import json
+import os
 import re
 import shlex
 import socket
 import time
+import unittest.mock
 from http import HTTPStatus
+from pathlib import Path
 from typing import cast
 
 import dsp_monitor
@@ -299,3 +303,316 @@ class SingleInstance(support.MonitorSandbox):
         self.ok("none: keeps P", m.port == p, m.url)
         self.ok("none: curl.exe asked P once", log == want[:1], log)
         self.ok("none: one stderr line", len(m.err.splitlines()) == 1, m.err)
+
+
+FAST = {"SCAN_S": 0.05}  # the scan's floor, short so a change shows within a poll
+
+
+def runs_of(state: dict[str, object], key: str) -> list[dict[str, object]]:
+    """The runs /api/state lists for route key: its live run, then its ended ones."""
+    out = [
+        cast("dict[str, object]", r["run"])
+        for group in ("routes", "idle")
+        for r in cast("list[dict[str, object]]", state[group])
+        if r["key"] == key
+    ]
+    for r in cast("list[dict[str, object]]", state["ended"]):
+        if r["key"] == key:
+            ended = cast("list[dict[str, object]]", r["runs"])
+            out += [{**x, "state": "ended"} for x in ended]
+    return out
+
+
+def states_of(state: dict[str, object], key: str) -> list[tuple[str, str]]:
+    """(run key, state) of each run /api/state lists for route key, sorted."""
+    return sorted((str(r["key"]), str(r["state"])) for r in runs_of(state, key))
+
+
+class Machine(support.MonitorSandbox):
+    """The synthetic machine every monitor test builds on."""
+
+    def test_builder_stays_synthetic(self) -> None:
+        """Every path is under T; every name synthetic; no real HOME or mount."""
+        m = self.build_machine()
+        outside = [p for p in m.written if not p.is_relative_to(self.T)]
+        self.ok(f"{len(m.written)} paths, all under T", m.written and not outside)
+        sessions = {p.name.split(".")[0] for p in m.registry.rglob("*.json*")}
+        names = set(m.routes)
+        bad = [n for n in names if not re.fullmatch(r"route-[a-f]", n)]
+        bad += [s for s in sessions if not re.fullmatch(r"s\d+", s)]
+        self.ok(
+            f"{len(names)} routes, {len(sessions)} sessions", names and not bad, bad
+        )
+        real = os.environ["HOME"]
+        strings: list[str] = []
+
+        def walk(v: object) -> None:
+            if isinstance(v, str):
+                strings.append(v)
+            elif isinstance(v, dict):
+                for k, x in cast("dict[str, object]", v).items():
+                    walk(k)
+                    walk(x)
+            elif isinstance(v, list):
+                for x in cast("list[object]", v):
+                    walk(x)
+
+        for p in m.written:
+            if p.suffix in {".json", ".jsonl"}:
+                for line in p.read_text().splitlines():
+                    walk(cast("object", json.loads(line)))
+        leaks = [s for s in strings if real in s or "/mnt/" in s]
+        self.ok(f"{len(strings)} strings, none real", strings and not leaks, leaks)
+
+
+class Discovery(support.MonitorSandbox):
+    """Routes and runs from the registry, `previous` and the event logs (§4.3, §4.4)."""
+
+    # this test's repository and planning dir, set by machine()
+    repo: Path = Path()
+    plan: Path = Path()
+
+    def machine(self) -> support.Machine:
+        """An empty machine of this test's own, with a repository and planning dir."""
+        m = support.Machine(self.T / self._testMethodName)
+        self.repo = self.init_repo(m.root / "repo")
+        self.plan = self.repo / ".plan"
+        self.plan.mkdir()
+        return m
+
+    def act(self, m: support.Machine, session: str, plan: Path | None = None) -> str:
+        """`--activate` of plan (default the planning dir) by session on m; its run."""
+        plan = plan or self.plan
+        r = self.py(
+            support.RS,
+            plan,
+            "--phase",
+            "1",
+            "--repo",
+            self.repo,
+            "--sections",
+            "1-",
+            "--activate",
+            session=session,
+            env=m.env,
+            merge=True,
+        )
+        self.ok(f"{session} activates {plan.name}", r.code == 0, r.out)
+        return str(self.marker(self.repo, plan).get("run"))
+
+    def fixture(self, plan: Path, run: str) -> support.FixtureRoute:
+        """The route on plan as the builder's line() needs it."""
+        marker = self.MK(self.repo, plan)
+        return support.FixtureRoute("route-a", self.repo, plan, marker, run, [])
+
+    def test_reactivation_is_a_new_run(self) -> None:
+        """A deleted marker re-activated is a new run; the old one ends with s1."""
+        m = self.machine()
+        old = self.act(m, "s1")
+        r = self.fixture(self.plan, old)
+        _ = m.put_events("s1", m.line(r, "s1", "turn-end", time.time() - 5))
+        self.rm(r.marker)
+        new = self.act(m, "s2")
+        mon = self.monitor_on(m, consts=FAST)
+        key, gone = r.key, r.run_key(old)
+        s = mon.wait(lambda s: len(runs_of(s, key)) == len([old, new]))
+        want = sorted([(r.run_key(new), "live"), (gone, "ended")])
+        self.ok("a live and an ended run", states_of(s, key) == want, states_of(s, key))
+        _, _, body = mon.get(f"/api/run?key={gone}")
+        run = cast("dict[str, dict[str, object]]", json.loads(body))["run"]
+        ids = [x["id"] for x in cast("list[dict[str, object]]", run["sessions"])]
+        self.ok("the ended run has s1", ids == ["s1"], ids)
+
+    def test_legacy_continuity(self) -> None:
+        """A3 with R64: upgraded, moved legacy, pre buckets, the R64 marker check."""
+        m = support.Machine(self.T / self._testMethodName)
+        a = m.fixture_route("route-a", repo=False, upgraded=True)
+        _ = m.put_entry("s1", a, legacy=True)
+        b = m.fixture_route("route-b", repo=False, upgraded=True)
+        moved = dataclasses.replace(b, marker=b.marker.with_name(common.MARKER))
+        _ = m.put_entry("s2", moved, legacy=True)
+        c = m.fixture_route("route-c", repo=False)
+        _ = m.put_entry("s3", c, legacy=True)
+        _ = m.put_entry("s4", c)
+        d = m.fixture_route("route-d", repo=False, run=None)
+        _ = m.put_entry("s5", d, legacy=True)
+        f = m.fixture_route("route-f", repo=False, upgraded=True)
+        _ = m.put_entry("s7", f)
+        # another existing marker for route-f's planning dir: not its current one
+        other = dataclasses.replace(f, marker=m.root / "other/.git/dsp-route.json")
+        m.put_marker(other)
+        _ = m.put_entry("s8", other, legacy=True, activated=time.time() - 60)
+        mon = self.monitor_on(m, consts=FAST)
+        s = mon.wait(lambda s: s["ready"])
+        cases = {
+            "upgraded: live, nothing ended": (a, [(a.run_key(), "live")]),
+            "moved legacy marker: live": (b, [(b.run_key(), "live")]),
+            "run, no run_upgraded: pre ended": (
+                c,
+                sorted([(c.run_key(), "live"), (f"{c.key}-pre", "ended")]),
+            ),
+            "3c70cb6 marker: pre live": (d, [(f"{d.key}-pre", "live")]),
+            "another marker: pre ended (R64)": (
+                f,
+                sorted([(f.run_key(), "live"), (f"{f.key}-pre", "ended")]),
+            ),
+        }
+        for label, (r, want) in cases.items():
+            self.ok(label, states_of(s, r.key) == want, states_of(s, r.key))
+        live = runs_of(s, b.key)
+        sessions = [
+            x["id"] for x in cast("list[dict[str, object]]", live[0]["sessions"])
+        ]
+        self.ok("moved legacy marker: s2 on the live run", sessions == ["s2"], live)
+        self.ok(f"{len(cases)} cases", cases)
+
+    def test_a28_split(self) -> None:
+        """A 3c70cb6 rewrite then a new activation: r ended, r2 live, two runs."""
+        m = self.machine()
+        r = self.act(m, "s1")
+        self.edit_marker(lambda mk: mk.pop("run"), self.repo)
+        r2 = self.act(m, "s2")
+        key = common.route_slug(str(self.plan))
+        mon = self.monitor_on(m, consts=FAST)
+        s = mon.wait(lambda s: s["ready"])
+        want = sorted([(f"{key}-{r}", "ended"), (f"{key}-{r2}", "live")])
+        got = states_of(s, key)
+        self.ok("r ended, r2 live", r != r2 and got == want, got)
+
+    def test_session_moved_routes(self) -> None:
+        """A stays listed after s1 moves to B: by `previous` alone, then by a line."""
+        m = self.machine()
+        a_run = self.act(m, "s1")
+        b_plan = self.repo / "planb"
+        b_plan.mkdir()
+        _ = self.act(m, "s1", b_plan)
+        a = self.fixture(self.plan, a_run)
+        mon = self.monitor_on(m, consts=FAST)
+        s = mon.wait(lambda s: s["ready"])
+        want = [(a.run_key(), "live")]
+        self.ok("(ii) no log: A listed by previous", states_of(s, a.key) == want, s)
+        _ = m.put_events("s1", m.line(a, "s1", "turn-end", time.time() - 5))
+        s = mon.wait(
+            lambda s: runs_of(s, a.key) and runs_of(s, a.key)[0]["first_seen_at"]
+        )
+        self.ok("(i) a line: A listed", states_of(s, a.key) == want, s)
+        self.rm(a.marker)
+        s = mon.wait(lambda s: states_of(s, a.key) == [(a.run_key(), "ended")])
+        self.ok("A's marker deleted: ended", s)
+
+    def test_bad_registry_files(self) -> None:
+        """A sidecar is ignored; a bad entry or `previous` item is one error each."""
+        m = support.Machine(self.T / self._testMethodName)
+        a = m.fixture_route("route-a", repo=False)
+        _ = m.put_entry("s1", a)
+        _ = m.put(m.registry / "s1.waits.json", '{"jobs": []}\n')
+        _ = m.put(m.registry / "s2.json", '{"marker": ')
+        _ = m.put_entry("s3", a, previous=[{"marker": 1}])
+        extra = cast("dict[str, object]", json.loads(m.put_entry("s4", a).read_text()))
+        extra["zz_new"] = 1
+        _ = m.put(m.registry / "s4.json", json.dumps(extra))
+        mon = self.monitor_on(m, consts=FAST)
+        s = mon.wait(lambda s: s["ready"])
+        errors = cast("list[dict[str, str]]", s["errors"])
+        sources = sorted(e["source"] for e in errors)
+        self.ok(
+            f"{len(errors)} errors: s2, s3", sources == ["s2.json", "s3.json"], errors
+        )
+        live = runs_of(s, a.key)
+        ids = [x["id"] for x in cast("list[dict[str, object]]", live[0]["sessions"])]
+        self.ok("s1, s3 and s4 load", ids == ["s1", "s3", "s4"], ids)
+        listed = len(cast("list[object]", s["routes"])) + len(
+            cast("list[object]", s["ended"])
+        )
+        self.ok("one route", listed == 1, s)
+
+    def test_idle_collapse_order(self) -> None:
+        """Two active and three idle routes, each newest first; flips at IDLE_S."""
+        m = support.Machine(self.T / self._testMethodName)
+        idle = dsp_monitor.IDLE_S
+        ages = {
+            "route-a": 10,
+            "route-b": 20,
+            "route-c": idle + 100,
+            "route-d": idle + 200,
+            "route-e": idle + 300,
+        }
+        for i, (name, age) in enumerate(ages.items(), 1):
+            r = m.fixture_route(name, repo=False)
+            _ = m.put_entry(f"s{i}", r, activated=time.time() - age)
+            self.touch(r.marker, -age)
+        keys = {n: r.key for n, r in m.routes.items()}
+        mon = self.monitor_on(m, consts=FAST)
+        s = mon.wait(lambda s: s["ready"])
+
+        def order(state: dict[str, object], group: str) -> list[str]:
+            return [
+                str(r["key"]) for r in cast("list[dict[str, object]]", state[group])
+            ]
+
+        want_active = [keys["route-a"], keys["route-b"]]
+        want_idle = [keys["route-c"], keys["route-d"], keys["route-e"]]
+        self.ok("routes: the 2 active, newest first", order(s, "routes") == want_active)
+        self.ok("idle: the 3 idle, newest first", order(s, "idle") == want_idle)
+        counts = cast("dict[str, int]", s["counts"])
+        self.ok("counts.idle 3", counts["idle"] == len(want_idle), counts)
+        e = m.routes["route-e"].marker
+        self.touch(e.with_name(f"{e.stem}.s5.last"), -5)
+        s = mon.wait(lambda s: keys["route-e"] in order(s, "routes"))
+        self.ok("route-e's .last now: active", order(s, "routes")[0] == keys["route-e"])
+
+
+class MarkerReader(support.MonitorSandbox):
+    """The marker read: one retry on a failed read, none on a torn one."""
+
+    def test_absent_and_torn_marker(self) -> None:
+        """Absent once: ok; twice: ended; torn: kept, or live and unreadable."""
+        good = b'{"planning_dir": "p", "run": "r"}'
+        path = self.T / "x.json"
+        sleep = unittest.mock.patch("time.sleep")
+        cases = {
+            "absent once: ok": ([FileNotFoundError(), good], "ok", 2, 1),
+            "absent twice: absent": ([FileNotFoundError(), OSError()], "absent", 2, 1),
+            "truncated: torn": ([good[:9]], "torn", 1, 0),
+        }
+        for label, (effects, want, calls, sleeps) in cases.items():
+            with (
+                sleep as slept,
+                unittest.mock.patch.object(
+                    dsp_monitor, "_read_bytes", side_effect=effects
+                ) as read,
+            ):
+                got = dsp_monitor.read_marker(path).status
+            self.ok(f"{label}", got == want, got)
+            self.ok(f"{label}: {calls} reads", read.call_count == calls)
+            self.ok(f"{label}: {sleeps} sleeps", slept.call_count == sleeps)
+        m = support.Machine(self.T / self._testMethodName)
+        a = m.fixture_route("route-a", repo=False)
+        _ = m.put_entry("s1", a)
+        scanner = dsp_monitor.Scanner(m.registry, m.registry / "events")
+
+        def model(effects: object, prev: dsp_monitor.Model | None) -> dsp_monitor.Model:
+            with (
+                sleep,
+                unittest.mock.patch.object(
+                    dsp_monitor, "_read_bytes", side_effect=effects
+                ),
+            ):
+                return dsp_monitor.discover(
+                    scanner.scan(time.time()), prev, time.time()
+                )
+
+        body = a.marker.read_bytes()
+        first = model([FileNotFoundError(), body], None)
+        live = first.routes[a.key].live
+        self.ok("absent once: live", live is not None and live.run == a.run)
+        gone = model(OSError, first)
+        self.ok("absent twice: ended", gone.routes[a.key].live is None)
+        kept = model([body[:9]], first).routes[a.key]
+        self.ok("torn after a scan: still live", kept.live is not None)
+        fresh = model([body[:9]], None).routes[a.key]
+        self.ok("torn, no scan before: live", fresh.live is not None)
+        detail = dsp_monitor.run_detail(fresh, fresh.live) if fresh.live else {}
+        items = cast("list[dict[str, object]]", detail.get("attention", []))
+        names = [i["subject"] for i in items]
+        self.ok("an unreadable item names it", names == [a.marker.name], items)

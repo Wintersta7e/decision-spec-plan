@@ -8,6 +8,7 @@ subTest named by what it checks, so a failure names the check and the rest of th
 still runs.
 """
 
+import dataclasses
 import datetime as dt
 import hashlib
 import http.client
@@ -41,7 +42,8 @@ from typing import (
 # typing.override is 3.12+; the tests need dev-only packages anyway (pytest)
 from typing_extensions import override
 
-from dsp_route.common import RegistryEntry
+import dsp_monitor
+from dsp_route.common import RegistryEntry, route_slug
 
 TESTS = Path(__file__).resolve().parent
 PLUGIN = TESTS.parent
@@ -942,6 +944,374 @@ class MonitorSandbox(Route):
             timeout=30,
             check=False,
         )
+
+    def monitor_on(self, machine: "Machine", **kw: Unpack[MonitorOptions]) -> Monitor:
+        """The monitor started on machine's HOME; stopped when the test ends."""
+        m = start_monitor(machine.env, **kw)
+        self.addCleanup(m.stop)
+        return m
+
+    @classmethod
+    def build_machine(cls) -> "Machine":
+        """The synthetic machine under T (see `build_machine`)."""
+        return build_machine(cls.T)
+
+
+# --- the synthetic machine the monitor tests read (AC-P1-4-33)
+
+# the hook each event kind comes from; a `cap` line is written by the hook that passed
+# the cap, any of them
+FIXTURE_HOOKS: Final = {
+    "dispatch": "PreToolUse",
+    "launch": "PostToolUse",
+    "return": "PostToolUse",
+    "failed": "PostToolUseFailure",
+    "start": "SubagentStart",
+    "stop": "SubagentStop",
+    "idle": "TeammateIdle",
+    "pre": "PreToolUse",
+    "post": "PostToolUse",
+    "prompt": "UserPromptSubmit",
+    "turn-end": "Stop",
+    "api-error": "StopFailure",
+    "notify": "Notification",
+    "compact": "PostCompact",
+    "session": "SessionStart",
+    "session-end": "SessionEnd",
+    "cap": "PostToolUse",
+}
+# a fixture agent's id, `a<name>-<16 hex>` as 2.1.322 writes them
+WORKER: Final = "aworker-1-0123456789abcdef"
+# a session's skill-file digest, as `inject.skill_changes` writes it (16 hex)
+DIGEST: Final = "0123456789abcdef"
+
+
+def run_id(n: int) -> str:
+    """A synthetic run id in `--activate`'s format (`%Y%m%dT%H%M%S-<16 hex>`)."""
+    return f"20260101T{n:06d}-{n:016x}"
+
+
+def _git(env: Mapping[str, str], *args: object) -> str:
+    """Git with the throwaway identity in env; its stdout, stripped."""
+    return subprocess.run(
+        [*GIT, *map(str, args)],
+        env=dict(env),
+        capture_output=True,
+        text=True,
+        check=True,
+    ).stdout.strip()
+
+
+@dataclasses.dataclass
+class FixtureRoute:
+    """A synthetic route: its directory, planning dir, marker, run and arguments.
+
+    The directory is a repository's when built with repo; run is None for a marker
+    without one.
+    """
+
+    name: str
+    repo: Path
+    plan: Path
+    marker: Path
+    run: str | None
+    args: list[str]
+
+    @property
+    def key(self) -> str:
+        """The monitor's route key."""
+        return route_slug(str(self.plan))
+
+    def run_key(self, run: str | None = None) -> str:
+        """The monitor's key of run (default this route's run; None is `pre`)."""
+        return f"{self.key}-{run or self.run or 'pre'}"
+
+
+class Machine:
+    """A synthetic machine under root: HOME, routes, registry entries and event logs.
+
+    Every file the builder writes is in `written`; every name is `route-[a-f]`, a
+    session `s<n>` or a fixture constant.
+    """
+
+    def __init__(self, root: Path) -> None:
+        """An empty machine with HOME at root/home."""
+        self.root: Path = root
+        self.home: Path = root / "home"
+        self.home.mkdir(parents=True, exist_ok=True)
+        self.registry: Path = self.home / ".claude/dsp-routes"
+        self.env: dict[str, str] = {
+            "PATH": os.environ.get("PATH", "/usr/bin:/bin"),
+            "HOME": str(self.home),
+            "GIT_CONFIG_NOSYSTEM": "1",
+            "LANG": "C.UTF-8",
+            **{k: v for k, v in os.environ.items() if k.startswith("COVERAGE_")},
+        }
+        self.routes: dict[str, FixtureRoute] = {}
+        self.written: list[Path] = []
+        self.live_route_key: str = ""
+        self.idle_route_key: str = ""
+        self.ended_run_key: str = ""
+
+    def put(self, path: Path, text: str) -> Path:
+        """Text written to path, which joins `written`."""
+        if path not in self.written:
+            self.written.append(path)
+        return Sandbox.write(path, text)
+
+    def fixture_route(
+        self,
+        name: str,
+        *,
+        repo: bool = True,
+        run: str | None = "",
+        upgraded: bool = False,
+        under_home: bool = False,
+    ) -> FixtureRoute:
+        """A route at <root or HOME>/<name>, its planning dir `plan` and its marker.
+
+        With repo it is a repository whose main has one commit, and the marker names
+        it with `--repo`; else only its `.git` directory exists. run "" mints a new
+        id; None writes a marker without one (3c70cb6's shape).
+        """
+        d = (self.home if under_home else self.root) / name
+        plan = d / "plan"
+        plan.mkdir(parents=True, exist_ok=True)
+        if repo:
+            _ = _git(self.env, "init", "-q", "-b", "main", d)
+            _ = _git(self.env, "-C", d, "commit", "-q", "--allow-empty", "-m", "one")
+        else:
+            (d / ".git").mkdir(parents=True, exist_ok=True)
+        args = [str(plan), "--phase", "1", "--main", "main"]
+        if repo:
+            args += ["--repo", str(d)]
+        r = FixtureRoute(
+            name,
+            d,
+            plan,
+            d / ".git" / f"dsp-route-{route_slug(str(plan))}.json",
+            run_id(len(self.routes) + 1) if run == "" else run,
+            args,
+        )
+        self.routes[name] = r
+        self.put_marker(r, upgraded=upgraded)
+        return r
+
+    def put_marker(self, route: FixtureRoute, *, upgraded: bool = False) -> None:
+        """Route's marker written as `--activate` writes it, with its run if any."""
+        data: dict[str, object] = {
+            "args": route.args,
+            "planning_dir": str(route.plan),
+            "activated": time.time(),
+            "ledger": {},
+        }
+        if route.run is not None:
+            data["run"] = route.run
+        if upgraded:
+            data["run_upgraded"] = True
+        _ = self.put(route.marker, json.dumps(data))
+
+    @staticmethod
+    def prev(route: FixtureRoute, run: str | None = None) -> dict[str, object]:
+        """A `previous` item naming route (and run, default the route's)."""
+        return {
+            "marker": str(route.marker),
+            "planning_dir": str(route.plan),
+            "run": run or route.run,
+        }
+
+    def put_entry(
+        self,
+        session: str,
+        route: FixtureRoute,
+        *,
+        previous: Iterable[dict[str, object]] = (),
+        activated: float | None = None,
+        legacy: bool = False,
+    ) -> Path:
+        """Session's registry entry for route; legacy writes 3c70cb6's four keys.
+
+        A current entry also carries the route's run and arguments, `previous`,
+        `skill_seen` and a one-key `skill_digests` map.
+        """
+        at = time.time() if activated is None else activated
+        entry: dict[str, object] = {
+            "marker": str(route.marker),
+            "planning_dir": str(route.plan),
+            "activated": at,
+            "ledger": {},
+        }
+        if not legacy:
+            entry |= {
+                "run": route.run,
+                "args": route.args,
+                "previous": list(previous),
+                "skill_seen": at,
+                "skill_digests": {"SKILL.md": DIGEST},
+            }
+        return self.put(self.registry / f"{session}.json", json.dumps(entry) + "\n")
+
+    def line(
+        self,
+        route: FixtureRoute,
+        session: str,
+        ev: str,
+        at: float,
+        **fields: object,
+    ) -> dict[str, object]:
+        """One §3.6 event line of route's run, as the recorder writes it."""
+        from dsp_route import record
+
+        if ev not in record.KINDS:
+            msg = f"line: {ev} is no event kind"
+            raise AssertionError(msg)
+        return {
+            "v": record.SCHEMA,
+            "ts": round(at, 3),
+            "session": session,
+            "run": route.run,
+            "planning_dir": str(route.plan),
+            "marker": str(route.marker),
+            "hook": FIXTURE_HOOKS[ev],
+            "ev": ev,
+            **fields,
+        }
+
+    def put_events(self, session: str, *lines: Mapping[str, object]) -> Path:
+        """Lines appended to session's event log."""
+        path = self.registry / "events" / f"{session}.jsonl"
+        _ = self.put(path, path.read_text() if path.exists() else "")
+        Sandbox.append(path, *map(jline, lines))
+        return path
+
+    def lane(self, route: FixtureRoute, plan_id: str, state: str) -> None:
+        """A lane of route's repository in state (a `report.LANE_STATES` value).
+
+        A queued lane has only its plan index row, which the caller writes.
+        """
+        if state == "queued":
+            return
+        r = route.repo
+        sha = _git(
+            self.env, "-C", r, "commit-tree", "-p", "main", "-m", plan_id, "main^{tree}"
+        )
+        _ = _git(self.env, "-C", r, "branch", plan_id, sha)
+        lanes = route.plan / "lanes"
+        _ = self.put(lanes / f"{plan_id}-checkpoint.md", f"Final SHA: {sha}\n")
+        if state == "merged":
+            _ = _git(self.env, "-C", r, "merge", "-q", "--no-ff", "-m", "m", plan_id)
+        gates = {"red": "exit=1\n", "gating": "running\n", "ready": "exit=0\n"}
+        if state in gates:
+            text = f"sha={sha} dirty=0\n{gates[state]}"
+            _ = self.put(lanes / f"{plan_id}-gate.log", text)
+
+
+def _route_a(m: Machine, now: float) -> None:
+    """The exec route: every lane state, a whole-wave edge, a worktree, a budget."""
+    a = m.fixture_route("route-a", under_home=True)
+    states = {
+        "p1-01-x": ("merged", 1, "—"),
+        "p1-02-x": ("red", 1, "—"),
+        "p1-03-x": ("gating", 1, "—"),
+        "p1-04-x": ("ready", 1, "—"),
+        "p1-05-x": ("running", 1, "—"),
+        "p1-06-x": ("queued", 1, "p1-01-x"),
+        "p1-07-x": ("queued", 1, "p1-02-x"),
+        "p1-08-x": ("queued", 2, "all of wave 1"),
+    }
+    for plan_id, (state, _, _) in states.items():
+        m.lane(a, plan_id, state)
+    _ = _git(m.env, "-C", a.repo, "worktree", "add", "-q", m.root / "wt-a", "p1-05-x")
+    rows = "".join(f"| {p} | {w} | {d} |\n" for p, (_, w, d) in states.items())
+    _ = m.put(
+        a.plan / "plans/p1-00-index.md",
+        f"# Phase 1 plans\n\n| Plan | Wave | Depends on |\n|---|---|---|\n{rows}",
+    )
+    budget = {
+        "label": "phase 1",
+        "estimate": 12.5,
+        "phase": "1",
+        "at": "2026-01-01T00:00:00Z",
+        "session": "s1",
+        "groups": 4,
+    }
+    _ = m.put(a.plan / "route-budget.json", json.dumps({"budgets": [budget]}))
+    _ = m.put_entry("s1", a, activated=now - 600)
+    _ = m.put_events(
+        "s1",
+        m.line(a, "s1", "dispatch", now - 300, tuid="t-a1", name="worker-1", bg=True),
+        m.line(
+            a,
+            "s1",
+            "launch",
+            now - 299,
+            tuid="t-a1",
+            child=WORKER,
+            mode="background",
+            name="worker-1",
+            model="model-x",
+        ),
+        m.line(a, "s1", "start", now - 298, agent=WORKER),
+        m.line(a, "s1", "pre", now - 200, agent=WORKER, tool="Bash", tuid="t-a2"),
+        m.line(a, "s1", "pre", now - 100, tool="Bash", tuid="t-a3"),
+        m.line(a, "s1", "post", now - 99, tool="Bash", tuid="t-a3", ms=900),
+    )
+    m.live_route_key = a.key
+
+
+def build_machine(root: Path) -> Machine:
+    """The machine of AC-P1-4-33 under root, callable outside a TestCase.
+
+    route-a an exec route (`_route_a`), session s1; route-b waiting on the user: an
+    open `AskUserQuestion` (s2) and a permission prompt (s7); route-c blind (s3); s6
+    moved from route-c to route-b, its log holding route-c lines; route-d a repository
+    (s4); route-e ended, two runs (s5), its marker deleted; route-f idle, no event log
+    (s8).
+    """
+    m = Machine(root)
+    now = time.time()
+    _route_a(m, now)
+    b = m.fixture_route("route-b", repo=False)
+    c = m.fixture_route("route-c", repo=False)
+    _ = m.put_entry("s2", b, activated=now - 500)
+    _ = m.put_events("s2", m.line(b, "s2", "pre", now - 60, tool="AskUserQuestion"))
+    _ = m.put_entry("s7", b, activated=now - 400)
+    _ = m.put_events(
+        "s7", m.line(b, "s7", "notify", now - 30, type="permission_prompt")
+    )
+    _ = m.put_entry("s3", c, activated=now - 700)
+    _ = m.put_events(
+        "s3", m.line(c, "s3", "pre", now - 50, tool="Bash", gap=["tool_use_id"])
+    )
+    _ = m.put_entry("s6", b, previous=[m.prev(c)], activated=now - 450)
+    _ = m.put_events(
+        "s6",
+        m.line(c, "s6", "post", now - 460, tool="Read", tuid="t-c1"),
+        m.line(b, "s6", "post", now - 40, tool="Read", tuid="t-b1"),
+    )
+    d = m.fixture_route("route-d")
+    _ = m.put_entry("s4", d, activated=now - 800)
+    _ = m.put_events("s4", m.line(d, "s4", "turn-end", now - 70, bg_tasks=0))
+    e = m.fixture_route("route-e", repo=False)
+    old = run_id(50)
+    _ = m.put_entry("s5", e, previous=[m.prev(e, old)], activated=now - 90_000)
+    _ = m.put_events(
+        "s5",
+        m.line(e, "s5", "turn-end", now - 100_000, run=old),
+        m.line(e, "s5", "turn-end", now - 95_000),
+    )
+    Sandbox.rm(e.marker)
+    m.written.remove(e.marker)
+    m.ended_run_key = e.run_key()
+    f = m.fixture_route("route-f", repo=False)
+    ago = -(dsp_monitor.IDLE_S + 3600)
+    _ = m.put_entry("s8", f, activated=now + ago)
+    last = f.marker.with_name(f"{f.marker.stem}.s8.last")
+    _ = m.put(last, "")
+    for path in (f.marker, last):
+        Sandbox.touch(path, ago)
+    m.idle_route_key = f.key
+    return m
 
 
 # --- transcript records, as the bash suite's jq one-liners wrote them
