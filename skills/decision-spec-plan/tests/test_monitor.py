@@ -994,3 +994,273 @@ class Events(support.MonitorSandbox):
                 }
                 self.ok(f"{label}: fields", not diff, diff)
         self.ok(f"{len(FOLD)} cases", FOLD)
+
+
+def one_route(
+    root: Path, steps: list[Step], t0: float, quiet: float = 0
+) -> tuple[support.Machine, support.FixtureRoute]:
+    """A machine of one route, session s1, its lines at t0 + each step's offset.
+
+    quiet: how long ago the route's entry, marker and lines last moved, besides t0.
+    """
+    m = support.Machine(root)
+    a = m.fixture_route("route-a", repo=False)
+    _ = m.put_entry("s1", a, activated=time.time() - quiet)
+    support.Sandbox.touch(a.marker, -quiet)
+    lines = [m.line(a, "s1", ev, t0 - quiet + at, **f) for ev, at, f in steps]
+    if lines:
+        _ = m.put_events("s1", *lines)
+    return m, a
+
+
+def items_of(detail: dict[str, object], group: str) -> list[dict[str, object]]:
+    """The `waiting` or `attention` items of a RunDetail."""
+    return cast("list[dict[str, object]]", detail[group])
+
+
+ASK: Step = ("pre", 3, {"agent": W, "tool": "AskUserQuestion", "tuid": "t-2"})
+# case: (its lines, whether the one agent is likely stuck, the stuck items' subjects)
+STUCK: dict[str, tuple[list[Step], bool | None, list[str]]] = {
+    "an open Bash pre past STUCK_S": (
+        [DISPATCH, LAUNCH, START, BASH],
+        True,
+        ["worker-1"],
+    ),
+    "a bare dispatch": ([DISPATCH], False, []),
+    "an idle teammate": (
+        [
+            *MATE[:3],
+            ("pre", 3, {"agent": W, "tool": "Bash", "tuid": "t-2"}),
+            ("idle", 4, {"teammate": "mate-1", "team": "tm"}),
+        ],
+        False,
+        [],
+    ),
+    "a failed agent": (
+        [DISPATCH, LAUNCH, START, BASH, ("api-error", 4, {"agent": W})],
+        False,
+        [],
+    ),
+    "an open AskUserQuestion pre": ([DISPATCH, LAUNCH, START, ASK], False, []),
+    "a held pre": (
+        [
+            DISPATCH,
+            LAUNCH,
+            START,
+            ("pre", 3, {"agent": W, "tool": "Bash", "tuid": "t-2", "decision": "ask"}),
+        ],
+        False,
+        [],
+    ),
+    "closed by a later post, then a recent pre": (
+        [
+            DISPATCH,
+            LAUNCH,
+            START,
+            BASH,
+            ("post", 4, {"agent": W, "tool": "Read", "tuid": "t-4"}),
+            ("pre", 990, {"agent": W, "tool": "Edit", "tuid": "t-5"}),
+        ],
+        False,
+        [],
+    ),
+    "closed by a stop": (
+        [DISPATCH, LAUNCH, START, BASH, ("stop", 4, {"agent": W})],
+        False,
+        [],
+    ),
+    # a foreground agent: its return is the Agent call's only PostToolUse
+    "closed by a return": (
+        [
+            DISPATCH,
+            START,
+            BASH,
+            ("return", 4, {"tuid": "t-1", "child": W, "name": "worker-1"}),
+        ],
+        False,
+        [],
+    ),
+    "closed by a failed": (
+        [DISPATCH, LAUNCH, START, BASH, ("failed", 4, {"tuid": "t-1", "child": W})],
+        False,
+        [],
+    ),
+    "the lead's open Bash pre": (
+        [("pre", 3, {"tool": "Bash", "tuid": "t-9"})],
+        None,
+        ["lead"],
+    ),
+    "the lead's call closed by its turn-end": (
+        [("pre", 3, {"tool": "Bash", "tuid": "t-9"}), ("turn-end", 4, {})],
+        None,
+        [],
+    ),
+    "a cap line: still stuck, worded uncertain": (
+        [DISPATCH, LAUNCH, START, BASH, ("cap", 4, {"bytes": 1})],
+        True,
+        ["worker-1"],
+    ),
+}
+
+
+class Attention(support.MonitorSandbox):
+    """Likely stuck, waiting on you, and the attention items (§4.5, §4.10)."""
+
+    def test_likely_stuck(self) -> None:
+        """An open call past STUCK_S, and only that; never on an idle route."""
+        t0 = time.time() - 1000
+        cases = {k: (*v, 0.0) for k, v in STUCK.items()}
+        bash = [DISPATCH, LAUNCH, START, BASH]
+        cases["an idle route's agent"] = (bash, False, [], dsp_monitor.IDLE_S + 100)
+        for i, (label, (steps, want, subjects, quiet)) in enumerate(cases.items()):
+            m, a = one_route(self.T / f"stuck{i}", steps, t0, quiet)
+            got = detail_of(model_of(m), a)
+            agents = cast("list[dict[str, object]]", got["agents"])
+            if want is not None:
+                flag = agents[0]["likely_stuck"] if agents else None
+                self.ok(f"{label}: likely_stuck {want}", flag is want, agents)
+            stuck = [i for i in items_of(got, "attention") if i["kind"] == "stuck"]
+            names = [i["subject"] for i in stuck]
+            self.ok(f"{label}: stuck items {subjects}", names == subjects, stuck)
+            for item in stuck:
+                text = str(item["text"])
+                self.ok(f"{label}: amber", item["severity"] == "amber", item)
+                self.ok(
+                    f"{label}: text",
+                    text.startswith("may be stuck — Bash open for "),
+                    text,
+                )
+                capped = "cap line" in label
+                qualified = dsp_monitor.COPY["reduced"] in text
+                self.ok(f"{label}: qualifier {capped}", qualified == capped, text)
+        self.ok(f"{len(cases)} cases", cases)
+
+    def test_waiting_on_you(self) -> None:
+        """Asked and input from each session's newest lead event; ordered, counted."""
+        t0 = float(int(time.time()) - 1000)
+        bash: Step = ("pre", 900, {"agent": W, "tool": "Bash", "tuid": "t-2"})
+        cases: dict[str, tuple[list[Step], str | None]] = {
+            "a pre held to ask": (
+                [("pre", 1, {"tool": "Bash", "tuid": "t-9", "decision": "ask"})],
+                "asked",
+            ),
+            "a dispatch held to ask": (
+                [("dispatch", 2, {"tuid": "t-1", "decision": "ask"})],
+                "asked",
+            ),
+            "an AskUserQuestion pre": (
+                [("pre", 3, {"tool": "AskUserQuestion", "tuid": "t-9"})],
+                "asked",
+            ),
+            "a permission prompt": (
+                [("notify", 4, {"type": "permission_prompt"})],
+                "asked",
+            ),
+            "an elicitation dialog": (
+                [("notify", 5, {"type": "elicitation_dialog"})],
+                "asked",
+            ),
+            "a notify of another type is skipped": (
+                [
+                    ("pre", 6, {"tool": "AskUserQuestion", "tuid": "t-9"}),
+                    ("notify", 7, {"type": "auth_success"}),
+                ],
+                "asked",
+            ),
+            "a turn-end with no background task": (
+                [("turn-end", 8, {"bg_tasks": 0})],
+                "input",
+            ),
+            "an idle prompt": ([("notify", 9, {"type": "idle_prompt"})], "input"),
+            "a turn-end with background tasks": (
+                [("turn-end", 10, {"bg_tasks": 2})],
+                None,
+            ),
+            "a turn-end while an agent runs": (
+                [DISPATCH, LAUNCH, START, bash, ("turn-end", 950, {"bg_tasks": 0})],
+                None,
+            ),
+            "a newer lead line": (
+                [
+                    ("pre", 11, {"tool": "AskUserQuestion", "tuid": "t-9"}),
+                    ("post", 12, {"tool": "AskUserQuestion", "tuid": "t-9"}),
+                ],
+                None,
+            ),
+            "an ended session": (
+                [
+                    ("pre", 13, {"tool": "AskUserQuestion", "tuid": "t-9"}),
+                    ("session-end", 14, {"reason": "other"}),
+                ],
+                None,
+            ),
+            "a reduced session: asked, qualified": (
+                [
+                    ("cap", 15, {"bytes": 1}),
+                    ("pre", 16, {"tool": "AskUserQuestion", "tuid": "t-9"}),
+                ],
+                "asked",
+            ),
+        }
+        live = dsp_monitor.Live(dsp_monitor.read_page(dsp_monitor.PAGE), "n")
+        live.bound(0)
+        routes: dict[str, dsp_monitor.Route] = {}
+        for i, (label, (steps, want)) in enumerate(cases.items()):
+            m, a = one_route(self.T / f"wait{i}", steps, t0)
+            model = model_of(m)
+            routes |= model.routes
+            got = items_of(detail_of(model, a), "waiting")
+            kinds = [x["kind"] for x in got]
+            self.ok(f"{label}: {want}", kinds == ([want] if want else []), got)
+            name = model.routes[a.key].name
+            for x in got:
+                # the newest line that counts: a skipped notify does not
+                at = t0 + steps[-2 if "skipped" in label else -1][1]
+                text = str(x["text"])
+                self.ok(f"{label}: no severity", x["severity"] is None, x)
+                self.ok(f"{label}: subject s1", x["subject"] == "s1", x)
+                self.ok(f"{label}: since", x["since"] == dsp_monitor.iso(at), x)
+                head = f"{name} · {x['kind']} · since {dsp_monitor.hhmm(at)}"
+                self.ok(f"{label}: text", text.startswith(head), text)
+                reduced = dsp_monitor.COPY["reduced"] in text
+                self.ok(f"{label}: qualifier", reduced == ("reduced" in label), text)
+        live.publish(dsp_monitor.Model(routes, []))
+        state = cast("dict[str, object]", json.loads(live.state))
+        top = cast("list[dict[str, object]]", state["waiting"])
+        sinces = [str(x["since"]) for x in top]
+        want = sum(1 for _, w in cases.values() if w)
+        self.ok(f"{len(top)} waiting, oldest first", len(top) == want, top)
+        self.ok("ordered by since", sinces == sorted(sinces), sinces)
+        counts = cast("dict[str, int]", state["counts"])
+        self.ok("counts.waiting", counts["waiting"] == want, counts)
+        self.ok(f"{len(cases)} cases", cases)
+
+    def test_attention_items(self) -> None:
+        """blind, dir-missing, reduced and unreadable: kind, severity, text, order."""
+        m = support.build_machine(self.T / "machine")
+        a, b, c, d = (m.routes[f"route-{x}"] for x in "abcd")
+        _ = m.put_events("s1", {"v": 1, "ts": "torn"})
+        _ = m.put_events("s2", m.line(b, "s2", "cap", time.time() - 20, bytes=1))
+        self.rm(d.plan)
+        model = model_of(m)
+        want = [
+            (a, [("unreadable", "amber", "s1.jsonl", "unreadable: s1.jsonl")]),
+            (b, [("reduced", "amber", None, dsp_monitor.COPY["reduced"])]),
+            (c, [("blind", "red", None, "— tool_use_id")]),
+            (d, [("dir-missing", "red", None, dsp_monitor.COPY["dir-missing"])]),
+        ]
+        for r, items in want:
+            got = items_of(detail_of(model, r), "attention")
+            have = [(x["kind"], x["severity"], x["subject"]) for x in got]
+            self.ok(f"{r.name}: {items}", have == [i[:3] for i in items], got)
+            texts = [str(x["text"]) for x in got]
+            ends = all(t.endswith(i[3]) for t, i in zip(texts, items, strict=False))
+            self.ok(f"{r.name}: texts", ends, texts)
+        live = dsp_monitor.Live(dsp_monitor.read_page(dsp_monitor.PAGE), "n")
+        live.bound(0)
+        live.publish(model)
+        state = cast("dict[str, object]", json.loads(live.state))
+        top = cast("list[dict[str, object]]", state["attention"])
+        kinds = [x["kind"] for x in top]
+        order = ["blind", "dir-missing", "reduced", "unreadable"]
+        self.ok(f"{len(top)} items: red, oldest first, then amber", kinds == order, top)

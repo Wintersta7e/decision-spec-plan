@@ -262,11 +262,20 @@ def read_marker(path: pathlib.Path) -> MarkerRead:
 
 
 class OpenCall(NamedTuple):
-    """A tool call with a `pre` and no `post` yet: its tool, its ts and any hold."""
+    """A tool call with a `pre` and no `post` yet: its tool, its ts and any hold.
+
+    group: the lines its `pre` joined, which tie the call to a run.
+    """
 
     tool: str | None
     since: float
     decision: str | None
+    group: "Group | None" = None
+
+    @property
+    def waits_on_user(self) -> bool:
+        """An AskUserQuestion or a held call waits on the user: it is not stuck."""
+        return self.tool == "AskUserQuestion" or self.decision is not None
 
 
 @dataclasses.dataclass
@@ -276,7 +285,7 @@ class Calls:
     open: dict[str, OpenCall] = dataclasses.field(default_factory=dict)
     last_post: float = 0.0
 
-    def pre(self, line: dict[str, object], t: float) -> None:
+    def pre(self, line: dict[str, object], t: float, group: "Group | None") -> None:
         """Open a call; one older than the subject's newest `post` has ended.
 
         The model issues a new call only once every call of its previous message
@@ -290,7 +299,14 @@ class Calls:
             tool if isinstance(tool, str) else None,
             t,
             decision if isinstance(decision, str) else None,
+            group,
         )
+
+    def stuck(self, now: float) -> OpenCall | None:
+        """The oldest call open past STUCK_S that does not wait on the user."""
+        calls = [c for c in self.open.values() if not c.waits_on_user]
+        call = min(calls, key=lambda c: c.since, default=None)
+        return call if call is not None and now - call.since > STUCK_S else None
 
     def post(self, line: dict[str, object], t: float) -> None:
         """Close the call of the line's `tuid`."""
@@ -356,14 +372,31 @@ class Agent:
 class Group:
     """The retained event lines of one session for one (run, planning dir, marker).
 
-    gap_at: the ts of its first line with `gap`; agents: those first seen here.
+    gap_at: the ts of its first line with `gap`, gap: that line's gap fields;
+    agents: those first seen here.
     """
 
     first_ts: float
     last_ts: float
     lines: int = 0
     gap_at: float | None = None
+    gap: list[str] = dataclasses.field(default_factory=list)
     agents: list[Agent] = dataclasses.field(default_factory=list)
+
+
+class Lead(NamedTuple):
+    """A session's newest lead event (§4.5 "Waiting on you"): what it says, and when.
+
+    group: the lines it joined, which tie it to a run.
+    """
+
+    ev: str
+    t: float
+    group: Group
+    tool: str | None
+    decision: str | None
+    type: str | None
+    idle_bg: bool
 
 
 GroupKey = tuple[str | None, str | None, str | None]
@@ -400,7 +433,8 @@ class SessionLog:
 
     skipped, versions: lines skipped and the unknown `v` among them; seen: each
     folded line's identity key and ts, within _DEDUPE_S of the newest; unjoined:
-    agent lines that name no agent; calls: the lead's open calls.
+    agent lines that name no agent; calls: the lead's open calls; lead: its newest
+    lead event; cap_at: the ts of its first `cap` line.
     """
 
     ident: tuple[int, int]
@@ -413,8 +447,14 @@ class SessionLog:
     versions: set[int] = dataclasses.field(default_factory=set)
     seen: dict[tuple[object, ...], float] = dataclasses.field(default_factory=dict)
     unjoined: int = 0
-    cap: bool = False
+    lead: Lead | None = None
+    cap_at: float | None = None
     ended: bool = False
+
+    @property
+    def cap(self) -> bool:
+        """Whether the log passed its size cap: activity since is sampled."""
+        return self.cap_at is not None
 
 
 @dataclasses.dataclass
@@ -666,7 +706,22 @@ def fold_line(log: SessionLog, line: dict[str, object], t: float) -> None:
     g.lines += 1
     if "gap" in line and (g.gap_at is None or t < g.gap_at):
         g.gap_at = t
-    fold = _FOLD.get(str(line.get("ev")))
+        g.gap = [str(f) for f in common.as_list(line.get("gap")) or []]
+    ev, kind = str(line.get("ev")), line.get("type")
+    # a lead line; a notify only of a type that waits on the user
+    lead = line.get("agent") is None and (ev != "notify" or kind in WAIT_NOTIFY)
+    if lead and (log.lead is None or t >= log.lead.t):
+        tool, decision, bg = (line.get(k) for k in ("tool", "decision", "bg_tasks"))
+        log.lead = Lead(
+            ev,
+            t,
+            g,
+            tool if isinstance(tool, str) else None,
+            decision if isinstance(decision, str) else None,
+            kind if isinstance(kind, str) else None,
+            type(bg) is int and bg == 0,
+        )
+    fold = _FOLD.get(ev)
     if fold is not None:
         fold(Ev(log, g, line, t))
 
@@ -811,7 +866,7 @@ def _start(e: Ev) -> None:
 def _pre(e: Ev) -> None:
     a = _active(e)
     calls = e.log.calls if a is None else a.calls
-    calls.pre(e.line, e.t)
+    calls.pre(e.line, e.t, e.group)
     if a is not None:
         a.last_tool, a.last_tool_at = e.text("tool") or a.last_tool, e.t
 
@@ -898,7 +953,8 @@ def _session_end(e: Ev) -> None:
 
 
 def _cap(e: Ev) -> None:
-    e.log.cap = True
+    if e.log.cap_at is None or e.t < e.log.cap_at:
+        e.log.cap_at = e.t
 
 
 # each event kind's fold (§3.6.4); `prompt`'s and `notify`'s other uses are §4.5's
@@ -969,7 +1025,8 @@ class Route:
     """A route: its planning dir, current marker and runs.
 
     claim: what its current marker says, None when it does not count; torn: the
-    marker did not parse this scan; runs: listed runs, newest activity first.
+    marker did not parse this scan; runs: listed runs, newest activity first; now:
+    the scan's time; errors: the registry faults of its sessions' entries.
     """
 
     key: str
@@ -978,9 +1035,11 @@ class Route:
     claim: Claim | None
     torn: bool
     runs: list[Run]
+    now: float
     repo: str | None = None
     dir_missing: bool = False
     status: Literal["active", "idle"] | None = None
+    errors: list[dict[str, str]] = dataclasses.field(default_factory=list)
 
     @property
     def live(self) -> Run | None:
@@ -1100,7 +1159,11 @@ def _route(
     if not listed:
         return None
     listed.sort(key=lambda r: r.last_activity_at, reverse=True)
-    out = Route(key, planning, mf.path, claim, torn, listed)
+    out = Route(key, planning, mf.path, claim, torn, listed, now)
+    sessions = {s.session for s in mine}
+    out.errors = [
+        e for e in scan.errors if e["source"].removesuffix(".json") in sessions
+    ]
     if out.live is not None:
         out.dir_missing = not scan.dirs[planning]
         args = common.checked(common.route_args, mf.read.data)
@@ -1152,52 +1215,226 @@ def discover(scan: Scan, prev: Model | None, now: float) -> Model:
 
 # the item texts Python composes (each the user's to reword)
 COPY = {
+    "waiting": "{route} · {kind} · since {at}",
+    "reduced": (
+        "Recording reduced: this session's log passed its size cap, so activity is "
+        "sampled"
+    ),
+    "qualified": "{text} — {reduced}",
+    "blind": "Agent tracking blind since {at} — {fields}",
+    "git-slow": "git slow — git facts as of {at}",
+    "git-slow-none": "git slow — no git facts yet",
+    "stuck": "may be stuck — {tool} open for {ago}",
     "dir-missing": "planning dir gone — its hooks still hold pushes",
     "unreadable": "unreadable: {name}",
     "recording_none": (
         "No events recorded for this run (tracking may be off in its sessions: {name})"
     ),
 }
+# each attention kind's severity; the waiting kinds have none
+SEVERITY = {
+    "blind": "red",
+    "dir-missing": "red",
+    "stuck": "amber",
+    "reduced": "amber",
+    "git-slow": "amber",
+    "unreadable": "amber",
+    "flag": "amber",
+}
 
 Item = dict[str, str | None]
 
 
+def hhmm(t: float) -> str:
+    """Return epoch seconds as HH:MM in the server's local time."""
+    return time.strftime("%H:%M", time.localtime(t))
+
+
 def _item(
-    kind: str, severity: str | None, route: Route, subject: str | None, text: str
+    kind: str,
+    of: tuple[Route, Run],
+    subject: str | None,
+    since: float | None,
+    text: str,
 ) -> Item:
-    """Return one waiting or attention item of route's live run."""
-    live = route.live
+    """Return one waiting or attention item of a live run, of its (route, run)."""
+    route, run = of
     return {
         "kind": kind,
-        "severity": severity,
+        "severity": SEVERITY.get(kind),
         "route": route.key,
-        "run": None if live is None else live.key,
+        "run": run.key,
         "subject": subject,
-        "since": None,
+        "since": iso(since),
         "text": text,
     }
 
 
-def _items(route: Route) -> list[Item]:
-    """Return the attention items of a route's live run."""
+def _oldest(item: Item) -> tuple[bool, str]:
+    """Sort key: oldest `since` first, none last (ISO strings sort as times)."""
+    since = item["since"]
+    return since is None, since or ""
+
+
+def _urgent(item: Item) -> tuple[bool, bool, str]:
+    """Sort key: red before amber, then oldest first."""
+    return (item["severity"] != "red", *_oldest(item))
+
+
+def _qualified(text: str, log: SessionLog | None) -> str:
+    """Return text with the reduced-recording qualifier when log passed its cap."""
+    if log is None or not log.cap:
+        return text
+    return COPY["qualified"].format(text=text, reduced=COPY["reduced"])
+
+
+def _groups(run: Run) -> list[Group]:
+    """Return the run's line groups."""
+    return [s.group for s in run.sightings if s.group is not None]
+
+
+def _in(group: Group | None, groups: list[Group]) -> bool:
+    """Whether group is one of groups (by identity: groups compare by value)."""
+    return any(g is group for g in groups)
+
+
+def waiting(route: Route, run: Run) -> list[Item]:
+    """Return a live run's items that wait on the user (§4.5), oldest first.
+
+    Each from a session's newest lead event, while the session has not ended.
+
+    Args:
+        route: The run's route.
+        run: The run; an ended one has none.
+
+    Returns:
+        Its `asked` and `input` items.
+    """
+    if not run.live:
+        return []
+    groups, out = _groups(run), list[Item]()
+    for sid, log in sorted(run.logs.items()):
+        lead = log.lead
+        if log.ended or lead is None or not _in(lead.group, groups):
+            continue
+        asked = (
+            (lead.ev in {"pre", "dispatch"} and lead.decision == "ask")
+            or (lead.ev == "pre" and lead.tool == "AskUserQuestion")
+            or (
+                lead.ev == "notify"
+                and lead.type in {"permission_prompt", "elicitation_dialog"}
+            )
+        )
+        idle = (lead.ev == "turn-end" and lead.idle_bg) or (
+            lead.ev == "notify" and lead.type == "idle_prompt"
+        )
+        if asked:
+            kind = "asked"
+        elif idle and not any(a.state in _RUNNING for a in log.agents):
+            kind = "input"
+        else:
+            continue
+        text = COPY["waiting"].format(route=route.name, kind=kind, at=hhmm(lead.t))
+        text = _qualified(text, log) if asked else text
+        out.append(_item(kind, (route, run), sid, lead.t, text))
+    return sorted(out, key=_oldest)
+
+
+def stuck_call(route: Route, run: Run, a: Agent) -> OpenCall | None:
+    """Return the agent's call that makes it likely stuck (§4.5), else None.
+
+    Args:
+        route: The run's route; only an active one's agents can be stuck.
+        run: The agent's run; only a live one's agents can be stuck.
+        a: The agent; only a launched or active one can be stuck.
+
+    Returns:
+        Its oldest call open past STUCK_S that does not wait on the user.
+    """
+    if not run.live or route.status != "active" or a.state not in _RUNNING[1:]:
+        return None
+    return a.calls.stuck(route.now)
+
+
+def _stuck(route: Route, run: Run) -> list[Item]:
+    """Return the `stuck` items of a live run: its agents', then each lead's."""
+    found: list[tuple[str, OpenCall, SessionLog | None]] = []
+    for a in run.agents:
+        call = stuck_call(route, run, a)
+        if call is not None:
+            found.append((a.name or "agent", call, run.logs.get(a.session)))
+    if route.status == "active":
+        groups = _groups(run)
+        for log in run.logs.values():
+            call = None if log.ended else log.calls.stuck(route.now)
+            if call is not None and _in(call.group, groups):
+                found.append(("lead", call, log))
+    out: list[Item] = []
+    for subject, call, log in found:
+        ago = common.ago(route.now - call.since)
+        text = COPY["stuck"].format(tool=call.tool or "a tool", ago=ago)
+        out.append(
+            _item("stuck", (route, run), subject, call.since, _qualified(text, log))
+        )
+    return out
+
+
+def attention(route: Route, run: Run) -> list[Item]:
+    """Return a live run's attention items (§4.5), red before amber, oldest first.
+
+    Args:
+        route: The run's route.
+        run: The run; an ended one has none.
+
+    Returns:
+        Its items of every kind but the waiting ones.
+    """
+    if not run.live:
+        return []
     out: list[Item] = []
     if route.dir_missing:
-        out.append(_item("dir-missing", "red", route, None, COPY["dir-missing"]))
-    if route.torn:
-        name = pathlib.PurePath(route.marker).name
+        out.append(_item("dir-missing", (route, run), None, None, COPY["dir-missing"]))
+    blind = _blind(run)
+    if blind is not None:
+        at, fields = blind
+        text = COPY["blind"].format(at=hhmm(at), fields=", ".join(fields))
+        out.append(_item("blind", (route, run), None, at, text))
+    caps = [log.cap_at for log in run.logs.values() if log.cap_at is not None]
+    if caps:
+        out.append(_item("reduced", (route, run), None, min(caps), COPY["reduced"]))
+    names = [pathlib.PurePath(route.marker).name] if route.torn else []
+    names += [e["source"] for e in route.errors]
+    names += [f"{s}.jsonl" for s, log in sorted(run.logs.items()) if log.skipped]
+    for name in names:
         text = COPY["unreadable"].format(name=name)
-        out.append(_item("unreadable", "amber", route, name, text))
-    return out
+        out.append(_item("unreadable", (route, run), name, None, text))
+    out += _stuck(route, run)
+    return sorted(out, key=_urgent)
+
+
+def _gaps(run: Run, sid: str) -> tuple[float, list[str]] | None:
+    """Return the ts and gap fields of the session's first gap line in the run."""
+    gaps = [
+        (s.group.gap_at, s.group.gap)
+        for s in run.sightings
+        if s.session == sid and s.group is not None and s.group.gap_at is not None
+    ]
+    return min(gaps, default=None, key=lambda g: g[0])
 
 
 def _blind_since(run: Run, sid: str) -> float | None:
     """Return the ts of the session's first line in the run that has a `gap`."""
-    gaps = [
-        s.group.gap_at
-        for s in run.sightings
-        if s.session == sid and s.group is not None and s.group.gap_at is not None
-    ]
-    return min(gaps, default=None)
+    gap = _gaps(run, sid)
+    return None if gap is None else gap[0]
+
+
+def _blind(run: Run) -> tuple[float, list[str]] | None:
+    """Return the run's first gap: over its open sessions, else over all of them."""
+    gaps = {s: _gaps(run, s) for s in run.sessions}
+    # the sessions still running decide; with every one ended, all of them
+    open_ = [g for s, g in gaps.items() if not (s in run.logs and run.logs[s].ended)]
+    found = [g for g in open_ or gaps.values() if g is not None]
+    return min(found, default=None, key=lambda g: g[0])
 
 
 def _session(run: Run, sid: str) -> dict[str, object]:
@@ -1224,7 +1461,7 @@ def _session(run: Run, sid: str) -> dict[str, object]:
     }
 
 
-def _agent_json(a: Agent) -> dict[str, object]:
+def _agent_json(a: Agent, *, stuck: bool) -> dict[str, object]:
     """Return one agent as the API sends it: no line's free text."""
     call = a.calls.oldest()
     return {
@@ -1244,6 +1481,7 @@ def _agent_json(a: Agent) -> dict[str, object]:
         "open_since": None if call is None else iso(call.since),
         "final_tokens": a.final_tokens,
         "compactions": a.compactions,
+        "likely_stuck": stuck,
     }
 
 
@@ -1260,10 +1498,7 @@ def run_detail(route: Route, run: Run) -> dict[str, object]:
     from dsp_route import switch
 
     agents = run.agents
-    blind = {s: _blind_since(run, s) for s in run.sessions}
-    # the sessions still running decide; with every one ended, all of them
-    open_ = [t for s, t in blind.items() if not (s in run.logs and run.logs[s].ended)]
-    since = [t for t in open_ or blind.values() if t is not None]
+    blind = _blind(run)
     unknown = run.recording in {"none", "expired"}
     running = sum(a.state in _RUNNING for a in agents)
     hint = COPY["recording_none"].format(name=switch.NAME)
@@ -1277,10 +1512,13 @@ def run_detail(route: Route, run: Run) -> dict[str, object]:
         "sessions": [_session(run, s) for s in run.sessions],
         "recording": run.recording,
         "recording_hint": hint if run.recording == "none" else None,
-        "blind_since": iso(min(since, default=None)),
+        "blind_since": None if blind is None else iso(blind[0]),
         "summary": {"agents_running": None if unknown else running},
-        "agents": [_agent_json(a) for a in agents],
-        "attention": _items(route) if run.live else [],
+        "agents": [
+            _agent_json(a, stuck=stuck_call(route, run, a) is not None) for a in agents
+        ],
+        "waiting": waiting(route, run),
+        "attention": attention(route, run),
     }
 
 
@@ -1375,8 +1613,9 @@ class Live:
             key=lambda r: max(run.last_activity_at for run in r.runs if not run.live),
             reverse=True,
         )
-        attention = [i for r in live for i in _items(r)]
-        attention.sort(key=lambda i: i["severity"] != "red")
+        runs = [(r, run) for r in live if (run := r.live) is not None]
+        waits = sorted((i for r, run in runs for i in waiting(r, run)), key=_oldest)
+        items = sorted((i for r, run in runs for i in attention(r, run)), key=_urgent)
         self.state = as_json(
             {
                 "version": API_VERSION,
@@ -1384,12 +1623,16 @@ class Live:
                 "generated_at": now_iso(),
                 "ready": model is not None,
                 "monitor": {"pid": self.pid, "port": self.port},
-                "waiting": [],
-                "attention": attention,
+                "waiting": waits,
+                "attention": items,
                 "routes": [_route_json(r) for r in live if r.status == "active"],
                 "idle": idle,
                 "ended": [_ended_json(r) for r in ended],
-                "counts": {"waiting": 0, "idle": len(idle), "ended": len(ended)},
+                "counts": {
+                    "waiting": len(waits),
+                    "idle": len(idle),
+                    "ended": len(ended),
+                },
                 "errors": [] if model is None else model.errors,
                 "events_unjoined": 0 if model is None else model.events_unjoined,
             }
