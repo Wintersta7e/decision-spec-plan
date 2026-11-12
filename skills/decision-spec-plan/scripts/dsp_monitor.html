@@ -2,31 +2,539 @@
 <html lang="en">
 <head>
 <meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
 <title>dsp monitor</title>
+<link rel="icon" href="data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHZpZXdCb3g9IjAgMCAxNiAxNiI+PHJlY3Qgd2lkdGg9IjE2IiBoZWlnaHQ9IjE2IiByeD0iMyIgZmlsbD0iIzJmNmZiMyIvPjxwYXRoIGQ9Ik00IDhoOE04IDR2OCIgc3Ryb2tlPSIjZmZmIiBzdHJva2Utd2lkdGg9IjIiLz48L3N2Zz4=">
 <style>
-body { margin: 0; font-family: system-ui, sans-serif; background: #fafafa; color: #222; }
-main { padding: 1rem; }
+:root {
+  color-scheme: light;
+  --bg: #fafafa; --fg: #1d1d1f; --muted: #55555f; --card: #ffffff; --line: #d0d0d8;
+  --ok: #1a7f37; --warn: #8a5a00; --bad: #c41d2a; --info: #0b5cc4; --focus: #0b5cc4;
+}
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme=light]) {
+    color-scheme: dark;
+    --bg: #16171a; --fg: #e8e8ec; --muted: #a8a8b3; --card: #1f2125; --line: #3a3d44;
+    --ok: #4ac26b; --warn: #e3b341; --bad: #ff7b72; --info: #6cb6ff; --focus: #6cb6ff;
+  }
+}
+:root[data-theme=dark] {
+  color-scheme: dark;
+  --bg: #16171a; --fg: #e8e8ec; --muted: #a8a8b3; --card: #1f2125; --line: #3a3d44;
+  --ok: #4ac26b; --warn: #e3b341; --bad: #ff7b72; --info: #6cb6ff; --focus: #6cb6ff;
+}
+* { box-sizing: border-box; }
+body {
+  margin: 0; background: var(--bg); color: var(--fg);
+  font: 15px/1.45 system-ui, -apple-system, "Segoe UI", sans-serif;
+}
+a { color: var(--info); }
+a:focus-visible, button:focus-visible { outline: 2px solid var(--focus); outline-offset: 2px; }
+button {
+  font: inherit; color: var(--fg); background: var(--card); border: 1px solid var(--line);
+  border-radius: 6px; padding: 0.2rem 0.6rem; cursor: pointer; transition: background-color 0.15s;
+}
+button:hover { background: var(--bg); }
+#head {
+  display: flex; align-items: center; gap: 0.75rem; padding: 0.6rem 1rem;
+  border-bottom: 1px solid var(--line); background: var(--card);
+}
+#head .title { font-weight: 600; font-size: 1.1rem; color: var(--fg); text-decoration: none; }
+#head .updated { color: var(--muted); margin-right: auto; }
+#banners .banner { margin: 0; padding: 0.5rem 1rem; font-weight: 600; border-bottom: 1px solid var(--line); }
+#banners .banner[data-banner=down] { color: var(--bad); }
+#banners .banner[data-banner=upgraded] { color: var(--info); }
+#sheet { margin: 0.75rem 1rem; padding: 0.5rem 1rem; border: 1px solid var(--line); background: var(--card); }
+main { padding: 0.75rem 1rem 2rem; max-width: 1400px; }
+h2 { font-size: 1rem; margin: 1rem 0 0.4rem; }
+.band ul { list-style: none; margin: 0; padding: 0; }
+.band li { padding: 0.3rem 0.6rem; margin: 0.25rem 0; border-left: 4px solid var(--line); background: var(--card); }
+.band li[data-severity=red] { border-left-color: var(--bad); }
+.band li[data-severity=amber] { border-left-color: var(--warn); }
+.band.waiting li { border-left-color: var(--info); }
+.empty, .scanning { color: var(--muted); margin: 0.25rem 0; }
+.cards { display: grid; grid-template-columns: repeat(auto-fill, minmax(320px, 1fr)); gap: 0.75rem; }
+.card { background: var(--card); border: 1px solid var(--line); border-radius: 8px; padding: 0.6rem 0.8rem; }
+.card .name { font-weight: 600; }
+.facts { display: grid; grid-template-columns: max-content 1fr; gap: 0.1rem 0.75rem; margin: 0.4rem 0; }
+.facts dt { color: var(--muted); }
+.facts dd { margin: 0; }
+.chips { display: flex; flex-wrap: wrap; gap: 0.3rem; }
+.chip {
+  display: inline-flex; gap: 0.3rem; align-items: baseline; padding: 0 0.45rem;
+  border: 1px solid var(--line); border-radius: 999px; color: var(--fg); font-size: 0.9em;
+}
+.chip .glyph { font-weight: 700; }
+[data-enum][data-v=seen], [data-enum][data-v=fresh], [data-enum][data-v=done],
+[data-enum][data-v=merged], [data-enum][data-v=green], [data-enum][data-v=returned] { color: var(--ok); border-color: currentColor; }
+[data-enum][data-v=reduced], [data-enum][data-v=slow], [data-enum][data-v=git-slow],
+[data-enum][data-v=stuck], [data-enum][data-v=flag], [data-enum][data-v=unreadable],
+[data-enum][data-v=dirty], [data-enum][data-v=gating] { color: var(--warn); border-color: currentColor; }
+[data-enum][data-v=blind], [data-enum][data-v=dir-missing], [data-enum][data-v=red],
+[data-enum][data-v=failed], [data-enum][data-v=lost], [data-enum][data-v=blocked] { color: var(--bad); border-color: currentColor; }
+[data-enum][data-v=asked], [data-enum][data-v=input], [data-enum][data-v=running],
+[data-enum][data-v=active], [data-enum][data-v=current], [data-enum][data-v=live] { color: var(--info); border-color: currentColor; }
+[data-enum][data-v=none], [data-enum][data-v=expired], [data-enum][data-v=not_tracked] { color: var(--muted); }
+.idle-list { list-style: none; margin: 0.3rem 0 0; padding: 0; }
+.idle-list li { padding: 0.15rem 0; }
+.idle-list .when { color: var(--muted); margin-left: 0.5rem; }
+.more { display: flex; flex-wrap: wrap; gap: 1rem; align-items: baseline; margin-top: 1rem; }
+@media (max-width: 720px) {
+  #head { flex-wrap: wrap; }
+  .cards { grid-template-columns: 1fr; }
+}
+@media (prefers-reduced-motion: reduce) {
+  * { transition: none !important; }
+}
 </style>
 </head>
 <body>
-<main id="board"></main>
+<div id="banners" role="status"></div>
+<header id="head"></header>
+<section id="sheet" hidden></section>
+<main id="view"></main>
 <script>
 "use strict";
 const LABELS = /* dsp:labels */ {
-  "stage": {"harvest": "harvest", "decisions": "decisions", "review": "review", "asks": "asks", "spec": "spec", "plan": "plan", "exec": "exec", "push": "push"},
-  "stage_state": {"done": "done", "current": "current", "skipped": "skipped", "not-reached": "not reached"},
-  "lane": {"queued": "queued", "running": "running", "gating": "gating", "ready": "ready", "red": "red", "merged": "merged"},
-  "gate": {"green": "green", "red": "red", "dirty": "dirty", "no-exit": "no exit", "none": "none"},
-  "agent_state": {"dispatched": "dispatched", "held": "held", "launched": "launched", "active": "active", "idle": "idle", "returned": "returned", "stopped": "stopped", "failed": "failed", "interrupted": "interrupted", "ended-with-session": "ended with session", "lost": "lost"},
-  "agent_mode": {"foreground": "foreground", "background": "background", "teammate": "teammate"},
-  "run_state": {"live": "live", "ended": "ended"},
-  "route_status": {"active": "active", "idle": "idle"},
-  "recording": {"seen": "seen", "none": "none", "reduced": "reduced", "expired": "expired"},
-  "attention": {"asked": "asked", "input": "input", "blind": "blind", "dir-missing": "dir missing", "stuck": "stuck", "reduced": "reduced", "git-slow": "git slow", "unreadable": "unreadable", "flag": "flag"},
-  "git_state": {"pending": "pending", "fresh": "fresh", "slow": "slow", "not_tracked": "not tracked"},
-  "board_column": {"queued": "queued", "running": "running", "ready": "ready", "merged": "merged", "blocked": "blocked", "failed": "failed"}
+  "stage": {
+    "harvest": {"text": "harvest", "glyph": "①"}, "decisions": {"text": "decisions", "glyph": "②"},
+    "review": {"text": "review", "glyph": "③"}, "asks": {"text": "asks", "glyph": "④"},
+    "spec": {"text": "spec", "glyph": "⑤"}, "plan": {"text": "plan", "glyph": "⑥"},
+    "exec": {"text": "exec", "glyph": "⑦"}, "push": {"text": "push", "glyph": "⑧"}
+  },
+  "stage_state": {
+    "done": {"text": "done", "glyph": "✓"}, "current": {"text": "current", "glyph": "●"},
+    "skipped": {"text": "skipped", "glyph": "–"}, "not-reached": {"text": "not reached", "glyph": "○"}
+  },
+  "lane": {
+    "queued": {"text": "queued", "glyph": "◷"}, "running": {"text": "running", "glyph": "▶"},
+    "gating": {"text": "gating", "glyph": "⧗"}, "ready": {"text": "ready", "glyph": "◆"},
+    "red": {"text": "red", "glyph": "✗"}, "merged": {"text": "merged", "glyph": "✓"}
+  },
+  "gate": {
+    "green": {"text": "green", "glyph": "✓"}, "red": {"text": "red", "glyph": "✗"},
+    "dirty": {"text": "dirty", "glyph": "≠"}, "no-exit": {"text": "no exit", "glyph": "…"},
+    "none": {"text": "no gate", "glyph": "–"}
+  },
+  "agent_state": {
+    "dispatched": {"text": "dispatched", "glyph": "→"}, "held": {"text": "held", "glyph": "⏸"},
+    "launched": {"text": "launched", "glyph": "↗"}, "active": {"text": "active", "glyph": "▶"},
+    "idle": {"text": "idle", "glyph": "◌"}, "returned": {"text": "returned", "glyph": "↩"},
+    "stopped": {"text": "stopped", "glyph": "■"}, "failed": {"text": "failed", "glyph": "✗"},
+    "interrupted": {"text": "interrupted", "glyph": "↯"},
+    "ended-with-session": {"text": "ended with session", "glyph": "⏹"}, "lost": {"text": "lost", "glyph": "?"}
+  },
+  "agent_mode": {
+    "foreground": {"text": "foreground", "glyph": "▣"}, "background": {"text": "background", "glyph": "▢"},
+    "teammate": {"text": "teammate", "glyph": "◎"}
+  },
+  "run_state": {"live": {"text": "live", "glyph": "●"}, "ended": {"text": "ended", "glyph": "○"}},
+  "route_status": {"active": {"text": "active", "glyph": "●"}, "idle": {"text": "idle", "glyph": "◌"}},
+  "recording": {
+    "seen": {"text": "recording", "glyph": "◉"}, "none": {"text": "not recorded", "glyph": "○"},
+    "reduced": {"text": "Recording reduced: this session's log passed its size cap, so activity is sampled", "glyph": "◐"},
+    "expired": {"text": "Agent events expired", "glyph": "⌛"}
+  },
+  "attention": {
+    "asked": {"text": "asked", "glyph": "?"}, "input": {"text": "input needed", "glyph": "✎"},
+    "blind": {"text": "tracking blind", "glyph": "⊘"}, "dir-missing": {"text": "planning dir gone", "glyph": "⌂"},
+    "stuck": {"text": "may be stuck", "glyph": "⧖"}, "reduced": {"text": "recording reduced", "glyph": "◐"},
+    "git-slow": {"text": "git slow", "glyph": "⏱"}, "unreadable": {"text": "unreadable", "glyph": "⚠"},
+    "flag": {"text": "flag", "glyph": "⚑"}
+  },
+  "git_state": {
+    "pending": {"text": "git pending", "glyph": "…"}, "fresh": {"text": "git fresh", "glyph": "✓"},
+    "slow": {"text": "git slow", "glyph": "⏱"}, "not_tracked": {"text": "git not tracked", "glyph": "–"}
+  },
+  "board_column": {
+    "queued": {"text": "queued", "glyph": "◷"}, "running": {"text": "running", "glyph": "▶"},
+    "ready": {"text": "ready", "glyph": "◆"}, "merged": {"text": "merged", "glyph": "✓"},
+    "blocked": {"text": "blocked", "glyph": "⛔"}, "failed": {"text": "failed", "glyph": "✗"}
+  },
+  "copy": {
+    "title": "dsp monitor",
+    "tab_title": "({n}) dsp monitor",
+    "updated": "updated {age}",
+    "refresh": "Refresh now",
+    "theme": "Theme: {theme}",
+    "theme_auto": "auto",
+    "theme_light": "light",
+    "theme_dark": "dark",
+    "help": "?",
+    "help_label": "Keyboard shortcuts",
+    "scanning": "Scanning routes…",
+    "waiting_heading": "Waiting on you",
+    "waiting_empty": "Nothing waiting on you",
+    "attention_heading": "Needs attention",
+    "routes_heading": "Active routes",
+    "routes_empty": "No active route",
+    "rung": "rung",
+    "stage": "stage",
+    "waves": "waves merged",
+    "lanes": "lanes merged",
+    "budget_recorded": "budget recorded",
+    "agents_running": "agents running",
+    "last_active": "last active",
+    "missing": "—",
+    "ratio": "{done}/{total}",
+    "age_s": "{n} s ago",
+    "age_m": "{n} min ago",
+    "age_h": "{n} h ago",
+    "age_d": "{n} d ago",
+    "idle_row": "idle ({n})",
+    "ended_link": "Ended ({n})",
+    "not_responding": "Monitor not responding since {since} — showing data from {data_from}",
+    "upgraded": "The monitor was upgraded — reload the page"
+  }
 } /* /dsp:labels */;
-document.getElementById("board").dataset.enums = String(Object.keys(LABELS).length);
+const PAGE = /* dsp:page */ {
+  "poll_visible_ms": 5000,
+  "poll_hidden_ms": 30000,
+  "abort_ms": 10000,
+  "backoff_ms": [5000, 10000, 20000, 30000],
+  "finished_shown": 20
+} /* /dsp:page */;
+const copy = LABELS.copy;
+const SVG_NS = "http://www.w3.org/2000/svg";
+const URL_ATTRS = ["src", "href", "xlink:href", "action", "formaction", "srcset", "poster", "data"];
+const THEMES = ["auto", "light", "dark"];
+const THEME_TEXT = {auto: copy.theme_auto, light: copy.theme_light, dark: copy.theme_dark};
+const THEME_KEY = "dsp-monitor-theme";
+
+const poll = {timer: 0, busy: false, failures: 0, failedAt: null, text: "", state: null, first: null};
+const ui = {expanded: new Set(), updated: null, theme: null, help: null};
+
+/* An element with attributes and children; a string child becomes its text. URLs are
+   set only by link(), so this never writes a URL attribute. */
+function el(tag, attrs, children) {
+  const node = document.createElement(tag);
+  for (const [k, v] of Object.entries(attrs || {})) {
+    if (URL_ATTRS.includes(k)) {
+      throw new TypeError(k);
+    }
+    if (v !== null && v !== undefined && v !== false) {
+      node.setAttribute(k, v === true ? "" : String(v));
+    }
+  }
+  if (typeof children === "string") {
+    node.textContent = children;
+  } else {
+    for (const c of children || []) {
+      if (c !== null && c !== undefined) {
+        node.append(typeof c === "string" ? el("span", {}, c) : c);
+      }
+    }
+  }
+  return node;
+}
+
+/* A same-page link to the view at #/<path>. */
+function link(path, children, key) {
+  const a = el("a", {"data-key": key}, children);
+  a.setAttribute("href", "#/" + path);
+  return a;
+}
+
+function label(enumName, value) {
+  const labels = LABELS[enumName] || {};
+  return Object.hasOwn(labels, value) ? labels[value] : null;
+}
+
+/* A state as glyph and text, styled by data-enum/data-v; an unknown value shows raw. */
+function chip(enumName, value) {
+  const lab = label(enumName, value);
+  return el("span", {"class": "chip", "data-enum": enumName, "data-v": value}, [
+    lab ? el("span", {"class": "glyph", "aria-hidden": "true"}, lab.glyph) : null,
+    el("span", {}, lab ? lab.text : String(value)),
+  ]);
+}
+
+function fmt(template, vars) {
+  let out = template;
+  for (const [k, v] of Object.entries(vars || {})) {
+    out = out.split("{" + k + "}").join(String(v));
+  }
+  return out;
+}
+
+function shown(value) {
+  return value === null || value === undefined ? copy.missing : String(value);
+}
+
+function hhmm(iso) {
+  if (!iso) {
+    return copy.missing;
+  }
+  return new Date(iso).toLocaleTimeString([], {hour: "2-digit", minute: "2-digit"});
+}
+
+function age(iso, nowMs) {
+  if (!iso) {
+    return copy.missing;
+  }
+  const s = Math.max(0, Math.round((nowMs - Date.parse(iso)) / 1000));
+  if (s < 60) {
+    return fmt(copy.age_s, {n: s});
+  }
+  if (s < 3600) {
+    return fmt(copy.age_m, {n: Math.floor(s / 60)});
+  }
+  if (s < 86400) {
+    return fmt(copy.age_h, {n: Math.floor(s / 3600)});
+  }
+  return fmt(copy.age_d, {n: Math.floor(s / 86400)});
+}
+
+function ratio(done, total) {
+  return done === null || done === undefined || total === null || total === undefined
+    ? copy.missing
+    : fmt(copy.ratio, {done: done, total: total});
+}
+
+function itemKey(item) {
+  return [item.run, item.kind, item.subject || ""].join(":");
+}
+
+/* --- theme */
+
+function storedTheme() {
+  const t = localStorage.getItem(THEME_KEY);
+  return THEMES.includes(t) ? t : THEMES[0];
+}
+
+function applyTheme(t) {
+  if (t === THEMES[0]) {
+    document.documentElement.removeAttribute("data-theme");
+  } else {
+    document.documentElement.setAttribute("data-theme", t);
+  }
+  if (ui.theme) {
+    ui.theme.textContent = fmt(copy.theme, {theme: THEME_TEXT[t]});
+  }
+}
+
+function cycleTheme() {
+  const t = THEMES[(THEMES.indexOf(storedTheme()) + 1) % THEMES.length];
+  localStorage.setItem(THEME_KEY, t);
+  applyTheme(t);
+}
+
+/* --- header, sheet and banners */
+
+function toggleSheet() {
+  const sheet = document.getElementById("sheet");
+  sheet.hidden = !sheet.hidden;
+  ui.help.setAttribute("aria-expanded", String(!sheet.hidden));
+}
+
+function buildHeader() {
+  const head = document.getElementById("head");
+  const title = link("", copy.title, "home");
+  title.setAttribute("class", "title");
+  ui.updated = el("span", {"class": "updated"}, "");
+  const refresh = el("button", {"type": "button"}, copy.refresh);
+  refresh.addEventListener("click", refreshNow);
+  ui.theme = el("button", {"type": "button"}, "");
+  ui.theme.addEventListener("click", cycleTheme);
+  ui.help = el("button", {"type": "button", "aria-label": copy.help_label, "aria-expanded": "false"}, copy.help);
+  ui.help.addEventListener("click", toggleSheet);
+  head.replaceChildren(title, ui.updated, refresh, ui.theme, ui.help);
+  document.getElementById("sheet").replaceChildren(el("h2", {}, copy.help_label));
+}
+
+function renderChrome() {
+  const s = poll.state;
+  ui.updated.textContent = s ? fmt(copy.updated, {age: age(s.generated_at, Date.now())}) : "";
+  const banners = [];
+  if (poll.failures) {
+    banners.push(el("p", {"class": "banner", "data-banner": "down"}, fmt(copy.not_responding, {
+      since: hhmm(poll.failedAt),
+      data_from: s ? hhmm(s.generated_at) : copy.missing,
+    })));
+  }
+  if (s && poll.first && (s.version !== poll.first.version || s.page !== poll.first.page)) {
+    banners.push(el("p", {"class": "banner", "data-banner": "upgraded"}, copy.upgraded));
+  }
+  document.getElementById("banners").replaceChildren(...banners);
+  document.title = s && s.counts.waiting ? fmt(copy.tab_title, {n: s.counts.waiting}) : copy.title;
+}
+
+/* --- the overview */
+
+function band(cls, heading, items, entry) {
+  return el("section", {"class": "band " + cls}, [
+    el("h2", {}, heading),
+    el("ul", {}, items.map(entry)),
+  ]);
+}
+
+function fact(name, value) {
+  return [el("dt", {}, name), el("dd", {}, shown(value))];
+}
+
+function card(r, nowMs) {
+  const run = r.run;
+  const sum = run.summary;
+  const stage = sum.stage === null ? null : label("stage", sum.stage);
+  const facts = [
+    ...fact(copy.rung, run.report ? run.report.rung : null),
+    ...fact(copy.stage, stage ? stage.text : sum.stage),
+    ...fact(copy.waves, ratio(sum.waves_merged, sum.waves_total)),
+    ...fact(copy.lanes, ratio(sum.lanes_merged, sum.lanes_total)),
+    ...(run.budget ? fact(copy.budget_recorded, run.budget.label) : []),
+    ...fact(copy.agents_running, sum.agents_running),
+    ...fact(copy.last_active, age(r.last_activity_at, nowMs)),
+  ];
+  return el("article", {"class": "card"}, [
+    link("r/" + encodeURIComponent(r.key), [el("span", {"class": "name"}, r.name)], r.key),
+    el("dl", {"class": "facts"}, facts),
+    el("div", {"class": "chips"}, [
+      chip("recording", run.recording),
+      chip("git_state", run.git.state),
+      ...run.attention.map((a) => chip("attention", a.kind)),
+    ]),
+  ]);
+}
+
+function idleRow(s, nowMs) {
+  const open = ui.expanded.has("idle-row");
+  const button = el("button", {"type": "button", "aria-expanded": String(open), "data-key": "idle-row"},
+    fmt(copy.idle_row, {n: s.counts.idle}));
+  const list = el("ul", {"class": "idle-list", "hidden": !open}, s.idle.map((r) => el("li", {}, [
+    link("r/" + encodeURIComponent(r.key), r.name, r.key),
+    el("span", {"class": "when"}, age(r.last_activity_at, nowMs)),
+  ])));
+  button.addEventListener("click", () => {
+    const now = list.hidden;
+    list.hidden = !now;
+    button.setAttribute("aria-expanded", String(now));
+    if (now) {
+      ui.expanded.add("idle-row");
+    } else {
+      ui.expanded.delete("idle-row");
+    }
+  });
+  return el("div", {}, [button, list]);
+}
+
+function renderOverview(s, root) {
+  const nowMs = Date.now();
+  if (!s.ready) {
+    root.append(el("p", {"class": "scanning"}, copy.scanning));
+  }
+  const waiting = band("waiting", copy.waiting_heading, s.waiting, (item) =>
+    el("li", {}, [link("r/" + encodeURIComponent(item.route), item.text, itemKey(item))]));
+  if (!s.waiting.length) {
+    waiting.append(el("p", {"class": "empty"}, copy.waiting_empty));
+  }
+  root.append(waiting);
+  if (s.attention.length) {
+    root.append(band("attention", copy.attention_heading, s.attention, (item) =>
+      el("li", {"data-severity": item.severity}, [
+        chip("attention", item.kind), " ",
+        link("r/" + encodeURIComponent(item.route), item.text, itemKey(item)),
+      ])));
+  }
+  root.append(el("h2", {}, copy.routes_heading));
+  root.append(s.routes.length
+    ? el("div", {"class": "cards"}, s.routes.map((r) => card(r, nowMs)))
+    : el("p", {"class": "empty"}, copy.routes_empty));
+  root.append(el("div", {"class": "more"}, [
+    s.idle.length ? idleRow(s, nowMs) : null,
+    link("ended", fmt(copy.ended_link, {n: s.counts.ended}), "ended"),
+  ]));
+}
+
+/* --- rendering: one view per hash, focus kept on the element with the same data-key */
+
+function viewFor() {
+  return renderOverview;
+}
+
+function render() {
+  const s = poll.state;
+  if (!s) {
+    return;
+  }
+  const active = document.activeElement;
+  const focused = active && active.dataset ? active.dataset.key : undefined;
+  const root = document.getElementById("view");
+  root.replaceChildren();
+  viewFor(location.hash)(s, root);
+  if (focused !== undefined) {
+    for (const node of root.querySelectorAll("[data-key]")) {
+      if (node.dataset.key === focused) {
+        node.focus();
+        break;
+      }
+    }
+  }
+}
+
+/* --- polling: one request in flight, the next one scheduled after it completes */
+
+function delay() {
+  if (poll.failures) {
+    const steps = PAGE.backoff_ms;
+    return steps[Math.min(poll.failures, steps.length) - 1];
+  }
+  return document.hidden ? PAGE.poll_hidden_ms : PAGE.poll_visible_ms;
+}
+
+function schedule() {
+  clearTimeout(poll.timer);
+  poll.timer = setTimeout(tick, delay());
+}
+
+async function tick() {
+  if (poll.busy) {
+    return;
+  }
+  clearTimeout(poll.timer);
+  poll.busy = true;
+  const ctl = new AbortController();
+  const abort = setTimeout(() => ctl.abort(), PAGE.abort_ms);
+  try {
+    const res = await fetch("/api/state", {signal: ctl.signal, cache: "no-store"});
+    if (!res.ok) {
+      throw new Error(String(res.status));
+    }
+    const text = await res.text();
+    poll.failures = 0;
+    poll.failedAt = null;
+    if (text !== poll.text) {
+      const s = JSON.parse(text);
+      poll.text = text;
+      poll.state = s;
+      poll.first = poll.first || {version: s.version, page: s.page};
+      render();
+    }
+  } catch {
+    poll.failures += 1;
+    poll.failedAt = poll.failedAt || new Date().toISOString();
+  } finally {
+    clearTimeout(abort);
+    poll.busy = false;
+    renderChrome();
+    schedule();
+  }
+}
+
+function refreshNow() {
+  if (!poll.busy) {
+    tick();
+  }
+}
+
+buildHeader();
+applyTheme(storedTheme());
+window.addEventListener("hashchange", render);
+document.addEventListener("visibilitychange", () => {
+  if (!poll.busy) {
+    schedule();
+  }
+});
+tick();
 </script>
 </body>
 </html>

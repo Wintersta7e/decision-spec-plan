@@ -289,7 +289,7 @@ skills/decision-spec-plan/
 ├── SKILL.md              the lead's instructions (kept under 19,000 characters)
 ├── agents/               dsp-deep (the session's model) and dsp-mechanical (Sonnet, medium effort)
 ├── references/           briefs, prompts, templates, costs, execution, the failure-mode log
-├── scripts/              hooks and stage checkers (Python, standard library only)
+├── scripts/              hooks, stage checkers and the dsp_monitor server (Python, standard library only), with its one HTML page
 ├── hooks/hooks.json      hook wiring
 └── tests/                pytest suite (dev-only packages), run against throwaway repositories
 ```

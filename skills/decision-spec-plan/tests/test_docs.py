@@ -383,6 +383,18 @@ class PluginFiles(support.Sandbox):
         nav = next((ln for ln in readme.splitlines() if "[Hooks](#hooks)" in ln), "")
         self.ok("README's nav links [Monitor](#monitor)", "[Monitor](#monitor)" in nav)
 
+    def test_readme_layout_names_the_monitor_page(self) -> None:
+        """README's Layout tree says scripts/ holds the monitor and its HTML page."""
+        readme = (PLUGIN.parents[1] / "README.md").read_text(encoding="utf-8")
+        head = re.search(r"^## Layout$", readme, re.MULTILINE)
+        rest = readme[head.end() :] if head else ""
+        fence = re.search(r"^```\n(.*?)^```$", rest, re.MULTILINE | re.DOTALL)
+        tree = fence.group(1).splitlines() if fence else []
+        line = next((ln for ln in tree if ln.startswith("├── scripts/")), "")
+        self.ok(f"Layout's scripts/ line: {line!r}", line, tree)
+        for said in ("dsp_monitor", "HTML page"):
+            self.ok(f"Layout's scripts/ line says {said!r}", said in line, line)
+
     def test_skill_fits_a_compaction(self) -> None:
         """SKILL.md stays under the size a compaction re-attaches."""
         # a compaction re-attaches SKILL.md cut at 20,000 characters (failure-modes F61)
