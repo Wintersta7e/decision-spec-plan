@@ -2,6 +2,7 @@
 """The route monitor: `dsp_monitor.py`, its page skeleton and the names it shares."""
 
 import base64
+import concurrent.futures
 import contextlib
 import dataclasses
 import hashlib
@@ -12,6 +13,7 @@ import os
 import re
 import shlex
 import socket
+import subprocess
 import threading
 import time
 import unittest.mock
@@ -1984,3 +1986,251 @@ class Derived(support.MonitorSandbox):
         self.ok(
             f"{len(found)} keys and values: none says spend", found and not spend, spend
         )
+
+
+# each route's commits in the interference test, and the commits after which a hook
+# pair runs mid-loop
+COMMITS = 60
+MID_PAIRS = (20, 40)
+# the report header's minute: the only clock reading a hook's output holds
+MINUTE = re.compile(r"\d{4}-\d\d-\d\d \d\d:\d\d")
+
+
+def tree_stat(*roots: Path) -> dict[str, tuple[int, int]]:
+    """(size, mtime ns) of every file and directory under roots, by path."""
+    out: dict[str, tuple[int, int]] = {}
+    for root in roots:
+        for p in [root, *root.rglob("*")]:
+            with contextlib.suppress(OSError):
+                st = p.lstat()
+                out[str(p)] = (st.st_size, st.st_mtime_ns)
+    return out
+
+
+def index_locks(m: support.Machine) -> list[Path]:
+    """Where git would take an index lock in m's repositories and their worktrees."""
+    tops = [r.repo / ".git" for r in m.routes.values()]
+    return [
+        lock
+        for top in tops
+        for lock in [top / "index.lock", *top.glob("worktrees/*/index.lock")]
+    ]
+
+
+@dataclasses.dataclass
+class LockWatch:
+    """A thread that looks for an index lock every 10 ms until stopped."""
+
+    paths: list[Path]
+    seen: list[str] = dataclasses.field(default_factory=list)
+    looks: int = 0
+    done: threading.Event = dataclasses.field(default_factory=threading.Event)
+
+    def run(self) -> None:
+        """Look until done is set."""
+        while not self.done.wait(0.01):
+            self.looks += 1
+            self.seen += [str(p) for p in self.paths if p.exists()]
+
+
+class Isolation(support.MonitorSandbox):
+    """The monitor writes nothing and never gets in a session's way (§1.3 rule 1)."""
+
+    def lane_machine(
+        self, d: Path
+    ) -> tuple[support.Machine, dict[str, tuple[support.FixtureRoute, Path]]]:
+        """Five routes, each with an open lane whose worktree is at its Final SHA.
+
+        Each lane's branch is named after its checkpoint id; session s<n> holds the
+        n-th route. Returns the machine, and each route and lane worktree by session.
+        """
+        m = support.Machine(d)
+        out: dict[str, tuple[support.FixtureRoute, Path]] = {}
+        names = ("route-a", "route-b", "route-c", "route-d", "route-e")
+        for n, name in enumerate(names, 1):
+            r = m.fixture_route(name)
+            wt = d / f"wt-{name}"
+            _ = self.git("-C", r.repo, "worktree", "add", "-q", "-b", "p1-01-x", wt)
+            _ = self.write(wt / "f.txt", "start\n")
+            _ = self.git("-C", wt, "add", "f.txt")
+            _ = self.git("-C", wt, "commit", "-q", "-m", "start")
+            sha = self.rev(wt)
+            _ = m.put(r.plan / "lanes/p1-01-x-checkpoint.md", f"Final SHA: {sha}\n")
+            _ = m.put(
+                r.plan / "plans/p1-00-index.md",
+                "# Phase 1 plans\n\n| Plan | Wave | Depends on |\n|---|---|---|\n"
+                "| p1-01-x | 1 | — |\n",
+            )
+            _ = m.put_entry(f"s{n}", r)
+            out[f"s{n}"] = (r, wt)
+        return m, out
+
+    def pair(
+        self, m: support.Machine, session: str, r: support.FixtureRoute
+    ) -> tuple[list[int], list[str]]:
+        """Two concurrent PostToolUse hooks of session: exit codes, sorted outputs.
+
+        Its throttle claims and every `.last` of its route go first, so each pair
+        starts from the same files; the header's minute reads `<time>`.
+        """
+        for f in m.registry.glob(f"{session}.*.checked"):
+            f.unlink(missing_ok=True)
+        for f in r.marker.parent.glob(f"{r.marker.stem}*.last"):
+            f.unlink(missing_ok=True)
+        event = support.ev("PostToolUse", session, '"tool_name":"Bash"') + "\n"
+
+        def hook() -> subprocess.CompletedProcess[str]:
+            return subprocess.run(
+                [PY, str(support.RS), "--hook"],
+                input=event,
+                env=m.env,
+                capture_output=True,
+                text=True,
+                check=False,
+                timeout=120,
+            )
+
+        with concurrent.futures.ThreadPoolExecutor(2) as pool:
+            done = [f.result() for f in [pool.submit(hook), pool.submit(hook)]]
+        outs = sorted(MINUTE.sub("<time>", p.stdout) for p in done)
+        return [p.returncode for p in done], outs
+
+    def commit_loop(
+        self, m: support.Machine, r: support.FixtureRoute, wt: Path, session: str
+    ) -> tuple[list[tuple[list[int], list[str]]], list[str]]:
+        """COMMITS commits in wt, the lane's Final SHA following HEAD after each.
+
+        Returns the hook pairs run before, during (MID_PAIRS) and after the loop, and
+        the output of each commit that failed.
+        """
+        pairs = [self.pair(m, session, r)]
+        failed: list[str] = []
+        for n in range(1, COMMITS + 1):
+            _ = self.write(wt / "f.txt", f"{n}\n")
+            c = self.git("-C", wt, "commit", "-q", "-am", f"c{n}", check=False)
+            if c.code != 0:
+                failed.append(c.out)
+                continue
+            # each git refresh then checks the worktree being committed to
+            sha = self.rev(wt)
+            _ = self.write(
+                r.plan / "lanes/p1-01-x-checkpoint.md", f"Final SHA: {sha}\n"
+            )
+            if n in MID_PAIRS:
+                pairs.append(self.pair(m, session, r))
+        pairs.append(self.pair(m, session, r))
+        return pairs, failed
+
+    def test_monitor_writes_nothing(self) -> None:
+        """A poll cycle, a git refresh of every live route, every run: no write."""
+        d = self.T / self._testMethodName
+        m = support.build_machine(d)
+        a, wt = m.routes["route-a"], d / "wt-a"
+        _ = self.write(wt / "f.txt", "one\n")
+        _ = self.git("-C", wt, "add", "f.txt")
+        _ = self.git("-C", wt, "commit", "-q", "-m", "f")
+        sha = self.rev(wt)
+        _ = m.put(a.plan / "lanes/p1-05-x-checkpoint.md", f"Final SHA: {sha}\n")
+        # unchanged in HEAD, so only a stat refresh would rewrite the index
+        self.stat_dirty(wt / "f.txt")
+        roots = [m.home, wt]
+        roots += [p for r in m.routes.values() for p in (r.plan, r.repo / ".git")]
+        before, index = tree_stat(*roots), self.index_state(wt)
+        _, log = self.git_shim(d / "shim")
+        watch = LockWatch(index_locks(m))
+        watcher = threading.Thread(target=watch.run)
+        watcher.start()
+        try:
+            mon = self.monitor_on(m, consts=QUICK, path_prefix=[d / "shim"])
+
+            def refreshed(s: dict[str, object]) -> bool:
+                runs = live_runs(s)
+                git = [cast("dict[str, object]", r["git"])["state"] for r in runs]
+                lines = log.read_text().splitlines() if log.exists() else []
+                status = [x for x in lines if " status " in x]
+                done = all(g in {"fresh", "slow", "not_tracked"} for g in git)
+                return bool(runs) and done and any(str(wt) in x for x in status)
+
+            state = mon.wait(refreshed, timeout=60)
+            keys = [str(r["key"]) for r in live_runs(state)]
+            for r in cast("list[dict[str, object]]", state["ended"]):
+                runs = cast("list[dict[str, object]]", r["runs"])
+                keys += [str(x["key"]) for x in runs]
+            codes = [mon.get(f"/api/run?key={k}")[0] for k in keys]
+            self.ok(f"{len(codes)} runs answered", codes and set(codes) == {200}, codes)
+            _ = mon.stop()
+        finally:
+            watch.done.set()
+            watcher.join()
+        after = tree_stat(*roots)
+        paths = before.keys() | after.keys()
+        changed = sorted(p for p in paths if before.get(p) != after.get(p))
+        msg = f"{len(before)} paths scanned, {len(changed)} changed"
+        self.ok(msg, before and not changed, changed[:20])
+        same = self.index_state(wt) == index
+        self.ok("the stat-dirty worktree's index unchanged", same)
+        msg = f"{watch.looks} looks for an index lock: none seen"
+        self.ok(msg, watch.looks and not watch.seen, watch.seen[:5])
+
+    def test_no_interference_with_sessions(self) -> None:
+        """Commits and hook pairs on five routes under a polled monitor: unaffected."""
+        t_start = time.monotonic()
+        d = self.T / self._testMethodName
+        m, lanes = self.lane_machine(d)
+        base0 = {s: self.pair(m, s, r) for s, (r, _) in lanes.items()}
+        _, log = self.git_shim(d / "shim")
+        mon = self.monitor_on(m, consts=QUICK, path_prefix=[d / "shim"])
+
+        def fresh(s: dict[str, object]) -> bool:
+            git = [cast("dict[str, object]", r["git"])["state"] for r in live_runs(s)]
+            return len(git) == len(lanes) and set(git) == {"fresh"}
+
+        _ = mon.wait(fresh, timeout=60)
+        stop = threading.Event()
+
+        def poll() -> None:
+            while not stop.wait(0.2):
+                _ = mon.get("/api/state")
+
+        pollers = [threading.Thread(target=poll) for _ in range(3)]
+        for t in pollers:
+            t.start()
+        t0 = time.time_ns()
+        try:
+            with concurrent.futures.ThreadPoolExecutor(len(lanes)) as pool:
+                futures = {
+                    s: pool.submit(self.commit_loop, m, r, wt, s)
+                    for s, (r, wt) in lanes.items()
+                }
+                done = {s: f.result() for s, f in futures.items()}
+        finally:
+            t1 = time.time_ns()
+            stop.set()
+            for t in pollers:
+                t.join()
+            _ = mon.stop()
+        base60 = {s: self.pair(m, s, r) for s, (r, _) in lanes.items()}
+        stamps = [x.partition(" ") for x in log.read_text().splitlines()]
+        status = sum(
+            t0 <= int(t) <= t1 and " status " in f" {a} " for t, _, a in stamps
+        )
+        failed = [o for _, f in done.values() for o in f]
+        locks = [o for o in failed if "index.lock" in o]
+        commits = COMMITS * len(lanes) - len(failed)
+        msg = f"{commits} commits, {len(locks)} failed on index.lock"
+        self.ok(msg, commits and not locks, locks[:3])
+        self.ok(f"{len(failed)} commits failed at all", not failed, failed[:3])
+        self.ok(f"{status} monitor git status spawns during the loop", status)
+        runs = [p for pairs, _ in done.values() for p in pairs]
+        runs += [*base0.values(), *base60.values()]
+        hooks = [c for codes, _ in runs for c in codes]
+        self.ok(f"{len(hooks)} hooks, every one exit 0", hooks and set(hooks) == {0})
+        unlike = [
+            s
+            for s, (pairs, _) in done.items()
+            if pairs[0][1] != base0[s][1] or pairs[-1][1] != base60[s][1]
+        ]
+        msg = f"{2 * len(lanes)} pairs, each as its pair with no monitor"
+        self.ok(msg, not unlike, unlike)
+        took = time.monotonic() - t_start
+        self.ok(f"took {took:.1f} s", took > 0)
