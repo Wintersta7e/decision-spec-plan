@@ -44,11 +44,13 @@ test inside a source file (a Rust `mod tests`), a test excluded by the runner's
 configuration.
 
 Usage:
-    test_check.py <plans-dir> --diff <base>..<head> [--repo <repo>]
+    test_check.py <plans-dir> --diff <base>..<head>|<base>...<head> [--repo <repo>]
         [--glob 'p1-03-*.md']
 
 Exit 0 when nothing is unnamed and nothing went to the lead, 1 otherwise, 2 when the
-range changed nothing or git failed.
+range changed nothing or git failed. 2 also when `--diff` is no range: a single
+revision, a pathspec or an option is refused before git runs, since `git diff` against
+the worktree rewrites a stat-dirty index.
 """
 
 import argparse
@@ -59,6 +61,8 @@ import shutil
 import subprocess
 import sys
 from typing import cast
+
+from scope_check import rev_range
 
 # a test, (its name, its file); a skip, (file, line, text)
 Name = tuple[str, str]
@@ -322,7 +326,7 @@ def main() -> int:
         description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter
     )
     _ = ap.add_argument("plans_dir")
-    _ = ap.add_argument("--diff", metavar="RANGE", required=True)
+    _ = ap.add_argument("--diff", metavar="RANGE", required=True, type=rev_range)
     _ = ap.add_argument("--repo", default=".")
     _ = ap.add_argument("--glob", default="*.md")
     args = ap.parse_args(namespace=Args())

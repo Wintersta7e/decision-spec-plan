@@ -6,10 +6,12 @@ are not to be touched (--asks), changed files no plan lists (--diff), and promis
 no task implements (--list).
 """
 
+import argparse
 import unittest
 from pathlib import Path
 from typing import ClassVar
 
+import scope_check
 import support
 from support import grep
 
@@ -447,6 +449,89 @@ class ScopeUnimplemented(support.Sandbox):
             and grep(r.out, "   web/app.ts", x=True)
             and not grep(r.out, "^   (src/data.rs|ui/mod.rs|core/seg.rs)$", E=True),
             f"exit {r.code}: {r.out}",
+        )
+
+
+class RevRange(support.Sandbox):
+    """--diff takes only a revision range: `rev_range`, and the CLI that uses it.
+
+    A single revision diffed the worktree and rewrote a stat-dirty index;
+    `--diff=--output=x` created x.
+    """
+
+    def test_validator(self) -> None:
+        """rev_range returns a range and refuses everything else."""
+        good = ("a..b", "a...b", "v1.2..v1.3", "HEAD~1..HEAD")
+        bad = ("HEAD", "a..", "..b", "a...", "-x..b", "a..-b", "a b..c", "a..b..c")
+        bad += ("a....b", "")
+        kept = [v for v in good if scope_check.rev_range(v) == v]
+        refused: list[str] = []
+        for v in bad:
+            try:
+                _ = scope_check.rev_range(v)
+            except argparse.ArgumentTypeError as e:
+                if "must be a range <rev>..<rev> or <rev>...<rev>" in str(e):
+                    refused.append(v)
+        self.ok(
+            f"rev_range: {len(kept)} ranges kept, {len(refused)} non-ranges refused",
+            kept and kept == list(good) and refused and refused == list(bad),
+            f"kept {kept}, refused {refused}",
+        )
+
+    def test_cli_refuses_before_git(self) -> None:
+        """A non-range exits 2, spawning nothing; a range leaves the index unchanged."""
+        tr = self.T / "range"
+        repo = self.init_repo(tr / "repo", commits=())
+        _ = self.write(repo / "g", "g\n")
+        _ = self.git("-C", repo, "add", "g")
+        _ = self.git("-C", repo, "commit", "-q", "-m", "c1")
+        _ = self.write(repo / "f2.txt", "f2\n")
+        _ = self.git("-C", repo, "add", "f2.txt")
+        _ = self.git("-C", repo, "commit", "-q", "-m", "c2")
+        _ = self.write(
+            tr / "plans/p1-01-a.md",
+            "# p1-01-a\n## File structure\n| File | Change | Ask |\n|---|---|---|\n"
+            "| `f2.txt` | new | Ask1 |\n## Task 1\n",
+        )
+        self.stat_dirty(repo / "g")
+        env, log = self.git_shim(tr / "shim")
+        x = tr / "x"
+        before = self.index_state(repo)
+
+        def run(v: str) -> support.Result:
+            return self.py(
+                "scope_check.py", tr / "plans", f"--diff={v}", "--repo", repo,
+                env=env, merge=True,
+            )  # fmt: skip
+
+        refused = [
+            (v, run(v.format(x=x)))
+            for v in ("HEAD~1", "HEAD", "--output={x}", "a..b..c")
+        ]
+        n0 = len(log.read_text().splitlines()) if log.exists() else 0
+        bad = [
+            f"{v}: exit {r.code}: {r.out}"
+            for v, r in refused
+            if r.code != NOTHING_TO_CHECK
+            or not grep(r.out, "must be a range <rev>..<rev> or <rev>...<rev>", F=True)
+        ]
+        self.ok(
+            f"scope_check --diff: {len(refused) - len(bad)} refused, {n0} spawns",
+            refused
+            and not bad
+            and n0 == 0
+            and self.index_state(repo) == before
+            and not x.exists(),
+            bad,
+        )
+        ranges = [(v, run(v)) for v in ("HEAD~1..HEAD", "HEAD~1...HEAD")]
+        n = len(log.read_text().splitlines()) if log.exists() else 0
+        self.ok(
+            f"scope_check --diff: {len(ranges)} ranges, {n} spawns",
+            all(r.code == 0 for _, r in ranges)
+            and n > 0
+            and self.index_state(repo) == before,
+            [f"{v}: exit {r.code}: {r.out}" for v, r in ranges],
         )
 
 

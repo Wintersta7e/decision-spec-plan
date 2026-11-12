@@ -409,5 +409,65 @@ class TestCheck(support.Sandbox):
         )
 
 
+class DiffRange(support.Sandbox):
+    """--diff takes only a revision range, refused before any git runs.
+
+    A single revision diffed the worktree and rewrote a stat-dirty index;
+    `--diff=--output=x` created x.
+    """
+
+    REFUSED: ClassVar[tuple[str, ...]] = ("HEAD~1", "HEAD", "--output={x}", "a..b..c")
+    RANGES: ClassVar[tuple[str, ...]] = ("HEAD~1..HEAD", "HEAD~1...HEAD")
+
+    def test_refused_before_git(self) -> None:
+        """A non-range exits 2, spawning nothing; a range leaves the index unchanged."""
+        tr = self.T / "range"
+        repo = self.init_repo(tr / "repo", commits=())
+        _ = self.write(repo / "g", "g\n")
+        _ = self.git("-C", repo, "add", "g")
+        _ = self.git("-C", repo, "commit", "-q", "-m", "c1")
+        _ = self.write(repo / "f2", "f2\n")
+        _ = self.git("-C", repo, "add", "f2")
+        _ = self.git("-C", repo, "commit", "-q", "-m", "c2")
+        _ = self.write(tr / "plans/p1-01-a.md", "# p1-01-a\n")
+        self.stat_dirty(repo / "g")
+        env, log = self.git_shim(tr / "shim")
+        x = tr / "x"
+        before = self.index_state(repo)
+
+        def run(v: str) -> Result:
+            return self.py(
+                "test_check.py", tr / "plans", f"--diff={v}", "--repo", repo,
+                env=env, merge=True,
+            )  # fmt: skip
+
+        refused = [(v, run(v.format(x=x))) for v in self.REFUSED]
+        n0 = len(log.read_text().splitlines()) if log.exists() else 0
+        bad = [
+            f"{v}: exit {r.code}: {r.out}"
+            for v, r in refused
+            if r.code != NOTHING_TO_CHECK
+            or not grep(r.out, "must be a range <rev>..<rev> or <rev>...<rev>", F=True)
+        ]
+        self.ok(
+            f"test_check --diff: {len(refused) - len(bad)} refused, {n0} spawns",
+            refused
+            and not bad
+            and n0 == 0
+            and self.index_state(repo) == before
+            and not x.exists(),
+            bad,
+        )
+        ranges = [(v, run(v)) for v in self.RANGES]
+        n = len(log.read_text().splitlines()) if log.exists() else 0
+        self.ok(
+            f"test_check --diff: {len(ranges)} ranges, {n} spawns",
+            all(r.code == 0 for _, r in ranges)
+            and n > 0
+            and self.index_state(repo) == before,
+            [f"{v}: exit {r.code}: {r.out}" for v, r in ranges],
+        )
+
+
 if __name__ == "__main__":
     _ = unittest.main()

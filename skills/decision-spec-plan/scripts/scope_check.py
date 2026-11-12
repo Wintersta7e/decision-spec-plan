@@ -44,12 +44,12 @@ one that defers it (deferred, backlog, dropped, out of scope, not this round). O
 reported a phase finished with an ask no plan row served, and this check green. With
 --glob, only the matched plans' rows serve.
 
-With `--diff <base>..<head>` (in `--repo`, default `.`) it lists every file the range
-changed that no plan's File structure section lists: what a task group added beyond its
-plan. A row is read whatever its extension; a directory row (`src/api/`) covers the
-files under it, a template under a directory (`src/gen/<domain>.ts`) any name in its
-place, and a test file beside a planned file (or in a `__tests__`/`tests` directory
-under its directory) is that file's test.
+With `--diff <base>..<head>` or `--diff <base>...<head>` (in `--repo`, default `.`) it
+lists every file the range changed that no plan's File structure section lists: what a
+task group added beyond its plan. A row is read whatever its extension; a directory row
+(`src/api/`) covers the files under it, a template under a directory
+(`src/gen/<domain>.ts`) any name in its place, and a test file beside a planned file (or
+in a `__tests__`/`tests` directory under its directory) is that file's test.
 
 Usage:
     scope_check.py <plans-dir> [--list] [--glob 'p4-*.md']
@@ -57,7 +57,8 @@ Usage:
     scope_check.py <plans-dir> --waves <plans-dir>/p<P>-00-index.md [--glob ...]
     scope_check.py <plans-dir> --asks <decisions-dir>/00-index.md
         [<decisions-dir>/00-arbiter.md]
-    scope_check.py <plans-dir> --diff <base>..<head> [--repo <repo>] [--glob ...]
+    scope_check.py <plans-dir> --diff <base>..<head>|<base>...<head>
+        [--repo <repo>] [--glob ...]
 
 Exit 0 when nothing is unimplemented, 1 otherwise (a File structure section that lists
 no file counts), 2 when no plan matched or no plan has a File structure section. With
@@ -66,7 +67,9 @@ index's plan set, 2 when the index has no table with `Plan` and `Wave` columns. 
 `--asks`: 0 when every row cites an ask and every ask is served or deferred, 1 when a
 row cites none or lists a file not to touch or an ask is neither, 2 when the plans list
 no file. With `--diff`: 0 when every changed file is planned, 1 when one is not, 2 when
-the range changed nothing or git failed.
+the range changed nothing or git failed. 2 also when `--diff` is no range: a single
+revision, a pathspec or an option is refused before git runs, since `git diff` against
+the worktree rewrites a stat-dirty index.
 """
 
 import argparse
@@ -251,6 +254,22 @@ def planned_paths(section: str) -> Iterator[str]:
             continue
         if path.endswith("/") or "." in name or re.fullmatch(NAMED, name):
             yield path
+
+
+def rev_range(value: str) -> str:
+    """Return value when it is a range `<rev>..<rev>` or `<rev>...<rev>`; else raise.
+
+    A single revision, a pathspec or an option would reach `git diff` against the
+    worktree, which rewrites a stat-dirty index, or as an option (`--output=x` writes a
+    file). argparse turns the `ArgumentTypeError` into exit 2 before any git runs.
+    """
+    sides = value.split("..." if "..." in value else "..")
+    if value.count("..") == 1 and all(
+        s and not s.startswith("-") and not re.search(r"\s", s) for s in sides
+    ):
+        return value
+    msg = f"must be a range <rev>..<rev> or <rev>...<rev>, got '{value}'"
+    raise argparse.ArgumentTypeError(msg)
 
 
 def unplanned(plans: dict[str, str], rev_range: str, repo: str) -> int:
@@ -552,7 +571,7 @@ def main() -> int:
     _ = ap.add_argument("--list", action="store_true", dest="show")
     _ = ap.add_argument("--waves", metavar="PLAN_INDEX")
     _ = ap.add_argument("--asks", nargs="+", metavar="INDEX")
-    _ = ap.add_argument("--diff", metavar="RANGE")
+    _ = ap.add_argument("--diff", metavar="RANGE", type=rev_range)
     _ = ap.add_argument("--repo", default=".")
     args = ap.parse_args(namespace=Args())
     file_re = file_pattern(args.ext)
