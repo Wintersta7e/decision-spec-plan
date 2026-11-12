@@ -61,8 +61,8 @@ r.record(event, entry, 1.0, None)
 lines = pathlib.Path(sys.argv[2]).read_text().splitlines()
 print(json.dumps({"attempts": len(calls), "lines": len(lines)}))"""
 
-# the lock attempts a held log gets before its line is dropped: about 21 ms in all
-LOCK_TRIES = 10
+# the lock attempts a held log gets before its line is dropped: about 23 ms in all
+LOCK_TRIES = 50
 ENTRY: dict[str, object] = {
     "run": "r1",
     "planning_dir": "/p",

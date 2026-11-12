@@ -32,9 +32,11 @@ CAP_BYTES = 32 * 1024 * 1024
 HEARTBEAT_S = 60
 RETENTION_DAYS = 14
 SWEEP_S = 86400
-# about 21 ms of waiting at most, then the line is dropped: the hook never waits longer
-LOCK_TRIES = 10
-LOCK_WAIT_S = 0.002
+# about 23 ms of waiting at most, then the line is dropped: the hook never waits longer.
+# Many short tries: a lock is held well under a millisecond, and 10 tries 2 ms apart
+# could all land on holds and lose a line under 40 parallel writers
+LOCK_TRIES = 50
+LOCK_WAIT_S = 0.0004
 KINDS = (
     "dispatch",
     "launch",
