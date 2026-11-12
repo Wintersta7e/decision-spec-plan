@@ -7,32 +7,38 @@ dirs and repositories, and reads the agent events the recording switch writes (s
 INSTALL.md). It starts only by hand; Ctrl-C stops it.
 
 Options:
-  --port N  listen on N (default 47961); a port that holds a dsp monitor already is
-            taken as the answer: its URL is printed and this launch exits. 0 binds
-            one ephemeral port.
+  --port N  listen on the first free port of N to N+9 (default 47961). A port of the
+            range that a dsp monitor holds already is the answer: its URL is
+            printed and this launch exits. On WSL, a port where Windows' curl.exe
+            reaches another process is passed over. 0 binds one ephemeral port,
+            with no scan and no check.
   --open    also open the page in a browser tab, on every launch.
 
 It writes nothing anywhere: no lock, PID, cache or log file. It listens on 127.0.0.1
 only, and answers only a request whose Host is 127.0.0.1:<port> or localhost:<port>.
 No authentication: every local process that can reach the loopback can read it.
 
-Exit codes: 0 stopped by Ctrl-C or SIGTERM, or a dsp monitor already serves; 1 the
-port cannot be bound; 2 a bad argument, or its page (dsp_monitor.html beside it) is
-missing or malformed.
+Exit codes: 0 stopped by Ctrl-C or SIGTERM, or a dsp monitor already serves; 1 no
+port of the range can be served; 2 a bad argument, or its page (dsp_monitor.html
+beside it) is missing or malformed.
 """
 
 import argparse
 import base64
 import contextlib
 import datetime as dt
+import errno
 import hashlib
+import http.client
 import http.server
 import json
 import os
 import pathlib
 import re
 import secrets
+import shutil
 import signal
+import subprocess
 import sys
 import threading
 import time
@@ -40,7 +46,9 @@ import types
 import urllib.parse
 import webbrowser
 from collections.abc import Callable
-from typing import TYPE_CHECKING, NamedTuple, TypeVar
+from typing import TYPE_CHECKING, Literal, NamedTuple, TypeVar
+
+from dsp_route import common
 
 if TYPE_CHECKING:
     from typing_extensions import override
@@ -315,6 +323,106 @@ class Server(http.server.ThreadingHTTPServer):
     allow_reuse_address: bool = os.name != "nt"
 
 
+def ping(port: int) -> bool:
+    """Ask the listener on port for `/api/ping`: is it a dsp monitor?
+
+    Args:
+        port: A port on 127.0.0.1 that another process holds.
+
+    Returns:
+        True when it answered within PING_TIMEOUT_S with `monitor == "dsp"`.
+    """
+    conn = http.client.HTTPConnection("127.0.0.1", port, timeout=PING_TIMEOUT_S)
+    try:
+        conn.request("GET", "/api/ping")
+        body = conn.getresponse().read()
+        answer = common.as_dict(common.parse_json(body)) or {}
+    except (OSError, http.client.HTTPException, ValueError):
+        return False
+    finally:
+        conn.close()
+    return answer.get("monitor") == "dsp"
+
+
+def self_check(port: int, nonce: str) -> Literal["ours", "foreign", "none"]:
+    """Ask the port through Windows' curl.exe, where WSL interop has one.
+
+    On WSL2, a Windows process listening on the port gets Windows' requests to
+    localhost while the bind here still succeeds.
+
+    Args:
+        port: The port this process serves.
+        nonce: This process's ping nonce.
+
+    Returns:
+        ours: the answer is this process's, or there is no curl.exe to ask; foreign:
+        another process answered; none: no answer.
+    """
+    curl = shutil.which("curl.exe")
+    if curl is None:
+        return "ours"
+    url = f"http://localhost:{port}/api/ping"
+    try:
+        r = subprocess.run(
+            [curl, "-s", "-m", str(PING_TIMEOUT_S), url],
+            capture_output=True,
+            text=True,
+            timeout=PING_TIMEOUT_S + 1,
+            check=False,
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        return "none"
+    if r.returncode != 0 or not r.stdout.strip():
+        return "none"
+    try:
+        answer = common.as_dict(common.parse_json(r.stdout)) or {}
+    except ValueError:
+        return "foreign"
+    return "ours" if answer.get("nonce") == nonce else "foreign"
+
+
+def bind_scan(port: int, live: Live) -> Server | str | None:
+    """Serve on the first port of port's range that no other process answers on.
+
+    Args:
+        port: The first port of the range; 0 binds one ephemeral port, with no scan,
+            no ping and no self-check.
+        live: The answers to serve; told the bound port.
+
+    Returns:
+        The serving server; or the URL of a dsp monitor that holds a port of the
+        range; or None, after one stderr line, when no port could be served.
+    """
+    last = port + PORT_SPAN - 1
+    for p in [port] if port == 0 else range(port, last + 1):
+        try:
+            server = Server(("127.0.0.1", p), handler(live))
+        except OSError as e:
+            if port != 0 and e.errno == errno.EADDRINUSE:
+                if ping(p):
+                    return f"http://localhost:{p}/"
+                continue
+            where = "an ephemeral port" if port == 0 else f"{p} in {port}–{last}"
+            print(f"dsp_monitor: cannot bind {where}: {e.strerror}", file=sys.stderr)
+            return None
+        live.bound(server.server_address[1])
+        threading.Thread(target=server.serve_forever, daemon=True).start()
+        verdict = "ours" if port == 0 else self_check(live.port, live.nonce)
+        if verdict == "foreign":
+            server.shutdown()
+            server.server_close()
+            continue
+        if verdict == "none":
+            print(
+                f"dsp_monitor: curl.exe got no answer from localhost:{live.port}; "
+                "the page may not open from Windows",
+                file=sys.stderr,
+            )
+        return server
+    print(f"dsp_monitor: ports {port}–{last} are all taken", file=sys.stderr)
+    return None
+
+
 def _interrupt(_signum: int, _frame: types.FrameType | None) -> None:
     """Turn SIGTERM (and SIGINT, even when ignored at launch) into a Ctrl-C."""
     raise KeyboardInterrupt
@@ -327,13 +435,30 @@ class _Args(argparse.Namespace):
     open_tab: bool = False
 
 
+def _port(text: str) -> int:
+    """Return a --port value whose whole range fits under 65536."""
+    n = int(text)
+    top = 65536 - PORT_SPAN
+    if not 0 <= n <= top:
+        msg = f"{n} is not in 0 to {top}"
+        raise argparse.ArgumentTypeError(msg)
+    return n
+
+
 def _args(argv: list[str] | None) -> _Args:
     ap = argparse.ArgumentParser(
         description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter
     )
-    _ = ap.add_argument("--port", type=int, default=PORT)
+    _ = ap.add_argument("--port", type=_port, default=PORT)
     _ = ap.add_argument("--open", action="store_true", dest="open_tab")
     return ap.parse_args(argv, namespace=_Args())
+
+
+def _show(url: str, *, open_tab: bool) -> None:
+    """Print url, and open it in a browser tab with --open."""
+    print(url, flush=True)
+    if open_tab and not webbrowser.open(url):
+        print(f"dsp_monitor: no browser opened {url}", file=sys.stderr)
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -347,7 +472,6 @@ def main(argv: list[str] | None = None) -> int:
     """
     check_owners()
     args = _args(argv)
-    port = args.port
     try:
         page = read_page(PAGE)
     except ValueError as e:
@@ -358,20 +482,20 @@ def main(argv: list[str] | None = None) -> int:
     live = Live(page, secrets.token_hex(8))
     for sig in (signal.SIGINT, signal.SIGTERM):
         _ = signal.signal(sig, _interrupt)
-    server = Server(("127.0.0.1", port), handler(live))
-    live.bound(server.server_address[1])
-    threading.Thread(target=server.serve_forever, daemon=True).start()
+    found = bind_scan(args.port, live)
+    if found is None:
+        return 1
+    if isinstance(found, str):
+        _show(found, open_tab=args.open_tab)
+        return 0
     try:
-        url = f"http://localhost:{live.port}/"
-        print(url, flush=True)
-        if args.open_tab and not webbrowser.open(url):
-            print(f"dsp_monitor: no browser opened {url}", file=sys.stderr)
+        _show(f"http://localhost:{live.port}/", open_tab=args.open_tab)
         with contextlib.suppress(KeyboardInterrupt):
             while True:
                 time.sleep(3600)
     finally:
-        server.shutdown()
-        server.server_close()
+        found.shutdown()
+        found.server_close()
     return 0
 
 

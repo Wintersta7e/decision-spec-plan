@@ -7,13 +7,16 @@ import hashlib
 import ipaddress
 import json
 import re
+import shlex
 import socket
+import time
 from http import HTTPStatus
 from typing import cast
 
+import dsp_monitor
 import support
 from dsp_route import common
-from support import SCRIPTS, free_ports
+from support import PY, SCRIPTS, free_ports
 
 PAGE = SCRIPTS / "dsp_monitor.html"
 # the paths the monitor serves; `/api/run` answers 404 for a key it does not list
@@ -219,3 +222,80 @@ class Listener(support.MonitorSandbox):
         for label in (f"/api/ping 127.0.0.1:{p}", f"/api/state 127.0.0.1:{p}"):
             ctype = got[label][1].get("content-type")
             self.ok(f"{label}: JSON", ctype == "application/json; charset=utf-8")
+
+
+class SingleInstance(support.MonitorSandbox):
+    """The port is the lock: a running monitor is found by its ping, not a file."""
+
+    def test_second_launch(self) -> None:
+        """A second launch on the port prints the first's URL and exits 0, fast."""
+        p = free_ports(dsp_monitor.PORT_SPAN)
+        first = self.start_monitor(port=p)
+        t0 = time.monotonic()
+        r = self.run_monitor(port=p)
+        took = time.monotonic() - t0
+        limit = dsp_monitor.PING_TIMEOUT_S + 1
+        self.ok("the first serves on P", first.port == p, first.url)
+        want = f"http://localhost:{p}/\n"
+        self.ok("the second prints P's URL", r.stdout == want, r.stdout + r.stderr)
+        self.ok("the second exits 0", r.returncode == 0, r.stderr)
+        self.ok(f"the second took {took:.2f} s, under {limit} s", took < limit)
+        self.ok("P+1 never bound", refused("127.0.0.1", p + 1))
+
+    def test_port_scan(self) -> None:
+        """A taken port is passed over; all of P to P+9 taken exits 1, naming them."""
+        span = dsp_monitor.PORT_SPAN
+        p = free_ports(span)
+        fast = {"PING_TIMEOUT_S": 0.3}  # a plain listener never answers the ping
+        with socket.socket() as s:
+            s.bind(("127.0.0.1", p))
+            s.listen()
+            m = self.start_monitor(port=p, consts=fast)
+            self.ok("a plain listener on P: serves on P+1", m.port == p + 1, m.url)
+            self.ok("it stops with exit 0", m.stop() == 0, m.err)
+        with contextlib.ExitStack() as stack:
+            for port in range(p, p + span):
+                s = stack.enter_context(socket.socket())
+                s.bind(("127.0.0.1", port))
+                s.listen()
+            r = self.run_monitor(port=p, consts=fast)
+        lines = r.stderr.splitlines()
+        self.ok("all taken: exit 1", r.returncode == 1, r.stderr)
+        self.ok("all taken: one stderr line", len(lines) == 1, r.stderr)
+        named = bool(lines) and str(p) in lines[0] and str(p + span - 1) in lines[0]
+        self.ok(f"all taken: the line names {p} and {p + span - 1}", named, r.stderr)
+        self.ok("all taken: no URL", r.stdout == "", r.stdout)
+        r = self.run_monitor(port=65536 - span + 1)
+        self.ok("a range past 65535: exit 2", r.returncode == EXIT_PAGE, r.stderr)
+
+    def test_windows_side_collision(self) -> None:
+        """Windows' curl.exe reaching another process moves it on; no answer keeps P."""
+        p = free_ports(dsp_monitor.PORT_SPAN)
+        fetch = (
+            f"{shlex.quote(PY)} -c 'import sys,urllib.request;"
+            "print(urllib.request.urlopen(sys.argv[1]).read().decode())'"
+        )
+        foreign = (
+            f'case "$url" in *:{p}/*) echo \'{{"monitor":"other"}}\' ;; '
+            f'*) exec {fetch} "$url" ;; esac'
+        )
+        logs: dict[str, list[str]] = {}
+        monitors: dict[str, support.Monitor] = {}
+        for case, body in (("foreign", foreign), ("none", "exit 7")):
+            stub_dir = self.T / f"curl-{case}"
+            log = self.T / f"curl-{case}.log"
+            script = f'#!/bin/sh\nfor url; do :; done\necho "$url" >> {log}\n{body}\n'
+            self.chmod_x(self.write(stub_dir / "curl.exe", script))
+            m = self.start_monitor(port=p, path_prefix=[stub_dir])
+            self.ok(f"{case}: stops with exit 0", m.stop() == 0, m.err)
+            monitors[case] = m
+            logs[case] = log.read_text().splitlines() if log.exists() else []
+        m, log = monitors["foreign"], logs["foreign"]
+        self.ok("foreign: serves on P+1", m.port == p + 1, m.url)
+        want = [f"http://localhost:{port}/api/ping" for port in (p, p + 1)]
+        self.ok("foreign: curl.exe asked P, then P+1", log == want, log)
+        self.ok("foreign: stderr empty", m.err == "", m.err)
+        m, log = monitors["none"], logs["none"]
+        self.ok("none: keeps P", m.port == p, m.url)
+        self.ok("none: curl.exe asked P once", log == want[:1], log)
+        self.ok("none: one stderr line", len(m.err.splitlines()) == 1, m.err)
