@@ -30,6 +30,10 @@ rather than from the agent's word:
   have answered; past 125% of it, it asks again.
 - **No outward action without you.** Merges, releases and other writes to the hosted repository are
   asked for each time, and agents may not run them.
+- **No review verdict on files nobody read.** A review records the commit range it covers, and
+  `decision_check.py` wants a Coverage row for every file that range changed. While that check
+  fails, review comments and notes are held, whether they go through `gh`, `glab` or an MCP note
+  tool.
 - **Stage checkers** for the documents in between: every decision's sources, every acceptance
   criterion mapped to a task and a test file, every planned file traced to something you asked for.
 
@@ -144,7 +148,7 @@ sequenceDiagram
 |---|---|---|
 | `push_guard.py --pre-push` | git's `pre-push`, written into the repository by `--activate` | A push of any commit that no full gate passed, read from the exact refs git sends |
 | `push_guard.py` | PreToolUse:Bash | A push that would skip the git hook (`--no-verify`); a bypass (`DSP_SKIP_*`), which you approve and agents may not use; every push, where the repository's hooks live elsewhere (`core.hooksPath`) |
-| `route_state.py --hook` | PreToolUse, PostToolUse, UserPromptSubmit, SessionStart, SubagentStop, TeammateIdle | Route state and the recorded budget; a wave's dispatch held once its spend passes the budget; outward actions held for your answer; hand-written gate logs refused; an agent stopping while its own background jobs still run |
+| `route_state.py --hook` | PreToolUse (including an MCP `create_note` tool), PostToolUse, UserPromptSubmit, SessionStart, SubagentStop, TeammateIdle | Route state and the recorded budget; a wave's dispatch held once its spend passes the budget; outward actions held for your answer; a review comment held while its Coverage fails; hand-written gate logs refused; an agent stopping while its own background jobs still run |
 
 The guards target careless agents, not adversaries:
 [`references/gates.md`](skills/decision-spec-plan/references/gates.md) says what each check
@@ -237,13 +241,17 @@ evidence for that rule is in this log.
 
 ```
 pip install -r requirements-dev.txt   # the pinned tools; the plugin itself needs none
-make check                            # format, lint, types, architecture, dead code, tests
+make check                            # make static, then make cov
+make static                           # format, lint, types, architecture, dependencies, dead code, workflows
+make cov                              # the suite under branch coverage, failing below its floor
 python3 -m pytest skills/decision-spec-plan/tests   # the suite alone; tests the copy it sits in
 ```
 
 The suite builds throwaway repositories and points `HOME` at a temp directory, so it never touches
-your projects or your Claude configuration. CI runs the same commands on every push and pull
-request.
+your projects or your Claude configuration. On every push and pull request CI runs `make static` on
+Python 3.12 and `make cov` on 3.11 and 3.12, plus a secret scan and a dependency-advisory scan.
+Releases are cut from the Conventional Commits history, so each one's version and changelog follow
+the commits it carries.
 
 ## License
 
