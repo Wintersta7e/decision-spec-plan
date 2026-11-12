@@ -13,7 +13,6 @@ import json
 import os
 import pathlib
 import re
-import shutil
 import subprocess
 import time
 from collections.abc import Callable, Generator, Mapping
@@ -210,9 +209,12 @@ def git(repo: StrPath, *args: str, stdin: str | None = None) -> tuple[int, str]:
         if timeout <= 0:
             msg = f"git {' '.join(args)}: deadline passed"
             raise GitDeadlineError(msg)
+    # shutil loads bz2, lzma and zlib, and the no-route hook never spawns git
+    from shutil import which
+
     try:
         r = subprocess.run(
-            [shutil.which("git") or "git", "-C", str(repo), *args],
+            [which("git") or "git", "-C", str(repo), *args],
             input=stdin,
             env={**os.environ, "GIT_OPTIONAL_LOCKS": "0"},
             capture_output=True,

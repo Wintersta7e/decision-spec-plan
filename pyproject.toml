@@ -99,4 +99,6 @@ banned-module-level-imports = [
   "dsp_route.holds", "dsp_route.hook", "dsp_route.inject", "dsp_route.jobs",
   "dsp_route.lead_edits", "dsp_route.outward", "dsp_route.record", "dsp_route.report",
   "dsp_route.switch", "decision_check", "plan_lint", "push_guard", "usage_report",
+  # shutil pulls in bz2, lzma and zlib (~1.1 ms); `import shutil` elsewhere stays allowed
+  "shutil.which",
 ]
