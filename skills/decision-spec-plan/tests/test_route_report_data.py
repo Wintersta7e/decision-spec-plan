@@ -14,6 +14,8 @@ import io
 import os
 import re
 import sys
+import threading
+import time
 from pathlib import Path
 from unittest import mock
 
@@ -22,7 +24,7 @@ from typing_extensions import override
 import report_shapes
 import scope_check
 import support
-from dsp_route.common import RouteArgs, parser
+from dsp_route.common import GitDeadlineError, RouteArgs, git_deadline, parser
 from report_shapes import GOLDEN, collect_json, mask
 from support import RS, ev
 
@@ -498,3 +500,106 @@ class Enums(report_shapes.Shapes):
                 f"not emitted {sorted(set(values) - got)}, "
                 f"not in {name} {sorted(got - set(values))}",
             )
+
+
+# one lane merged by ancestry and ten open ones
+DEADLINE_LANES = 11
+# 1.0 s over a 0.2 s git: five spawns finish, the sixth is stopped
+DEADLINE_SPAWNS = 6
+# a spawn the shim stamps this long after git() started it
+SHIM_START_S = 0.1
+
+
+class Deadline(support.Sandbox):
+    """The git deadline bounds collect(); a report it cuts short caches nothing.
+
+    AC-P1-2-23. Nothing on collect()'s path may catch the deadline's error, which is
+    an OSError: this is the guard.
+    """
+
+    def route(self, root: Path) -> list[str]:
+        """Return the arguments of an activated route of DEADLINE_LANES lanes."""
+        r = self.init_repo(root / "r", commits=("base",))
+        plan = r / ".plan"
+        for n in range(1, DEADLINE_LANES + 1):
+            name = "p1-01-m" if n == 1 else f"p1-{n:02d}"
+            _ = self.git("-C", r, "switch", "-q", "-c", name, "main")
+            _ = self.write(r / f"f{n}", f"lane {n}\n")
+            _ = self.git("-C", r, "add", f"f{n}")
+            _ = self.git("-C", r, "commit", "-q", "-m", name)
+            _ = self.write(
+                plan / f"lanes/{name}-checkpoint.md", f"Final SHA: {self.rev(r)}\n"
+            )
+            _ = self.git("-C", r, "switch", "-q", "main")
+        _ = self.git("-C", r, "merge", "-q", "--no-ff", "-m", "merge", "p1-01-m")
+        argv = [str(plan), "--phase", "1", "--repo", str(r), "--main", "main"]
+        act = self.py(RS, *argv, "--activate", session="d1", cwd=self.T, merge=True)
+        self.ok("the route is activated", act.code == 0, act.out)
+        return argv
+
+    def test_deadline(self) -> None:
+        """No deadline: a full state; 1.0 s: the error, no late spawn, no cache."""
+        from dsp_route import report
+
+        argv = self.route(self.T / "d")
+        merged = support.Route.MK(argv[4], argv[0]).with_suffix(".merged")
+        shim_env, log = self.git_shim(self.T / "shim", sleep=0.2)
+        a = _args(argv)
+        out: dict[float, str] = {}
+
+        def run(seconds: float) -> None:
+            try:
+                with git_deadline(seconds):
+                    s = report.collect(a)
+            except GitDeadlineError:
+                out[seconds] = "deadline"
+                return
+            lanes = s["lanes"] if s else []
+            checked = sum(ln["git"] for ln in lanes)
+            out[seconds] = f"{len(lanes)} lanes, {checked} checked"
+
+        with mock.patch.dict(os.environ, {**self.env, **shim_env}, clear=True):
+            full = report.collect(a, write_cache=True)
+            lanes = full["lanes"] if full else []
+            self.ok(
+                f"control: {len(lanes)} lanes, all checked, the cache written",
+                len(lanes) == DEADLINE_LANES
+                and all(ln["git"] for ln in lanes)
+                and merged.exists(),
+                lanes,
+            )
+            merged.unlink()
+            log.unlink()
+            err: GitDeadlineError | None = None
+            start = time.time()
+            try:
+                with git_deadline(1.0):
+                    _ = report.collect(a, write_cache=True)
+            except GitDeadlineError as e:
+                err = e
+            lines = log.read_text().splitlines() if log.exists() else []
+            late = [
+                ln
+                for ln in lines
+                if int(ln.split(" ", 1)[0]) / 1e9 > start + 1.0 + SHIM_START_S
+            ]
+            self.ok(
+                f"deadline 1.0 s: GitDeadlineError after {len(lines)} spawns, "
+                f"{len(late)} late, no cache",
+                err is not None
+                and 0 < len(lines) <= DEADLINE_SPAWNS
+                and not late
+                and not merged.exists(),
+                f"{err!r}\n{lines}",
+            )
+            threads = [threading.Thread(target=run, args=(s,)) for s in (1.0, 30.0)]
+            for t in threads:
+                t.start()
+            for t in threads:
+                t.join()
+        full_text = f"{DEADLINE_LANES} lanes, {DEADLINE_LANES} checked"
+        self.ok(
+            f"two threads at once: 1.0 s {out.get(1.0)}, 30 s {out.get(30.0)}",
+            out == {1.0: "deadline", 30.0: full_text},
+            out,
+        )
