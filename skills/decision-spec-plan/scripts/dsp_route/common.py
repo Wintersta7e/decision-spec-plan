@@ -151,6 +151,7 @@ def git(repo: StrPath, *args: str, stdin: str | None = None) -> tuple[int, str]:
     r = subprocess.run(
         [shutil.which("git") or "git", "-C", str(repo), *args],
         input=stdin,
+        env={**os.environ, "GIT_OPTIONAL_LOCKS": "0"},
         capture_output=True,
         text=True,
         check=False,

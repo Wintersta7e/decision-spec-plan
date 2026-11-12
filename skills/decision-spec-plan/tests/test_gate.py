@@ -95,5 +95,34 @@ class GateLog(support.Sandbox):
         )
 
 
+class GateNoLock(support.Sandbox):
+    """gate.py counts a stat-dirty tree's changes without rewriting its index."""
+
+    def test_gate_takes_no_lock(self) -> None:
+        """The index is unchanged by gate.py; plain git status rewrites it."""
+        r, pd = self.T / "nl/r", self.T / "nl/pd"
+        _ = self.init_repo(r, commits=())
+        _ = self.write(r / "g", "g\n")
+        _ = self.git("-C", r, "add", "g")
+        _ = self.git("-C", r, "commit", "-q", "-m", "base")
+        self.stat_dirty(r / "g")
+        before = self.index_state(r)
+        _ = self.py("gate.py", pd, "g", "--repo", r, "--", "true")
+        after = self.index_state(r)
+        first = lines(pd / "lanes/g-gate.log")[0]
+        self.ok(
+            "gate.py: index unchanged and no index.lock in a stat-dirty tree; dirty=0",
+            after == before and first.endswith(" dirty=0"),
+            f"before {before}\nafter  {after}\n{first}",
+        )
+        _ = self.git("-C", r, "status", "--porcelain")
+        control = self.index_state(r)
+        self.ok(
+            "control: plain git status rewrites the index gate.py left unchanged",
+            control != before,
+            f"before {before}\ncontrol {control}",
+        )
+
+
 if __name__ == "__main__":
     _ = unittest.main()

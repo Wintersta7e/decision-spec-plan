@@ -7,6 +7,7 @@ their merged SHA (F41), and the hook's delta on a changed lane line.
 
 import shutil
 import unittest
+from pathlib import Path
 
 from typing_extensions import override
 
@@ -549,6 +550,54 @@ class RungSWithoutRepo(support.Sandbox):
             grep(out, "decisions  0 D files (2 in the index)")
             and not grep(out, "pending"),
             out,
+        )
+
+
+class NoIndexLock(support.Sandbox):
+    """The hook reads a lane worktree's status without taking or rewriting its index."""
+
+    def test_hook_takes_no_lock(self) -> None:
+        """A stat-dirty worktree's index is the same before and after the hook."""
+        r, wt = self.T / "lock/r", self.T / "lock/wt"
+        _ = self.init_repo(r, commits=())
+        _ = self.write(r / "g", "g\n")
+        _ = self.write(r / "h", "h\n")
+        _ = self.git("-C", r, "add", "g", "h")
+        _ = self.git("-C", r, "commit", "-q", "-m", "base")
+        _ = self.git("-C", r, "worktree", "add", "-q", "-b", "p1-01-a", wt)
+        _ = self.git("-C", wt, "commit", "-q", "--allow-empty", "-m", "l1")
+        cp = r / ".plan/lanes/p1-01-a-checkpoint.md"
+        _ = self.write(cp, f"Final SHA: {self.rev(wt)}\n")
+        self.touch(cp, -3600)
+        _ = self.py(
+            RS, r / ".plan", "--phase", "1", "--repo", r, "--activate", session="lk1"
+        )
+        _ = self.write(wt / "h", "h changed\n")
+        self.stat_dirty(wt / "g")
+        before = self.index_state(wt)
+        _ = self.hook_out(ev("PostToolUse", "lk1", '"tool_name":"Read"'))
+        after = self.index_state(wt)
+        self.ok(
+            "hook: index unchanged and no index.lock in a stat-dirty lane worktree",
+            after == before,
+            f"before {before}\nafter  {after}",
+        )
+        common = self.git(
+            "-C", r, "rev-parse", "--path-format=absolute", "--git-common-dir"
+        )
+        lasts = list(Path(common).glob("dsp-route-*.last"))
+        self.ok(
+            f"hook: {len(lasts)} state file, holding the lane's uncommitted change",
+            len(lasts) == 1
+            and grep(lasts[0].read_text(), "1 uncommitted in its worktree"),
+            [p.read_text() for p in lasts],
+        )
+        _ = self.git("-C", wt, "status", "--porcelain")
+        control = self.index_state(wt)
+        self.ok(
+            "control: plain git status rewrites the index the hook left unchanged",
+            control != before,
+            f"before {before}\ncontrol {control}",
         )
 
 

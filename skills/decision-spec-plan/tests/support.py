@@ -432,6 +432,36 @@ class Sandbox(unittest.TestCase):
         t = dt.datetime.now(dt.UTC).timestamp() + offset
         os.utime(path, (t, t))
 
+    @classmethod
+    def index_state(cls, repo: StrPath) -> tuple[int, int, str, bool]:
+        """The index of repo's worktree: inode, mtime_ns, SHA-1, and a lock's presence.
+
+        A linked worktree has its own index under `worktrees/<name>/`, so the path comes
+        from git. Any rewrite of the index changes the tuple.
+        """
+        index = Path(
+            cls.git(
+                "-C", repo, "rev-parse", "--path-format=absolute", "--git-path", "index"
+            )
+        )
+        st = index.stat()
+        digest = hashlib.sha1(index.read_bytes(), usedforsecurity=False).hexdigest()
+        return (
+            st.st_ino,
+            st.st_mtime_ns,
+            digest,
+            Path(str(index) + ".lock").exists(),
+        )
+
+    @staticmethod
+    def stat_dirty(path: StrPath) -> None:
+        """A tracked file made stat-dirty: its stat data no longer matches the index.
+
+        Its atime and mtime go one hour back and its content stays, so `git status`
+        refreshes the index entry and rewrites the index when it may take the lock.
+        """
+        Sandbox.touch(path, -3600)
+
     @staticmethod
     def chmod_x(*paths: StrPath) -> None:
         """The execute bits added to each path's mode."""

@@ -25,6 +25,7 @@ either holds the whole run or says it is still running.
 """
 
 import argparse
+import os
 import pathlib
 import shlex
 import shutil
@@ -47,6 +48,7 @@ def git(repo: pathlib.Path, *args: str) -> str:
     """Run git in repo and return its stdout; raise when it fails."""
     return subprocess.run(
         [shutil.which("git") or "git", "-C", str(repo), *args],
+        env={**os.environ, "GIT_OPTIONAL_LOCKS": "0"},
         capture_output=True,
         text=True,
         check=True,
