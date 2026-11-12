@@ -18,8 +18,8 @@ from typing import cast
 
 from .common import (
     EXEC,
+    LAST_DECISION,
     REGISTRY,
-    RETURNS,
     SCRIPT,
     SKILL,
     SKILL_DIR,
@@ -29,6 +29,7 @@ from .common import (
     checked,
     deny,
     emit,
+    is_return,
     load_json,
     parse_json,
     route_args,
@@ -38,6 +39,19 @@ THROTTLE_S = 20
 # The agent types only the route dispatches (agents/dsp-*.md), bare or plugin-qualified.
 ROUTE_AGENTS = ("dsp-deep", "dsp-mechanical")
 EDITS = ("Edit", "Write", "MultiEdit", "NotebookEdit")
+# The events hooks.json registers for the monitor alone, each guarded by its switch:
+# recorded, never checked or reported on.
+RECORD_ONLY = frozenset(
+    {
+        "SubagentStart",
+        "PostToolUseFailure",
+        "PostCompact",
+        "Notification",
+        "Stop",
+        "StopFailure",
+        "SessionEnd",
+    }
+)
 
 
 def unrouted(event: Mapping[str, object], entry_path: pathlib.Path) -> bool:
@@ -195,10 +209,8 @@ def _quiet(name: str, event: Mapping[str, object], session: str) -> bool:
     """
     if name == "SessionStart" and event.get("source") not in ("compact", "resume"):
         return True
-    if name == "UserPromptSubmit":
-        head = str(event.get("prompt") or "").strip()[:500]
-        if not any(t in head for t in RETURNS):
-            return True
+    if name == "UserPromptSubmit" and not is_return(event.get("prompt")):
+        return True
     if name == "PostToolUse":
         return not _claim(session)
     return False
@@ -330,12 +342,63 @@ def _agent_stop(event: Mapping[str, object], session: str) -> int:
         return 0
 
 
+def _switched_off(name: str) -> bool:
+    """Return whether name is an event only the monitor wants, and the monitor is off.
+
+    hooks.json runs those only with the switch on; a hand run or an edited hooks.json
+    then records nothing, and touches no file.
+    """
+    if name not in RECORD_ONLY:
+        return False
+    from .switch import on
+
+    return not on()
+
+
+def _record(
+    name: str, event: Mapping[str, object], entry: RegistryEntry, t0: float
+) -> None:
+    """Append the event to the session's log when the monitor is on.
+
+    A SubagentStart also sweeps the old logs. Neither can fail the call.
+    """
+    from .switch import on
+
+    if not on():
+        return
+    from .record import record, sweep
+
+    _ = checked(record, event, entry, t0, LAST_DECISION.get())
+    if name == "SubagentStart":
+        _ = checked(sweep)
+
+
 def _registered(
-    name: str, event: Mapping[str, object], session: str, entry_path: pathlib.Path
+    name: str,
+    event: Mapping[str, object],
+    session: str,
+    entry_path: pathlib.Path,
+    t0: float,
 ) -> int:
-    """Run the hooks of a session `--activate` registered."""
+    """Run the hooks of a session `--activate` registered, then record the event."""
     # --activate wrote the entry; a check that finds a key missing fails on its own
     entry = cast("RegistryEntry", cast("object", load_json(entry_path)))
+    try:
+        if name in RECORD_ONLY:
+            return 0  # recorded below; a lead's Stop must never reach the report
+        return _dispatch(name, event, session, entry_path, entry)
+    finally:
+        _record(name, event, entry, t0)
+
+
+def _dispatch(
+    name: str,
+    event: Mapping[str, object],
+    session: str,
+    entry_path: pathlib.Path,
+    entry: RegistryEntry,
+) -> int:
+    """Run the check or report a registered session's event calls for."""
     if name in ("SubagentStop", "TeammateIdle"):
         return _agent_stop(event, session)
     if name == "PreToolUse":
@@ -372,6 +435,7 @@ def hook() -> int:
     Returns:
         The hook's exit code: 2 sends an agent back to its running job, else 0.
     """
+    t0 = time.time()  # the event's time in the monitor's log
     try:
         event = as_dict(parse_json(sys.stdin.read()))
     except ValueError:
@@ -400,6 +464,6 @@ def hook() -> int:
         if line := checked(unloaded, event):
             emit(name, line)
             return 0
-    if not session or not entry_path.exists():
+    if not session or _switched_off(name) or not entry_path.exists():
         return 0
-    return _registered(name, event, session, entry_path)
+    return _registered(name, event, session, entry_path, t0)

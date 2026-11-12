@@ -10,18 +10,19 @@ import json
 import re
 import unittest
 from pathlib import Path
-from typing import ClassVar, Required, TypedDict, cast
+from typing import ClassVar, NotRequired, Required, TypedDict, cast
 
 import support
 from support import PLUGIN, SCRIPTS
 
 SKILL_LIMIT = 19000  # characters of SKILL.md, under the 20,000 a compaction keeps
+# the guarded events hooks.json runs in the background: none can block the session
+ASYNC = {"SubagentStart", "PostToolUseFailure", "PostCompact", "Notification"}
 
-
-class _Hook(TypedDict):
-    """One command of a hooks.json entry."""
-
-    command: str
+# one command of a hooks.json entry; the functional form, as `async` is a keyword
+_Hook = TypedDict(
+    "_Hook", {"command": str, "async": NotRequired[bool], "shell": NotRequired[str]}
+)
 
 
 class _Entry(TypedDict, total=False):
@@ -83,9 +84,17 @@ class PluginFiles(support.Sandbox):
             for entry in entries
             for h in entry["hooks"]
         )
+        from dsp_route import switch  # the hook imports switch lazily (TID253)
+
         route = 'python3 "${CLAUDE_PLUGIN_ROOT}/scripts/route_state.py" --hook'
+        # a recording-only command: one `sh` test while the switch is off, and never a
+        # failing exit, so a Stop is never blocked
+        g = f"{switch.GUARD} && {route} || true"
         want = [
+            f"Notification  {g}",
+            f"PostCompact  {g}",
             f"PostToolUse * {route}",
+            f"PostToolUseFailure Agent {g}",
             (
                 "PreToolUse Agent|Bash|Write|Edit|MultiEdit|NotebookEdit|SendMessage "
                 f"{route}"
@@ -94,16 +103,48 @@ class PluginFiles(support.Sandbox):
             # an MCP tool's review note, held like `glab mr note` (F104); a matcher with
             # `^` or `$` is an unanchored regex, so both anchors are needed
             f"PreToolUse ^mcp__.*create_note$ {route}",
+            f"SessionEnd  {g}",
             f"SessionStart compact|resume {route}",
+            f"Stop  {g}",
+            f"StopFailure  {g}",
+            f"SubagentStart  {g}",
             f"SubagentStop  {route}",
             f"TeammateIdle  {route}",
             f"UserPromptSubmit  {route}",
         ]
         self.ok(
             "hooks.json registers route_state.py and push_guard.py on the route's "
-            "8 hooks",
+            "hooks and the guarded recording hooks",
             reg == want,
             "\n".join(reg),
+        )
+        cmds = [
+            (event, h)
+            for event, entries in hooks.items()
+            for e in entries
+            for h in e["hooks"]
+        ]
+        timed = sorted(event for event, h in cmds if "async" in h)
+        self.ok(
+            f"async on {timed}, each true",
+            sorted(ASYNC) == timed
+            and all(h.get("async", True) is True for _, h in cmds),
+        )
+        self.ok("no command names a shell", not [h for _, h in cmds if "shell" in h])
+        stray = [
+            h["command"]
+            for _, h in cmds
+            if switch.GUARD in h["command"] and h["command"] != g
+        ]
+        self.ok("the guard opens only the guarded commands", not stray, stray)
+
+        from dsp_route import hook  # imported lazily by route_state.py (TID253)
+
+        guarded = {event for event, h in cmds if h["command"] == g}
+        self.ok(
+            f"the {len(guarded)} guarded events are hook.RECORD_ONLY",
+            frozenset(guarded) == hook.RECORD_ONLY,
+            sorted(guarded),
         )
         bare = re.compile(r'subagent_type: "dsp-|agentType: .dsp-')
         files = [PLUGIN / "SKILL.md", *sorted((PLUGIN / "references").rglob("*"))]
@@ -204,6 +245,31 @@ class PluginFiles(support.Sandbox):
             ),
         ):
             self.ok(f"README says {said!r}", said in readme)
+
+    def test_monitor_switch_is_documented(self) -> None:
+        """README, INSTALL.md and --help name the switch as switch.NAME spells it."""
+        from dsp_route import record, switch  # the hook imports them lazily (TID253)
+
+        readme = (PLUGIN.parents[1] / "README.md").read_text(encoding="utf-8")
+        events = "~/" + str(record.EVENTS.relative_to(Path.home()))
+        for said in (switch.NAME, "POSIX hook shell", events, "opportunistic"):
+            self.ok(f"README says {said!r}", said in readme)
+        install = (PLUGIN.parents[1] / "INSTALL.md").read_text(encoding="utf-8")
+        self.ok(f"INSTALL.md says {switch.NAME}", switch.NAME in install)
+        hooks = cast(
+            "_HooksFile", json.loads((PLUGIN / "hooks/hooks.json").read_text())
+        )["hooks"]
+        entries = [(event, e.get("matcher")) for event, es in hooks.items() for e in es]
+        names = {switch.NAME} | {event for event, _ in entries}
+        names |= {m for _, m in entries if m and m != "*"}
+        out = self.py("route_state.py", "--help").out
+        fails = sorted(n for n in names if n not in out)
+        self.ok(
+            f"--help names the switch and {len(entries)} registrations: "
+            f"{len(fails)} fails",
+            entries and not fails,
+            fails,
+        )
 
     def test_skill_fits_a_compaction(self) -> None:
         """SKILL.md stays under the size a compaction re-attaches."""

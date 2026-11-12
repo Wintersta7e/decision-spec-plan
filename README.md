@@ -120,7 +120,8 @@ every option states its consequence.
 ## Hooks
 
 While the plugin is enabled, its hooks load in **every** session but act only in a session that ran
-`route_state.py --activate`. Any other session pays about 0.02 s per tool call.
+`route_state.py --activate`. Any other session pays about 0.02 s per tool call. Each of the seven
+recording-only hooks costs one `sh` and no Python while tracking is off.
 
 ```mermaid
 sequenceDiagram
@@ -149,6 +150,7 @@ sequenceDiagram
 | `push_guard.py --pre-push` | git's `pre-push`, written into the repository by `--activate` | A push of any commit that no full gate passed, read from the exact refs git sends |
 | `push_guard.py` | PreToolUse:Bash | A push that would skip the git hook (`--no-verify`); a bypass (`DSP_SKIP_*`), which you approve and agents may not use; every push, where the repository's hooks live elsewhere (`core.hooksPath`) |
 | `route_state.py --hook` | PreToolUse (including an MCP `create_note` tool), PostToolUse, UserPromptSubmit, SessionStart, SubagentStop, TeammateIdle | Route state and the recorded budget; a wave's dispatch held once its spend passes the budget; outward actions held for your answer; a review comment held while its Coverage fails; hand-written gate logs refused; an agent stopping while its own background jobs still run |
+| `route_state.py --hook` (recording) | SubagentStart, PostToolUseFailure:Agent, PostCompact, Notification, Stop, StopFailure, SessionEnd | Nothing: with `DSP_MONITOR=1` they record the session's events for the monitor |
 
 The guards target careless agents, not adversaries:
 [`references/gates.md`](skills/decision-spec-plan/references/gates.md) says what each check
@@ -158,6 +160,38 @@ runs them at each gate; `test_check.py`, for example, flags acceptance tests tha
 skipped or edited after they were written. Every gate runs through `gate.py`, which writes the log
 the push checks read: the commit, whether the tree was clean, the command, its output and its exit
 status.
+
+### Monitor tracking (optional, off by default)
+
+The seven recording-only hooks record a routed session's events for the monitor, and only while
+tracking is on. Turn it on with one line in your user settings file, `~/.claude/settings.json`
+(recommended):
+
+```json
+"env": { "DSP_MONITOR": "1" }
+```
+
+- Saving `"1"` or `"0"` there switches a running session on or off. Removing the key takes effect
+  only after a relaunch.
+- The same line in a committed project settings file (`.claude/settings.json`) turns tracking on
+  for everyone who clones the repository.
+- Off, each of the seven costs one `sh` test (about 0.4–0.6 ms) and no Python. On, a hook waits for
+  the event log's lock at most 50 attempts, about 28 ms in the worst case, then drops the event
+  rather than wait longer.
+- Recording needs a **POSIX hook shell** (Linux, macOS, Windows with Git Bash). Elsewhere the guard
+  may print a shell error to the hook's output and records nothing.
+- Recorded, one line per hook event of a routed session: the event and its time, the route's run,
+  the agent it fires in, a tool's name and call id, a dispatch's name, short description and agent
+  type, a launch's or return's agent id, model, duration and token counts, a Bash call's
+  description and a message's recipient. Never stored: a prompt, a message's content, any other
+  tool input, a tool's output, the last assistant message, a compaction summary, a transcript path.
+- The logs live in `~/.claude/dsp-routes/events/`, one `<session-id>.jsonl` per session.
+- Expiry is **opportunistic**: a log untouched for 14 days is removed the next time a subagent
+  starts on that machine, so a host that starts none keeps its logs.
+- A log stops growing freely at 32 MiB: past it, each agent's tool calls are recorded at most once
+  every 60 s, as a heartbeat, and the other events are still recorded.
+- Removing `~/.claude/dsp-routes/events/` is an optional, destructive cleanup that deletes the
+  recorded history. It does not turn tracking off: save `"0"` for that.
 
 ## Cost
 

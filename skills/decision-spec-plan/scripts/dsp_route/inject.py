@@ -23,6 +23,7 @@ from .common import (
     as_list,
     budgets,
     parse_json,
+    write_atomic,
 )
 from .transcript import skill_loaded
 
@@ -57,7 +58,7 @@ def skill_changes(entry_path: pathlib.Path, entry: RegistryEntry) -> list[str]:
     if newer:
         entry["skill_seen"] = max(files[rel].stat().st_mtime for rel in newer)
     entry["skill_digests"] = digests
-    _ = entry_path.write_text(json.dumps(entry) + "\n")
+    write_atomic(entry_path, json.dumps(entry) + "\n")
     return changed
 
 
@@ -148,7 +149,7 @@ def took(event: Mapping[str, object], entry: RegistryEntry) -> str | None:
         return None
     before = len(tally)
     tally += _taken(asked, answers)
-    _ = path.write_text(json.dumps(marker) + "\n")
+    write_atomic(path, json.dumps(marker) + "\n")
     last = tally[-TAKE_WINDOW:]
     took_n = sum(bool(t) for t in last)
     if len(tally) == before or len(last) < TAKE_WINDOW or took_n < TAKE_RATE:

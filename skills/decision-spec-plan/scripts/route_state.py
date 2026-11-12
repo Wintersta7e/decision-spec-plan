@@ -34,8 +34,10 @@ not exist.
 --activate also writes the arguments to <git-common-dir>/dsp-route-<id>.json, one per
 planning dir, which marks the repository as running that route (push_guard.py then holds
 pushes to gated commits; two routes in one repository keep separate phases, budgets and
-spend, F93), and registers this session in ~/.claude/dsp-routes/<session-id>.json, which
-`route_state.py --hook` reads: after the lead's tool calls (PostToolUse, at most every
+spend, F93), and registers this session in ~/.claude/dsp-routes/<session-id>.json (the
+marker keeps the route's run id across re-activations; the entry keeps that `run`, the
+marker's arguments and up to 8 routes the session left), which `route_state.py --hook`
+reads: after the lead's tool calls (PostToolUse, at most every
 20 s) and on an agent's return as a prompt (UserPromptSubmit) it puts what changed in
 the report into the lead's context, with the skill's files changed since the session
 read them (F78), and after a compaction or a resume (SessionStart) the whole report and
@@ -87,8 +89,14 @@ wakes it when the job ends (F92). It holds the lead's `exec-` dispatch while
 
 Registration: the plugin's `hooks/hooks.json` runs `route_state.py --hook` under
 SessionStart matcher `compact|resume`, PostToolUse matcher `*`, UserPromptSubmit,
-PreToolUse matcher `Agent|Bash|Write|Edit|MultiEdit|NotebookEdit`, SubagentStop,
-TeammateIdle.
+PreToolUse matcher `Agent|Bash|Write|Edit|MultiEdit|NotebookEdit|SendMessage`,
+PreToolUse matcher `^mcp__.*create_note$` (a review note posted through an MCP tool,
+held as a `gh` or `glab` review comment is), SubagentStop and TeammateIdle; and
+`push_guard.py` under PreToolUse matcher `Bash`. Seven more run `--hook` only when the
+hook shell sees `DSP_MONITOR=1`: SubagentStart, PostToolUseFailure matcher `Agent`,
+PostCompact, Notification, Stop, StopFailure and SessionEnd. They record the session's
+events under `~/.claude/dsp-routes/events/` (README, Monitor tracking).
+Those seven print nothing.
 """
 
 import sys

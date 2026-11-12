@@ -5,28 +5,37 @@ import json
 import os
 import pathlib
 import re
+import secrets
 import sys
 import time
 from collections.abc import Mapping
 
 from .common import (
+    ABSENT_RETRY_S,
     LEDGER_CHECKS,
     MARKER,
     REGISTRY,
+    PreviousRoute,
     RegistryEntry,
     RouteArgs,
     StrPath,
     ago,
     as_dict,
+    as_list,
     checked,
     load_json,
     marker_path,
+    parse_json,
     route_args,
     routes,
+    write_atomic,
 )
 from .transcript import session_transcripts, shape_line
 
 RUNNER = re.compile(r"\b(?:windows|macos)-(?:latest|\d[\w.-]*)\b")
+# How many routes a session left its entry keeps: the way back to a route that
+# recorded no event.
+PREVIOUS_MAX = 8
 
 
 def foreign_runners(repo: StrPath) -> list[str]:
@@ -158,8 +167,51 @@ def _print_guards(marker: Mapping[str, object], repo_arg: str | None) -> list[st
     return foreign
 
 
+def _route(item: object) -> PreviousRoute | None:
+    """Return item as a pointer to a route, or None without a str marker and dir."""
+    d = as_dict(item) or {}
+    marker, planning, run = d.get("marker"), d.get("planning_dir"), d.get("run")
+    if not isinstance(marker, str) or not isinstance(planning, str):
+        return None
+    return {
+        "marker": marker,
+        "planning_dir": planning,
+        "run": run if isinstance(run, str) else None,
+    }
+
+
+def _previous(
+    old: Mapping[str, object], planning: str, run: str, *, upgraded: bool
+) -> list[PreviousRoute]:
+    """Return the routes the session left, newest first, for its new entry.
+
+    The old entry joins them when it is another route or another run of this one (a
+    route ended and begun again in the session), except a run-less entry of this route
+    whose marker this activation upgraded: that entry is the live run.
+    """
+    items: list[object] = as_list(old.get("previous")) or []
+    ptr = _route(old)
+    if ptr is not None and not (
+        ptr["run"] is None and ptr["planning_dir"] == planning and upgraded
+    ):
+        items = [ptr, *items]
+    # the route being registered is no earlier route: A, B, A lists B only
+    seen: set[tuple[str, str | None]] = {(planning, run)}
+    kept: list[PreviousRoute] = []
+    for r in map(_route, items):
+        if r is None or (key := (r["planning_dir"], r["run"])) in seen:
+            continue
+        seen.add(key)
+        kept.append(r)
+    return kept[:PREVIOUS_MAX]
+
+
 def _register(
-    session: str, path: pathlib.Path, planning: str, ledger: dict[str, int]
+    session: str,
+    path: pathlib.Path,
+    planning: str,
+    ledger: dict[str, int],
+    marker: Mapping[str, object],
 ) -> None:
     """Register this session's entry in REGISTRY."""
     REGISTRY.mkdir(parents=True, exist_ok=True)
@@ -167,14 +219,25 @@ def _register(
     old = load_json(entry_path)
     # When this session last read the skill's files: a re-activation is no re-read.
     seen = old.get("skill_seen", old.get("activated", time.time()))
+    run = str(marker["run"])
     entry: RegistryEntry = {
         "marker": str(path),
         "planning_dir": planning,
         "activated": time.time(),
         "ledger": ledger,
+        "run": run,
+        "args": [str(a) for a in as_list(marker["args"]) or []],
+        "previous": _previous(
+            old, planning, run, upgraded=marker.get("run_upgraded") is True
+        ),
     }
     entry["skill_seen"] = seen if isinstance(seen, int | float) else time.time()
-    _ = entry_path.write_text(json.dumps(entry) + "\n")
+    # ...nor are the skill files' digests that check last compared
+    digests = as_dict(old.get("skill_digests"))
+    texts = {k: v for k, v in (digests or {}).items() if isinstance(v, str)}
+    if digests is not None and len(texts) == len(digests):
+        entry["skill_digests"] = texts
+    write_atomic(entry_path, json.dumps(entry) + "\n")
     print(f"hooks registered for session {session}")
 
 
@@ -196,6 +259,46 @@ def _print_other_routes(session: str, path: pathlib.Path) -> None:
         )
 
 
+def new_run() -> str:
+    """Return a new run id: the UTC time, sortable across zones, and 16 hex digits."""
+    return time.strftime("%Y%m%dT%H%M%S", time.gmtime()) + "-" + secrets.token_hex(8)
+
+
+def _old_marker(path: pathlib.Path) -> dict[str, object]:
+    """Return the marker this activation replaces, or {} when there is none.
+
+    A file missing or unreadable is read once more after ABSENT_RETRY_S: on drvfs an
+    os.replace'd file looks briefly missing, and taking it for absent would mint a
+    second run for a live route. A file that does not parse is no marker, at once.
+    """
+    try:
+        try:
+            return as_dict(parse_json(path.read_text())) or {}
+        except OSError:
+            time.sleep(ABSENT_RETRY_S)
+            return as_dict(parse_json(path.read_text())) or {}
+    except (OSError, ValueError):
+        return {}
+
+
+def _identity(old: Mapping[str, object], marker: dict[str, object]) -> None:
+    """Keep the old marker's run id in marker, or mint one.
+
+    A marker without one (an older version's, or the legacy per-repository marker) is
+    an upgrade: the new id carries `run_upgraded`, which every later activation keeps,
+    because readers treat the route's run-less entries as this run while it is set.
+    """
+    run = old.get("run")
+    if isinstance(run, str) and run:
+        marker["run"] = run
+        if old.get("run_upgraded") is True:
+            marker["run_upgraded"] = True
+        return
+    marker["run"] = new_run()
+    if old:
+        marker["run_upgraded"] = True
+
+
 def activate(a: RouteArgs, main: str) -> int:
     """Record this round's arguments where the hooks and push_guard.py find them.
 
@@ -212,7 +315,7 @@ def activate(a: RouteArgs, main: str) -> int:
         return 2
     # A route activated before markers were per planning dir moves to its own.
     legacy = path.with_name(MARKER)
-    old = load_json(path)
+    old = _old_marker(path)
     if not old and load_json(legacy).get("planning_dir") == planning:
         old = load_json(legacy)
         legacy.unlink()
@@ -225,9 +328,10 @@ def activate(a: RouteArgs, main: str) -> int:
         "activated": time.time(),
     }
     _kept_fields(a, old, marker, same_phase=same_phase)
+    _identity(old, marker)
     ledger = _ledger(a, old, planning)
     marker["ledger"] = ledger
-    _ = path.write_text(json.dumps(marker) + "\n")
+    write_atomic(path, json.dumps(marker) + "\n")
     print(f"route active: {path}")
     import push_guard  # only --activate needs it: the hook runs on every tool call
 
@@ -240,7 +344,7 @@ def activate(a: RouteArgs, main: str) -> int:
             "and the state hook stays silent; push_guard.py is active"
         )
         return 1
-    _register(session, path, planning, ledger)
+    _register(session, path, planning, ledger, marker)
     # The hooks read the transcript and let a call through on a shape they cannot
     # find: said here, a format change is a line at activation rather than gates
     # silently off.

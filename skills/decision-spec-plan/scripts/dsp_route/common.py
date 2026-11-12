@@ -42,6 +42,10 @@ PLAN_ID = re.compile(r"p\d+-\d+[a-z]?(?=-|$)")
 # session in the marker, both were asked again after a lead moved to another machine
 # (F74).
 BUDGETS = "route-budget.json"
+# How long a reader waits before reading a missing marker once more: on drvfs a reader
+# of an os.replace'd file saw it briefly missing (1 FileNotFoundError and 2 OSError in
+# about 8,100 reads), and a missed read there splits a live run.
+ABSENT_RETRY_S = 0.02
 
 StrPath = str | os.PathLike[str]
 T = TypeVar("T")
@@ -62,6 +66,15 @@ class Budget(TypedDict):
     answered: NotRequired[str]
 
 
+class PreviousRoute(TypedDict):
+    """A route a session left, as its registry entry lists it."""
+
+    marker: str
+    planning_dir: str
+    # None for an entry written before run ids
+    run: str | None
+
+
 class RegistryEntry(TypedDict):
     """A registered session's entry in REGISTRY, as `--activate` writes it."""
 
@@ -72,6 +85,11 @@ class RegistryEntry(TypedDict):
     skill_seen: NotRequired[float]
     # each skill file's text, as the session's last change check hashed it
     skill_digests: NotRequired[dict[str, str]]
+    # the marker's run id and arguments when the session activated it
+    run: NotRequired[str]
+    args: NotRequired[list[str]]
+    # the routes the session left, newest first
+    previous: NotRequired[list[PreviousRoute]]
 
 
 class RouteArgs(argparse.Namespace):
@@ -141,6 +159,11 @@ def save_budget(
     _ = path.write_text(json.dumps({"budgets": found}, indent=1) + "\n")
 
 
+def is_return(prompt: object) -> bool:
+    """Return whether a prompt is an agent's return: its head holds one of RETURNS."""
+    return any(t in str(prompt or "").strip()[:500] for t in RETURNS)
+
+
 def ago(seconds: float) -> str:
     """Return a duration as its largest whole unit: `3d`, `2h`, `5m`, `40s`."""
     for unit, size in (("d", 86400), ("h", 3600), ("m", 60)):
@@ -153,6 +176,11 @@ GIT_DEADLINE: contextvars.ContextVar[float | None] = contextvars.ContextVar(
     "GIT_DEADLINE", default=None
 )
 """The `time.monotonic()` by which the context's git calls must end; None: no bound."""
+
+LAST_DECISION: contextvars.ContextVar[tuple[str, str] | None] = contextvars.ContextVar(
+    "LAST_DECISION", default=None
+)
+"""The call's `(decision, reason)`, as `deny` printed it; None: the call was allowed."""
 
 
 class GitDeadlineError(TimeoutError):
@@ -314,6 +342,21 @@ def load_json(path: pathlib.Path) -> dict[str, object]:
         return {}
 
 
+def write_atomic(path: pathlib.Path, text: str) -> None:
+    """Replace path's contents with text, so a reader never sees a torn file.
+
+    The text goes to `<name>.<pid>.tmp` beside path, which then replaces path; a failed
+    write leaves path untouched and removes the temp file. It raises what the write
+    raises.
+    """
+    tmp = path.with_name(f"{path.name}.{os.getpid()}.tmp")
+    try:
+        _ = tmp.write_text(text)
+        _ = tmp.replace(path)
+    finally:
+        tmp.unlink(missing_ok=True)
+
+
 def checked(check: Callable[[*Ts], T], *args: *Ts) -> T | None:
     """Return `check(*args)`, or None when it fails.
 
@@ -327,7 +370,11 @@ def checked(check: Callable[[*Ts], T], *args: *Ts) -> T | None:
 
 
 def deny(reason: str, decision: str = "deny") -> int:
-    """Print the PreToolUse hook output that denies (or asks about) the call; 0."""
+    """Print the PreToolUse hook output that denies (or asks about) the call; 0.
+
+    The decision is kept in LAST_DECISION, so the recorder logs what the call printed.
+    """
+    _ = LAST_DECISION.set((decision, reason))
     print(
         json.dumps(
             {

@@ -45,6 +45,9 @@ and delete `~/.claude/agents/dsp-deep.md`, `~/.claude/agents/dsp-mechanical.md` 
 Agent teams are required: set `CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS=1` under `env` in
 `~/.claude/settings.json`.
 
+Monitor tracking is optional: set `DSP_MONITOR=1` under `env` to record routed sessions' events
+(README, Monitor tracking).
+
 Set an auto-compact window of about 300000 for the lead's model, e.g.
 `"modelSettings": {"claude-opus-5-5": {"autoCompactWindow": 300000}}` (or
 `CLAUDE_CODE_AUTO_COMPACT_WINDOW`): without it leads grew to ~965k context, where every turn costs
