@@ -1,5 +1,56 @@
 # Changelog
 
+## [1.3.0](https://github.com/Wintersta7e/decision-spec-plan/compare/v1.2.0...v1.3.0) (2026-11-13)
+
+
+### Features
+
+* **dsp-monitor:** add ended runs, run detail and keyboard shortcuts ([41afe61](https://github.com/Wintersta7e/decision-spec-plan/commit/41afe61ccdd903e31cb91917c3e6e0c48fbecf73))
+* **dsp-monitor:** add the loopback monitor server and its page skeleton ([25e171b](https://github.com/Wintersta7e/decision-spec-plan/commit/25e171b55bddb14e5dce237103965e8f5e3dfe7f))
+* **dsp-monitor:** add the monitor page shell and overview ([3bd923a](https://github.com/Wintersta7e/decision-spec-plan/commit/3bd923a38eb0a6255a9bd6683dc103f8285018e3))
+* **dsp-monitor:** discover routes and runs from registry and markers ([941c41f](https://github.com/Wintersta7e/decision-spec-plan/commit/941c41f87eef0e618bc38d005610750f2756c8e1))
+* **dsp-monitor:** draw state icons as inline SVG ([060cd94](https://github.com/Wintersta7e/decision-spec-plan/commit/060cd94a7e5eb90e75768859a1753ce64caba1b1))
+* **dsp-monitor:** find a free port and detect a running monitor ([edd2349](https://github.com/Wintersta7e/decision-spec-plan/commit/edd2349ce3200c1853673d4baa5559f9fde00999))
+* **dsp-monitor:** fold the event logs into agent and recording state ([9b0357f](https://github.com/Wintersta7e/decision-spec-plan/commit/9b0357f54397753e36478076b41583405d4e27fe))
+* **dsp-monitor:** raise waiting and attention items ([6f87910](https://github.com/Wintersta7e/decision-spec-plan/commit/6f879105bed1ccfd05f27260c3c853cce16a4d1c))
+* **dsp-monitor:** refresh reports under per-route limits and deadlines ([6aa353f](https://github.com/Wintersta7e/decision-spec-plan/commit/6aa353fed591da852e58900c3676095704ef4a23))
+* **dsp-monitor:** serve the full v1 state and run detail ([ee89b37](https://github.com/Wintersta7e/decision-spec-plan/commit/ee89b37023a9736d5d767d08c902e8b51e2ccef4))
+* **dsp-monitor:** show a route's stages, lanes, wave graph and agents ([e4be5d9](https://github.com/Wintersta7e/decision-spec-plan/commit/e4be5d95fa3cb3b2e00cdf4e587f6ead3118f571))
+* **dsp-route,hooks:** record TaskStop targets and AskUserQuestion calls ([9e4e5dc](https://github.com/Wintersta7e/decision-spec-plan/commit/9e4e5dc13aa4883318f1c108b218fa22c1c7dec7))
+* **dsp-route:** add the monitor switch read from DSP_MONITOR ([904961c](https://github.com/Wintersta7e/decision-spec-plan/commit/904961c6406210822bdd961f33b97a9c8c57ec80))
+* **dsp-route:** add the per-session event recorder ([be2cc44](https://github.com/Wintersta7e/decision-spec-plan/commit/be2cc446b2f946084ea23e49aef452f35451c26a))
+* **dsp-route:** add the stage strip and wave edges to report data ([f8c4f46](https://github.com/Wintersta7e/decision-spec-plan/commit/f8c4f46538ac22f22dab4e4edb01e69345e044d9))
+* **dsp-route:** bound git calls by a per-context deadline ([fd7cb48](https://github.com/Wintersta7e/decision-spec-plan/commit/fd7cb48938ee9473dbc86a6741a4fd13ed868f1f))
+* **dsp-route:** give each route run an id kept across activations ([cb661d3](https://github.com/Wintersta7e/decision-spec-plan/commit/cb661d37c4295460b3702157789b668b56559511))
+* **dsp-route:** keep a session's earlier routes in its registry entry ([cdf6d2f](https://github.com/Wintersta7e/decision-spec-plan/commit/cdf6d2fb44008909e2eed43f036e85cddd234538))
+* **dsp-route:** record a routed session's hook events when enabled ([5394a9c](https://github.com/Wintersta7e/decision-spec-plan/commit/5394a9c0fae46ed2dcd4ffdb7a117030868ed857))
+* **dsp-route:** return the route report as data before rendering it ([0ae9db2](https://github.com/Wintersta7e/decision-spec-plan/commit/0ae9db2464530925abdd06cd33c766950bdd8b1d))
+* **hooks,dsp-route:** register the guarded recording hooks ([d3722ed](https://github.com/Wintersta7e/decision-spec-plan/commit/d3722edad01720df74399b7d2903686fea2a22a0))
+
+
+### Bug Fixes
+
+* **dsp-monitor:** show 24-hour times and a blocked glyph every font has ([b93330c](https://github.com/Wintersta7e/decision-spec-plan/commit/b93330c0b181a8008177e715b7ab06dfdfbf80da))
+* **dsp-monitor:** time refresh intervals on the monotonic clock ([2c557d9](https://github.com/Wintersta7e/decision-spec-plan/commit/2c557d9a1d77ad6939477c8a9d6ade9d1a7bc03d))
+* **dsp-monitor:** use label glyphs every font draws ([e1fec14](https://github.com/Wintersta7e/decision-spec-plan/commit/e1fec1440c877915bac618d1ee46868823f74ff5))
+* **dsp-route,gate:** run git without optional locks ([016d68e](https://github.com/Wintersta7e/decision-spec-plan/commit/016d68efb03d77a1f61ed6ea24de514038bb667b))
+* **dsp-route:** claim the hook's throttle window atomically ([a308169](https://github.com/Wintersta7e/decision-spec-plan/commit/a30816909b370b687e0a345051d83262c82270d4))
+* **dsp-route:** keep the injected report per session ([e32d159](https://github.com/Wintersta7e/decision-spec-plan/commit/e32d1592fb57a839e939a3daef96dddb943721ff))
+* **dsp-route:** replace the marker and entry atomically in the hook ([59a2138](https://github.com/Wintersta7e/decision-spec-plan/commit/59a2138c67e0509e06e10096077840c61649df46))
+* **dsp-route:** retry the event-log lock in 50 short attempts ([407a42b](https://github.com/Wintersta7e/decision-spec-plan/commit/407a42b0531f99bc021daf0af40df91e91735a12))
+* **record,docs:** stop recording free-text event fields ([c8bb84d](https://github.com/Wintersta7e/decision-spec-plan/commit/c8bb84da402af582c3ae9f8285cdeef301d40442))
+* **scope-check,test-check:** accept only a revision range for --diff ([e513dfd](https://github.com/Wintersta7e/decision-spec-plan/commit/e513dfd8853a37c8cae9759c61c379aa270defa6))
+* **tests:** count the recorder's lock give-ups in the parallel test ([d123ff2](https://github.com/Wintersta7e/decision-spec-plan/commit/d123ff25854f3b1790d73fbefaead88bbad6c662))
+* **tests:** time the monitor probe on the monotonic clock ([43ff719](https://github.com/Wintersta7e/decision-spec-plan/commit/43ff719e0872311c577527fc1cfb81600027ec3c))
+* **usage-report,dsp-route:** count hooks of a lead outside its repo ([b8b170b](https://github.com/Wintersta7e/decision-spec-plan/commit/b8b170bf977356a7a36e4e4792162e6bde42c824))
+* **usage-report,dsp-route:** count hooks of removed in-repo worktrees ([1498fcb](https://github.com/Wintersta7e/decision-spec-plan/commit/1498fcb372d88982b2100ee12390aa05052774a2))
+
+
+### Performance Improvements
+
+* **dsp-route,route-state:** cache the lanes proven merged ([7eda512](https://github.com/Wintersta7e/decision-spec-plan/commit/7eda512dd4cfb38880d48a7333c0d7e0bc354623))
+* **dsp-route:** load shutil only when git runs ([0881521](https://github.com/Wintersta7e/decision-spec-plan/commit/08815218811ff734a00c230e1000e9126767239e))
+
 ## [1.2.0](https://github.com/Wintersta7e/decision-spec-plan/compare/v1.1.3...v1.2.0) (2026-11-12)
 
 
