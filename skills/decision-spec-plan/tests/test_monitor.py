@@ -1310,7 +1310,7 @@ def git_of(state: dict[str, object], key: str) -> dict[str, object]:
 def refreshed(model: dsp_monitor.Model) -> dsp_monitor.Refresher:
     """A refresher that ran, in-process, every refresh due on model."""
     ref = dsp_monitor.Refresher(lambda: None)
-    ref.due(model, time.time())
+    ref.due(model, time.monotonic())
     ref.pool.shutdown(wait=True)
     return ref
 
@@ -1467,6 +1467,32 @@ class Refresh(support.MonitorSandbox):
             f"{len(free)} git-free collects, none under a deadline", free and not bound
         )
 
+    def test_wall_step_back_keeps_refreshing(self) -> None:
+        """The wall clock stepping an hour back delays no refresh that comes due."""
+        m, d = self.machine()
+        probe, step = d / "probe.jsonl", d / "step"
+        plan = str(m.routes["route-a"].plan)
+        mon = self.monitor_on(m, consts=QUICK, probe=probe, wall_step=(step, -3600))
+
+        def collects(since: float) -> int:
+            return sum(
+                x["what"] == "collect"
+                and x["planning_dir"] == plan
+                and cast("float", x["t0"]) > since
+                for x in probed(probe)
+            )
+
+        some = len(["one", "the next"])
+        _ = mon.wait(lambda _: collects(0) >= some, timeout=30)
+        _ = step.write_text("")
+        t_step = time.monotonic() + 0.2
+        end = t_step + 5 * QUICK["FREE_TTL_S"]
+        while time.monotonic() < end:
+            _ = mon.state()
+            time.sleep(0.2)
+        after = collects(t_step)
+        self.ok(f"route-a: {after} refreshes after the step", after >= some, after)
+
     def test_deadline_halves_only_when_fast(self) -> None:
         """A refresh between d and 2 d: slow once, then fresh, and fresh again."""
         from dsp_route import report
@@ -1488,7 +1514,7 @@ class Refresh(support.MonitorSandbox):
             ref = dsp_monitor.Refresher(lambda: None)
             for i in range(3):
                 # a scan far enough on that the git tier is due each time
-                ref.due(model, time.time() + 10_000 * (i + 1))
+                ref.due(model, time.monotonic() + 10_000 * (i + 1))
                 end = time.monotonic() + 20
                 while ref.routes[a.key].busy and time.monotonic() < end:
                     time.sleep(0.05)

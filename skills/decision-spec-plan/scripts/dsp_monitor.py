@@ -1810,7 +1810,7 @@ class Reports:
 
     files: the newest object of either tier; git: the newest good git-tier object;
     deadline, interval: the git tier's current deadline and interval; *_at: when
-    each tier was last submitted; *_sig: what it last saw.
+    each tier was last submitted, on `time.monotonic()`; *_sig: what it last saw.
     """
 
     deadline: float
@@ -1892,7 +1892,8 @@ class Refresher:
 
         Args:
             model: The newest model.
-            now: The scan's time.
+            now: The scan's `time.monotonic()`: intervals compare only with this
+                refresher's own stamps, and a wall-clock step must not move them.
         """
         for route in model.routes.values():
             run = route.reported
@@ -2104,7 +2105,7 @@ def scan_forever(live: Live, scanner: Scanner) -> None:
         now = time.time()
         model = discover(scanner.scan(now), model, now)
         if live.refresher is not None:
-            live.refresher.due(model, now)
+            live.refresher.due(model, time.monotonic())
         live.publish(model)
         time.sleep(SCAN_S)
 

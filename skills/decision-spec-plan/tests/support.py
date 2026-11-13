@@ -726,6 +726,8 @@ class Route(Sandbox):
 # was set, its argv and timeout (run), and its start and end. Start and end are
 # time.monotonic(), the clock the monitor's deadlines run on: the wall clock can step
 # forward mid-call (a VM's clock sync does, by seconds), which reads as a late call.
+# With "wall_step" (a file, seconds), time.time() reads that many seconds more from
+# the moment the file exists: a negative value is a backward wall-clock step.
 MONITOR_ENTRY: Final[str] = """
 import json, os, pathlib, sys, threading, time
 opts = json.loads(sys.argv[1])
@@ -735,6 +737,15 @@ for name, value in opts["set"].items():
     if not hasattr(dsp_monitor, name):
         sys.exit(3)
     setattr(dsp_monitor, name, tuple(value) if isinstance(value, list) else value)
+if opts["wall_step"] is not None:
+    step_file, step_by = opts["wall_step"]
+    wall, offset = time.time, [0.0]
+    time.time = lambda: wall() + offset[0]
+    def step():
+        while not os.path.exists(step_file):
+            time.sleep(0.01)
+        offset[0] = step_by
+    threading.Thread(target=step, daemon=True).start()
 if opts["page"] is not None:
     dsp_monitor.PAGE = pathlib.Path(opts["page"])
 if opts["delete_nice"]:
@@ -778,19 +789,21 @@ class MonitorOptions(TypedDict, total=False):
     page: StrPath
     delete_nice: bool
     probe: StrPath
+    wall_step: tuple[StrPath, float]
     path_prefix: Iterable[StrPath]
     port: int
 
 
 def monitor_cmd(*args: object, **kw: Unpack[MonitorOptions]) -> list[str]:
     """The command line of the monitor's test entry: `--port <port>` (0) then args."""
-    page, probe = kw.get("page"), kw.get("probe")
+    page, probe, step = kw.get("page"), kw.get("probe"), kw.get("wall_step")
     opts = {
         "scripts": str(SCRIPTS),
         "set": dict(kw.get("consts") or {}),
         "page": None if page is None else str(page),
         "delete_nice": kw.get("delete_nice", False),
         "probe": None if probe is None else str(probe),
+        "wall_step": None if step is None else [str(step[0]), step[1]],
         "argv": ["--port", str(kw.get("port", 0)), *map(str, args)],
     }
     return [PY, "-c", MONITOR_ENTRY, json.dumps(opts)]
