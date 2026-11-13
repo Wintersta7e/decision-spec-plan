@@ -45,6 +45,9 @@ button:hover { background: var(--bg); }
 #banners .banner[data-banner=down] { color: var(--bad); }
 #banners .banner[data-banner=upgraded] { color: var(--info); }
 #sheet { margin: 0.75rem 1rem; padding: 0.5rem 1rem; border: 1px solid var(--line); background: var(--card); }
+kbd { font-family: ui-monospace, monospace; font-size: 0.9em; padding: 0 0.3rem; border: 1px solid var(--line); border-radius: 4px; }
+.ended { margin-bottom: 1.25rem; }
+.ended h3 { margin-bottom: 0.1rem; }
 main { padding: 0.75rem 1rem 2rem; max-width: 1400px; }
 h2 { font-size: 1rem; margin: 1rem 0 0.4rem; }
 .band ul { list-style: none; margin: 0; padding: 0; }
@@ -269,7 +272,36 @@ const LABELS = /* dsp:labels */ {
     "gate_sha": "sha",
     "gate_dirty": "dirty",
     "gate_exit": "exit",
-    "gate_harness": "harness"
+    "gate_harness": "harness",
+    "ended_heading": "Ended routes",
+    "ended_empty": "No ended runs",
+    "ended_run": "Ended · last active {date} · current files, as of {files_as_of} · git not tracked",
+    "files_not_kept": "Files not kept for earlier runs",
+    "current_files": "current files, as of {time}",
+    "run_col": "run",
+    "first_seen": "first seen",
+    "sessions": "sessions",
+    "agent_count": "agents",
+    "recording_col": "recording",
+    "report_col": "report",
+    "report_kept": "kept",
+    "run_loading": "Loading this run…",
+    "run_failed": "Could not load this run",
+    "key_overview": "o, Esc",
+    "do_overview": "overview",
+    "key_ended": "e",
+    "do_ended": "ended routes",
+    "key_route": "1–9",
+    "do_route": "open the nth active route",
+    "key_move": "j, k",
+    "do_move": "move to the next or previous item",
+    "key_open": "Enter",
+    "do_open": "open the focused item",
+    "key_refresh": "r",
+    "do_refresh": "refresh now",
+    "key_theme": "t",
+    "do_theme": "switch theme: auto, light, dark",
+    "do_help": "show or hide this sheet"
   }
 } /* /dsp:labels */;
 const PAGE = /* dsp:page */ {
@@ -286,12 +318,16 @@ const THEMES = ["auto", "light", "dark"];
 const THEME_TEXT = {auto: copy.theme_auto, light: copy.theme_light, dark: copy.theme_dark};
 const THEME_KEY = "dsp-monitor-theme";
 const ROUTE_PREFIX = "#/r/";
+const RUN_PREFIX = "#/run/";
+const ENDED_HASH = "#/ended";
 /* the wave graph's layout, in SVG user units */
 const GRAPH = {col: 190, node_w: 150, node_h: 40, gap: 12, pad: 40, head: 28, bend: 36,
   bracket: 8, radius: 6, text_x: 10, line1: 17, line2: 33};
 
 const poll = {timer: 0, busy: false, failures: 0, failedAt: null, text: "", state: null, first: null};
 const ui = {expanded: new Set(), updated: null, theme: null, help: null};
+/* run key -> {rev, body, busy, failed}: an ended run's /api/run answer and the rev it was fetched at */
+const runs = new Map();
 
 /* An element with attributes and children; a string child becomes its text. URLs are
    set only by link(), so this never writes a URL attribute. */
@@ -428,7 +464,13 @@ function buildHeader() {
   ui.help = el("button", {"type": "button", "aria-label": copy.help_label, "aria-expanded": "false"}, copy.help);
   ui.help.addEventListener("click", toggleSheet);
   head.replaceChildren(title, ui.updated, refresh, ui.theme, ui.help);
-  document.getElementById("sheet").replaceChildren(el("h2", {}, copy.help_label));
+  const lines = [
+    [copy.key_overview, copy.do_overview], [copy.key_ended, copy.do_ended], [copy.key_route, copy.do_route],
+    [copy.key_move, copy.do_move], [copy.key_open, copy.do_open], [copy.key_refresh, copy.do_refresh],
+    [copy.key_theme, copy.do_theme], [copy.help, copy.do_help],
+  ];
+  document.getElementById("sheet").replaceChildren(el("h2", {}, copy.help_label), el("dl", {"class": "facts keys"},
+    lines.flatMap(([k, what]) => [el("dt", {}, [el("kbd", {}, k)]), el("dd", {}, what)])));
 }
 
 function renderChrome() {
@@ -586,12 +628,14 @@ function grid(cls, heads, rows) {
   ])]);
 }
 
-/* The chips every run shows: recording, and git with the time its facts are from. */
+/* The chips every run shows: recording, git with the time its facts are from, and for an
+   ended run whose report was read from today's files, the time of those files. */
 function runChips(run) {
   return [
     chip("recording", run.recording),
     chip("git_state", run.git.state),
     run.git.as_of ? el("span", {"class": "when"}, fmt(copy.as_of, {time: hhmm(run.git.as_of)})) : null,
+    run.current_files ? el("span", {"class": "chip"}, fmt(copy.current_files, {time: stamp(run.files_as_of)})) : null,
   ];
 }
 
@@ -820,8 +864,9 @@ function gateTable(logs) {
     ])));
 }
 
-/* Everything below a run's header: report error, stages, budget, board, graph, agents, gates. */
-function runSections(run, nowMs, key) {
+/* Everything below a run's header: report error, stages, budget, board, graph, agents, gates.
+   ended: the state lists the run under ended, whose files may be gone when it has no report. */
+function runSections(run, nowMs, key, ended) {
   const rep = run.report;
   const out = [];
   if (run.report_error !== null) {
@@ -829,8 +874,10 @@ function runSections(run, nowMs, key) {
   }
   if (rep) {
     out.push(el("h3", {}, copy.stages_heading), stageStrip(rep.stages));
-  } else {
+  } else if (!ended) {
     out.push(el("p", {"class": "empty"}, copy.no_report));
+  } else if (run.report_error === null) {
+    out.push(el("p", {"class": "empty"}, copy.files_not_kept));
   }
   out.push(budgetPanel(run.budget));
   if (rep) {
@@ -858,7 +905,101 @@ function renderRoute(s, root, key) {
   if (run.recording_hint !== null) {
     root.append(el("p", {"class": "hint"}, run.recording_hint));
   }
-  root.append(...runSections(run, Date.now(), r.key));
+  root.append(...runSections(run, Date.now(), r.key, false));
+}
+
+/* --- ended routes and an ended run's read-only detail */
+
+function renderEnded(s, root) {
+  root.append(el("h2", {}, copy.ended_heading));
+  if (!s.ended.length) {
+    root.append(el("p", {"class": "empty"}, copy.ended_empty));
+  }
+  for (const r of s.ended) {
+    root.append(el("section", {"class": "ended"}, [
+      el("h3", {}, r.name),
+      el("p", {"class": "muted mono"}, r.planning_dir),
+      grid("", [copy.run_col, copy.first_seen, copy.last_active, copy.sessions, copy.agent_count,
+        copy.recording_col, copy.report_col], r.runs.map((x) => el("tr", {}, [
+        el("td", {"class": "mono"}, [link("run/" + encodeURIComponent(x.key), shown(x.run === null ? x.key : x.run),
+          "run:" + x.key)]),
+        el("td", {}, stamp(x.first_seen_at)),
+        el("td", {}, stamp(x.last_activity_at)),
+        el("td", {}, shown(x.sessions)),
+        el("td", {}, shown(x.agents)),
+        el("td", {}, [chip("recording", x.recording)]),
+        el("td", {}, x.has_report ? copy.report_kept : copy.files_not_kept),
+      ]))),
+    ]));
+  }
+}
+
+/* The ended entry listing the run with this key, and its route; null when none does. */
+function endedRun(s, key) {
+  for (const r of s.ended) {
+    const hit = r.runs.find((x) => x.key === key);
+    if (hit) {
+      return {route: r, run: hit};
+    }
+  }
+  return null;
+}
+
+/* The run's cached /api/run answer, fetched when absent or fetched at another rev. */
+function loadRun(key, rev) {
+  const have = runs.get(key);
+  if (have && (have.busy || have.rev === rev)) {
+    return have;
+  }
+  const entry = {rev: rev, body: have ? have.body : null, busy: true, failed: false};
+  runs.set(key, entry);
+  const ctl = new AbortController();
+  const abort = setTimeout(() => ctl.abort(), PAGE.abort_ms);
+  fetch("/api/run?key=" + encodeURIComponent(key), {signal: ctl.signal, cache: "no-store"})
+    .then((res) => {
+      if (!res.ok) {
+        throw new Error(String(res.status));
+      }
+      return res.json();
+    })
+    .then((body) => {
+      entry.body = body;
+    })
+    .catch(() => {
+      entry.failed = true;
+    })
+    .finally(() => {
+      clearTimeout(abort);
+      entry.busy = false;
+      render();
+    });
+  return entry;
+}
+
+function renderRun(s, root, key) {
+  const hit = endedRun(s, key);
+  const entry = loadRun(key, hit ? hit.run.rev : null);
+  if (!entry.body) {
+    root.append(el("p", {"class": entry.failed ? "error" : "empty"}, entry.failed ? copy.run_failed : copy.run_loading));
+    root.append(link("ended", fmt(copy.ended_link, {n: s.counts.ended}), "ended"));
+    return;
+  }
+  const run = entry.body.run;
+  root.append(el("div", {"class": "detail-head"}, [
+    el("h2", {}, entry.body.route.name),
+    el("div", {"class": "chips"}, [chip("run_state", run.state), ...runChips(run)]),
+  ]));
+  root.append(el("p", {"class": "muted mono"}, entry.body.route.planning_dir));
+  if (hit) {
+    root.append(el("p", {"class": "hint"}, fmt(copy.ended_run, {
+      date: stamp(run.last_activity_at),
+      files_as_of: stamp(run.files_as_of),
+    })));
+  }
+  if (run.recording_hint !== null) {
+    root.append(el("p", {"class": "hint"}, run.recording_hint));
+  }
+  root.append(...runSections(run, Date.now(), "run:" + key, Boolean(hit)));
 }
 
 /* --- rendering: one view per hash, focus kept on the element with the same data-key */
@@ -875,6 +1016,13 @@ function viewFor(hash) {
   if (hash.startsWith(ROUTE_PREFIX)) {
     const key = decoded(hash.slice(ROUTE_PREFIX.length));
     return (s, root) => renderRoute(s, root, key);
+  }
+  if (hash.startsWith(RUN_PREFIX)) {
+    const key = decoded(hash.slice(RUN_PREFIX.length));
+    return (s, root) => renderRun(s, root, key);
+  }
+  if (hash === ENDED_HASH) {
+    return renderEnded;
   }
   return renderOverview;
 }
@@ -954,9 +1102,77 @@ function refreshNow() {
   }
 }
 
+/* A view opened: a run whose fetch failed is fetched again. */
+function opened() {
+  for (const [key, entry] of runs) {
+    if (entry.failed) {
+      runs.delete(key);
+    }
+  }
+  render();
+}
+
+/* --- keyboard: navigation clicks a detached same-page link */
+
+function go(path) {
+  const a = document.createElement("a");
+  a.setAttribute("href", "#/" + path);
+  a.click();
+}
+
+/* Focus the next (step 1) or previous (step -1) visible element with a data-key. */
+function move(step) {
+  const nodes = [...document.querySelectorAll("[data-key]")].filter((n) => n.getClientRects().length);
+  if (!nodes.length) {
+    return;
+  }
+  const i = nodes.indexOf(document.activeElement);
+  const next = i < 0 ? (step > 0 ? 0 : nodes.length - 1) : Math.min(Math.max(i + step, 0), nodes.length - 1);
+  nodes[next].focus();
+}
+
+function openRoute(n) {
+  const r = poll.state ? poll.state.routes[n] : undefined;
+  if (r) {
+    go("r/" + encodeURIComponent(r.key));
+  }
+}
+
+const KEYS = {
+  "o": () => go(""),
+  "Escape": () => go(""),
+  "e": () => go("ended"),
+  "j": () => move(1),
+  "k": () => move(-1),
+  "r": refreshNow,
+  "t": cycleTheme,
+  "?": toggleSheet,
+};
+const DIGITS = "123456789";
+
+/* Enter is left to the focused link or button; no shortcut fires with a modifier held
+   or while focus is in an editable element. */
+function onKey(e) {
+  const t = e.target;
+  if (e.ctrlKey || e.altKey || e.metaKey || e.defaultPrevented
+    || (t instanceof Element && (t.isContentEditable || t.closest("input, textarea, select")))) {
+    return;
+  }
+  const n = e.key.length === 1 ? DIGITS.indexOf(e.key) : -1;
+  if (n >= 0) {
+    openRoute(n);
+  } else if (Object.hasOwn(KEYS, e.key)) {
+    KEYS[e.key]();
+  } else {
+    return;
+  }
+  e.preventDefault();
+}
+
 buildHeader();
 applyTheme(storedTheme());
-window.addEventListener("hashchange", render);
+window.addEventListener("hashchange", opened);
+document.addEventListener("keydown", onKey);
 document.addEventListener("visibilitychange", () => {
   if (!poll.busy) {
     schedule();
