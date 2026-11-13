@@ -1,14 +1,17 @@
 # SPDX-License-Identifier: MIT
 """The monitor page, `dsp_monitor.html`, read as text.
 
-T1 scans it for anything that could request a resource off its origin, T3 holds its
-labels to the Python enums, and the literal scan proves its script compares no status
-and no interval of the server's.
+T1 scans it for anything that could request a resource off its origin, T2 checks the
+server sends it unchanged under its CSP, T3 holds its labels to the Python enums, and
+the literal scan proves its script compares no status and no interval of the server's.
 """
 
+import base64
+import hashlib
 import json
 import math
 import re
+from http import HTTPStatus
 from typing import Final, NamedTuple, cast
 
 import dsp_monitor
@@ -34,6 +37,12 @@ STATUS: Final = frozenset(
     + dsp_monitor.ATTENTION
 )
 SVG_NS: Final = "http://www.w3.org/2000/svg"
+# §4.9's Content-Security-Policy, the two sources filled by the test
+CSP: Final = (
+    "default-src 'none'; script-src {script}; style-src {style}; "
+    "connect-src 'self'; img-src data:; base-uri 'none'; form-action 'none'; "
+    "frame-ancestors 'none'"
+)
 PLANTED_IMG: Final = '<img src="https://x.invalid/">'
 PLANTED_HTML: Final = "el.innerHTML = s;"
 PLANTED_STATUS: Final = "if (r.status === 'idle') {}\nif (a > 720000) {}\n"
@@ -398,3 +407,41 @@ class NoComputation(support.Sandbox):
         _, _, script = page_parts(PAGE.read_text(encoding="utf-8"))
         got = json_block(script, "page")
         self.ok(f"dsp:page: {got}", got == PAGE_NUMBERS, PAGE_NUMBERS)
+
+
+def csp_source(body: str) -> str:
+    """The CSP source naming a `<script>` or `<style>` body: its UTF-8 sha256."""
+    return (
+        "'sha256-"
+        + base64.b64encode(hashlib.sha256(body.encode()).digest()).decode()
+        + "'"
+    )
+
+
+class ServedPage(support.MonitorSandbox):
+    """T2: the server sends the file unchanged, under §4.9's headers (AC-P1-4-31)."""
+
+    def test_served_page(self) -> None:
+        """GET / is the file's bytes; its CSP hashes the file's script and style."""
+        raw = PAGE.read_bytes()
+        _, style, script = page_parts(raw.decode("utf-8"))
+        m = self.start_monitor()
+        try:
+            code, headers, body = m.get("/", host=f"127.0.0.1:{m.port}")
+            state = m.state()
+        finally:
+            _ = m.stop()
+        self.ok(f"GET /: {code}, {len(body)} B", code == HTTPStatus.OK, code)
+        self.ok(f"the body is the file's {len(raw)} B", body == raw)
+        want = {
+            "content-type": "text/html; charset=utf-8",
+            "cache-control": "no-store",
+            "x-content-type-options": "nosniff",
+            "content-security-policy": CSP.format(
+                script=csp_source(script), style=csp_source(style)
+            ),
+        }
+        for name, value in want.items():
+            self.ok(f"{name}: {value}", headers.get(name) == value, headers.get(name))
+        digest = hashlib.sha256(raw).hexdigest()[:12]
+        self.ok(f"page: {digest}", state.get("page") == digest, state.get("page"))
