@@ -395,6 +395,23 @@ class PluginFiles(support.Sandbox):
         for said in ("dsp_monitor", "HTML page"):
             self.ok(f"Layout's scripts/ line says {said!r}", said in line, line)
 
+    def test_readme_publishes_no_outbound_after_the_browser_check(self) -> None:
+        """README's Monitor section says the page requests nothing but its own server.
+
+        Published only after a headless browser loaded every view and logged no other
+        origin.
+        """
+        readme = (PLUGIN.parents[1] / "README.md").read_text(encoding="utf-8")
+        head = re.search(r"^## Monitor$", readme, re.MULTILINE)
+        section = ""
+        if head:
+            rest = readme[head.end() :]
+            nxt = re.search(r"^## ", rest, re.MULTILINE)
+            section = rest[: nxt.start()] if nxt else rest
+        text = " ".join(section.split())
+        said = "requests nothing but its own server"
+        self.ok(f"README's Monitor section says {said!r}", said in text, text)
+
     def test_skill_fits_a_compaction(self) -> None:
         """SKILL.md stays under the size a compaction re-attaches."""
         # a compaction re-attaches SKILL.md cut at 20,000 characters (failure-modes F61)

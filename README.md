@@ -203,7 +203,8 @@ stages and lanes. It starts only by hand and prints the page's URL; Ctrl-C stops
 command up from [INSTALL.md](INSTALL.md) (a shell function and an alias for your rc file).
 
 It writes nothing anywhere: no lock, PID, cache or log file. Its git reads take no lock, so a
-session's commits never wait on it.
+session's commits never wait on it. The page requests nothing but its own server: no font, script,
+image or other file from anywhere else.
 
 Who can read it:
 
