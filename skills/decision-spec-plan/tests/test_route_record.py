@@ -29,13 +29,17 @@ from dsp_route.record import record
 for event, entry, t0, decision in json.load(sys.stdin):
     record(event, entry, t0, decision and (decision[0], decision[1]))"""
 
-# argv: scripts, the writer's name, a line count: that many distinct post lines
+# argv: scripts, the writer's name, a line count: that many distinct post lines; prints
+# how many the lock gave up on (the designed drop), counted where `_append` asks for it
 WRITER = """import sys
 sys.path.insert(0, sys.argv[1])
-from dsp_route.record import record
+from dsp_route import record as r
+locked, gave_up = r._locked, []
+r._locked = lambda fd: locked(fd) or gave_up.append(fd) or False
 for k in range(int(sys.argv[3])):
-    record({"session_id": "s1", "hook_event_name": "PostToolUse", "tool_name": "Read",
-            "tool_use_id": f"{sys.argv[2]}-{k}"}, {"run": "r1"}, 1.0, None)"""
+    r.record({"session_id": "s1", "hook_event_name": "PostToolUse", "tool_name": "Read",
+              "tool_use_id": f"{sys.argv[2]}-{k}"}, {"run": "r1"}, 1.0, None)
+print(len(gave_up))"""
 
 # argv: the log, a ready file: holds the log's flock until killed
 HOLD = """import fcntl, os, pathlib, sys, time
@@ -246,18 +250,26 @@ class Recorder(support.Sandbox):
         self.ok(f"{len(calls)} posts: targets {got}", got == want, got)
 
     def test_parallel_writers(self) -> None:
-        """40 processes x 200 lines on one log: none torn, none lost."""
+        """40 processes x 200 lines on one log: none torn, each loss a lock give-up.
+
+        A writer whose lock tries run out drops its line by design (LOCK_TRIES); on a
+        starved CPU a few do (5-6 of 8000 measured on one loaded core). A line lost any
+        other way, a line written twice, or more than 1% dropped, fails.
+        """
         procs, lines = 40, 200
         writers = [
             subprocess.Popen(
                 [PY, "-c", WRITER, SCRIPTS, f"w{i}", str(lines)],
                 env=self.env,
-                stdout=subprocess.DEVNULL,
+                stdout=subprocess.PIPE,
                 stderr=subprocess.DEVNULL,
+                text=True,
             )
             for i in range(procs)
         ]
-        codes = [w.wait(timeout=300) for w in writers]
+        outs = [w.communicate(timeout=300)[0] for w in writers]
+        codes = [w.returncode for w in writers]
+        dropped = sum(int(o) for o in outs)
         written = torn = 0
         tuids: set[object] = set()
         for text in self.log.read_text().splitlines():
@@ -268,11 +280,12 @@ class Recorder(support.Sandbox):
                 torn += 1
         lost = procs * lines - len(tuids)
         self.ok(
-            f"written {written}, torn {torn}, lost {lost}",
+            f"written {written}, torn {torn}, lost {lost}, dropped {dropped}",
             codes == [0] * procs
-            and written == procs * lines
+            and written == len(tuids)
             and torn == 0
-            and lost == 0,
+            and lost == dropped
+            and dropped <= procs * lines // 100,
             codes,
         )
 
