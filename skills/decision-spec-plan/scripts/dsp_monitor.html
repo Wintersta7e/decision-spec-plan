@@ -190,7 +190,7 @@ const LABELS = /* dsp:labels */ {
   "board_column": {
     "queued": {"text": "queued", "glyph": "◷"}, "running": {"text": "running", "glyph": "▶"},
     "ready": {"text": "ready", "glyph": "◆"}, "merged": {"text": "merged", "glyph": "✓"},
-    "blocked": {"text": "blocked", "glyph": "⛔"}, "failed": {"text": "failed", "glyph": "✗"}
+    "blocked": {"text": "blocked", "glyph": "⊗"}, "failed": {"text": "failed", "glyph": "✗"}
   },
   "copy": {
     "title": "dsp monitor",
@@ -390,7 +390,7 @@ function hhmm(iso) {
   if (!iso) {
     return copy.missing;
   }
-  return new Date(iso).toLocaleTimeString([], {hour: "2-digit", minute: "2-digit"});
+  return new Date(iso).toLocaleTimeString([], {hour: "2-digit", minute: "2-digit", hourCycle: "h23"});
 }
 
 function age(iso, nowMs) {
@@ -601,7 +601,7 @@ function stamp(iso) {
   if (!iso) {
     return copy.missing;
   }
-  return new Date(iso).toLocaleString([], {dateStyle: "medium", timeStyle: "short"});
+  return new Date(iso).toLocaleString([], {dateStyle: "medium", timeStyle: "short", hourCycle: "h23"});
 }
 
 function dur(s) {
