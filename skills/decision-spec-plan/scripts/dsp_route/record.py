@@ -4,9 +4,9 @@
 `record()` builds the line from the payload, the session's registry entry and the
 call's decision, and appends it to `EVENTS/<session>.jsonl` under an `flock`; `sweep()`
 removes logs and heartbeat stamps past `RETENTION_DAYS`. No prompt, message, tool
-input beyond the named fields, or tool output is ever stored. Both raise what they
-meet: the hook calls them through `common.checked`, so a failure costs one line, never
-the call.
+input beyond the named fields, error text, working directory or tool output is ever
+stored. Both raise what they meet: the hook calls them through `common.checked`, so a
+failure costs one line, never the call.
 """
 
 import contextlib
@@ -80,7 +80,6 @@ _OPEN = (
     | getattr(os, "O_NONBLOCK", 0)
     | getattr(os, "O_NOFOLLOW", 0)
 )
-_API_ERROR = re.compile(r"[a-z0-9_]{1,40}")
 _HOLD = re.compile(r"\(F(\d+)\)")
 _GAP_VALUE = 40
 # the launch statuses of an Agent call and the mode each starts
@@ -92,14 +91,9 @@ _USAGE = (
     "cache_read_input_tokens",
 )
 # (kind, field): the field's length limit
-_LIMITS = {
-    ("dispatch", "desc"): 200,
-    ("pre", "desc"): 120,
-    ("failed", "error"): 200,
-    ("post", "target"): 128,
-}
+_LIMITS = {("post", "target"): 128}
 # what goes, in turn, while a line is over LINE_MAX; then only _JOIN stays
-_DROPS = (("desc", "error", "cwd"), ("planning_dir", "marker"))
+_DROPS = (("planning_dir", "marker"),)
 _JOIN = ("v", "ts", "session", "run", "hook", "ev")
 
 Fields = dict[str, object]
@@ -143,17 +137,12 @@ def _pre(event: Mapping[str, object]) -> Built:
             fields,
             given,
             ("name", "name", str),
-            ("desc", "description", str),
             ("subagent_type", "subagent_type", str),
         )
         bg = given.get("run_in_background")
         fields["bg"] = bg is True or bg == "true"
         return "dispatch", fields, gaps
     _copy(fields, event, ("tool", "tool_name", str))
-    if tool == "Bash":
-        _copy(fields, given, ("desc", "description", str))
-    elif tool == "SendMessage":
-        _copy(fields, given, ("to", "to", str))
     return "pre", fields, gaps
 
 
@@ -209,15 +198,10 @@ def _post(event: Mapping[str, object]) -> Built:
 
 
 def _failed(event: Mapping[str, object]) -> Built:
-    """PostToolUseFailure: an Agent call that failed, its error's first line only."""
+    """PostToolUseFailure: an Agent call that failed, never its error text."""
     fields: Fields = {}
     gaps = _tool(event, fields)
     _copy(fields, _sub(event, "tool_input"), ("name", "name", str))
-    error = event.get("error")
-    if isinstance(error, str):
-        fields["error"] = (error.splitlines() or [""])[0]
-    else:
-        gaps.append("error")
     _copy(
         fields, event, ("interrupt", "is_interrupt", bool), ("ms", "duration_ms", int)
     )
@@ -244,14 +228,6 @@ def _turn_end(event: Mapping[str, object]) -> Built:
     return "turn-end", {"bg_tasks": len(running)}, []
 
 
-def _api_error(event: Mapping[str, object]) -> Built:
-    """StopFailure: the error only when it is an enum value, never free text."""
-    error = event.get("error")
-    if isinstance(error, str) and _API_ERROR.fullmatch(error):
-        return "api-error", {"error": error}, []
-    return "api-error", {}, ["error"]
-
-
 # hook: (kind, (key, field) copied as str, the fields whose absence is a gap)
 _PLAIN: dict[str, tuple[str, tuple[tuple[str, str], ...], tuple[str, ...]]] = {
     "SubagentStart": ("start", (), ("agent_id", "agent_type")),
@@ -265,6 +241,7 @@ _PLAIN: dict[str, tuple[str, tuple[tuple[str, str], ...], tuple[str, ...]]] = {
     "PostCompact": ("compact", (("trigger", "trigger"),), ()),
     "SessionStart": ("session", (("source", "source"),), ()),
     "SessionEnd": ("session-end", (("reason", "reason"),), ()),
+    "StopFailure": ("api-error", (), ()),
 }
 _BUILDERS: dict[str, Callable[[Mapping[str, object]], Built]] = {
     "PreToolUse": _pre,
@@ -272,7 +249,6 @@ _BUILDERS: dict[str, Callable[[Mapping[str, object]], Built]] = {
     "PostToolUseFailure": _failed,
     "UserPromptSubmit": _prompt,
     "Stop": _turn_end,
-    "StopFailure": _api_error,
 }
 
 
@@ -358,13 +334,7 @@ def record(
         common, entry, ("planning_dir", "planning_dir", str), ("marker", "marker", str)
     )
     common |= {"hook": name, "ev": kind}
-    _copy(
-        common,
-        event,
-        ("agent", "agent_id", str),
-        ("atype", "agent_type", str),
-        ("cwd", "cwd", str),
-    )
+    _copy(common, event, ("agent", "agent_id", str), ("atype", "agent_type", str))
     obj = common | fields
     if decision is not None and kind in ("dispatch", "pre"):
         obj["decision"] = decision[0]

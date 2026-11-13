@@ -68,6 +68,8 @@ ENTRY: dict[str, object] = {
     "planning_dir": "/p",
     "marker": "/r/dsp-route.json",
 }
+# free text of a payload that no line may carry
+FREE = ("desc", "to", "error", "cwd")
 
 Call = tuple[Mapping[str, object], Mapping[str, object], float, list[str] | None]
 
@@ -77,10 +79,10 @@ def event(hook: str, **fields: object) -> dict[str, object]:
     return {"session_id": "s1", "hook_event_name": hook, **fields}
 
 
-def post(tuid: str, agent: str | None = None, cwd: str = "/w") -> dict[str, object]:
+def post(tuid: str, agent: str | None = None) -> dict[str, object]:
     """A PostToolUse of Read, by agent (None: the lead)."""
     extra: dict[str, object] = {} if agent is None else {"agent_id": agent}
-    return event("PostToolUse", tool_name="Read", tool_use_id=tuid, cwd=cwd, **extra)
+    return event("PostToolUse", tool_name="Read", tool_use_id=tuid, cwd="/w", **extra)
 
 
 @contextlib.contextmanager
@@ -149,7 +151,7 @@ class Recorder(support.Sandbox):
         )
 
     def test_line_cap(self) -> None:
-        """Cut fields and an oversized line keep the line within LINE_MAX, with run."""
+        """A description is never recorded; an oversized line keeps the join keys."""
         from dsp_route import record  # the hook imports it lazily (TID253)
 
         big = event(
@@ -162,9 +164,10 @@ class Recorder(support.Sandbox):
         raw = self.log.read_bytes()
         line = self.events()[0]
         self.ok(
-            f"a 100 KB description: {len(raw)} bytes, trunc and run kept",
+            f"a 100 KB description: {len(raw)} bytes, no desc, run kept",
             len(raw) <= record.LINE_MAX
-            and line.get("trunc") is True
+            and "desc" not in line
+            and "trunc" not in line
             and line.get("run") == "r1",
             line,
         )
@@ -238,8 +241,8 @@ class Recorder(support.Sandbox):
             stop("t3", "Bash", "worker-1"),
         ]
         self.rec(*((c, ENTRY, 1.0, None) for c in calls))
-        got = [x.get("target") for x in self.events()]
-        want = ["worker-1", long[: len("w" * 128)], None]
+        got = [(x.get("target"), x.get("trunc")) for x in self.events()]
+        want = [("worker-1", None), (long[: len("w" * 128)], True), (None, None)]
         self.ok(f"{len(calls)} posts: targets {got}", got == want, got)
 
     def test_parallel_writers(self) -> None:
@@ -277,23 +280,25 @@ class Recorder(support.Sandbox):
         """Past CAP_BYTES: one cap line, one post per agent a minute, the rest kept."""
         from dsp_route import record  # the hook imports it lazily (TID253)
 
+        start = record.CAP_BYTES - 100  # shorter than a post, so the first crosses it
         _ = self.write_bytes(self.log, b"")
-        os.truncate(self.log, record.CAP_BYTES - 200)
-        wide = "/w/" + "x" * 200  # so the first post crosses the cap
-        agent = {"agent_id": "a1", "agent_type": "t"}
+        os.truncate(self.log, start)
+        agent = {"agent_id": "a1", "agent_type": "t", "cwd": "/w"}
         self.rec(
-            (post("t1", "a1", wide), ENTRY, 1.0, None),
-            (post("t2", "a1", wide), ENTRY, 2.0, None),
-            (post("t3", "a1", wide), ENTRY, 3.0, None),
+            (post("t1", "a1"), ENTRY, 1.0, None),
+            (post("t2", "a1"), ENTRY, 2.0, None),
+            (post("t3", "a1"), ENTRY, 3.0, None),
             (event("SubagentStart", **agent), ENTRY, 4.0, None),
             (event("SubagentStop", **agent), ENTRY, 5.0, None),
             (event("TeammateIdle", teammate_name="n", **agent), ENTRY, 6.0, None),
         )
         stamp = self.events_dir / "s1.a1.hb"
-        before = self._past_cap(record.CAP_BYTES - 200)
+        before = self._past_cap(start)
         self.touch(stamp, -61)
-        self.rec((post("t4", "a1", wide), ENTRY, 7.0, None))
-        after = self._past_cap(record.CAP_BYTES - 200)
+        self.rec((post("t4", "a1"), ENTRY, 7.0, None))
+        after = self._past_cap(start)
+        free = [k for e in after for k in FREE if k in e]
+        self.ok(f"past the cap: free text {free}", not free, after)
         kinds = [e.get("ev") for e in before]
         self.ok(
             f"{kinds.count('cap')} cap line, {kinds.count('post')} posts, "
@@ -402,7 +407,7 @@ def kinds() -> list[tuple[dict[str, object], str, dict[str, object]]]:
         (
             lead("PreToolUse", tool_name="Agent", tool_use_id="d1", tool_input=HELPER),
             "dispatch",
-            {"tuid": "d1", "name": "helper", "desc": "look around", "bg": True},
+            {"tuid": "d1", "name": "helper", "bg": True},
         ),
         (
             lead(
@@ -465,7 +470,7 @@ def kinds() -> list[tuple[dict[str, object], str, dict[str, object]]]:
                 duration_ms=7,
             ),
             "failed",
-            {"tuid": "d4", "name": "bad", "error": "boom", "interrupt": False, "ms": 7},
+            {"tuid": "d4", "name": "bad", "interrupt": False, "ms": 7},
         ),
         (
             lead("SubagentStart", **A1),
@@ -486,7 +491,7 @@ def kinds() -> list[tuple[dict[str, object], str, dict[str, object]]]:
                 tool_input={"command": "ls", "description": "list"},
             ),
             "pre",
-            {"tool": "Bash", "tuid": "b1", "desc": "list"},
+            {"tool": "Bash", "tuid": "b1"},
         ),
         (
             lead(
@@ -496,7 +501,7 @@ def kinds() -> list[tuple[dict[str, object], str, dict[str, object]]]:
                 tool_input={"to": "helper", "message": "hi"},
             ),
             "pre",
-            {"tool": "SendMessage", "tuid": "m1", "to": "helper"},
+            {"tool": "SendMessage", "tuid": "m1"},
         ),
         (
             lead(
@@ -520,7 +525,7 @@ def kinds() -> list[tuple[dict[str, object], str, dict[str, object]]]:
         ),
         (lead("UserPromptSubmit", prompt="go on"), "prompt", {"from": "user"}),
         (lead("Stop", background_tasks=bg), "turn-end", {"bg_tasks": 1}),
-        (lead("StopFailure", error="rate_limit"), "api-error", {"error": "rate_limit"}),
+        (lead("StopFailure", error="rate_limit"), "api-error", {}),
         (
             lead("Notification", notification_type="idle_prompt", message="m"),
             "notify",
@@ -753,6 +758,7 @@ class Folded(support.Route):
                 not common
                 or line.get("ev") != kind
                 or any(line.get(k) != v for k, v in fields.items())
+                or any(k in line for k in FREE)
             ):
                 wrong.append(line)
         self.ok(

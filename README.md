@@ -181,10 +181,11 @@ tracking is on. Turn it on with one line in your user settings file, `~/.claude/
 - Recording needs a **POSIX hook shell** (Linux, macOS, Windows with Git Bash). Elsewhere the guard
   may print a shell error to the hook's output and records nothing.
 - Recorded, one line per hook event of a routed session: the event and its time, the route's run,
-  the agent it fires in, a tool's name and call id, a dispatch's name, short description and agent
-  type, a launch's or return's agent id, model, duration and token counts, a Bash call's
-  description, a message's recipient and the agent name or task id a TaskStop names. Never stored: a prompt, a message's content, any other
-  tool input, a tool's output, the last assistant message, a compaction summary, a transcript path.
+  the agent it fires in, a tool's name and call id, a dispatch's name and agent type, a launch's or
+  return's agent id, model, duration and token counts, and the agent name or task id a TaskStop
+  names. Never stored: a prompt, a task description, a message's recipient or content, any other
+  tool input, a tool's output, error text, the working directory, the last assistant message, a
+  compaction summary, a transcript path.
 - The logs live in `~/.claude/dsp-routes/events/`, one `<session-id>.jsonl` per session.
 - Expiry is **opportunistic**: a log untouched for 14 days is removed the next time a subagent
   starts on that machine, so a host that starts none keeps its logs.
