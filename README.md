@@ -150,7 +150,7 @@ sequenceDiagram
 | `push_guard.py --pre-push` | git's `pre-push`, written into the repository by `--activate` | A push of any commit that no full gate passed, read from the exact refs git sends |
 | `push_guard.py` | PreToolUse:Bash | A push that would skip the git hook (`--no-verify`); a bypass (`DSP_SKIP_*`), which you approve and agents may not use; every push, where the repository's hooks live elsewhere (`core.hooksPath`) |
 | `route_state.py --hook` | PreToolUse (including an MCP `create_note` tool), PostToolUse, UserPromptSubmit, SessionStart, SubagentStop, TeammateIdle | Route state and the recorded budget; a wave's dispatch held once its spend passes the budget; outward actions held for your answer; a review comment held while its Coverage fails; hand-written gate logs refused; an agent stopping while its own background jobs still run |
-| `route_state.py --hook` (recording) | SubagentStart, PostToolUseFailure:Agent, PostCompact, Notification, Stop, StopFailure, SessionEnd | Nothing: with `DSP_MONITOR=1` they record the session's events for the monitor |
+| `route_state.py --hook` (recording) | PreToolUse:AskUserQuestion, SubagentStart, PostToolUseFailure:Agent, PostCompact, Notification, Stop, StopFailure, SessionEnd | Nothing: with `DSP_MONITOR=1` they record the session's events for the monitor |
 
 The guards target careless agents, not adversaries:
 [`references/gates.md`](skills/decision-spec-plan/references/gates.md) says what each check
@@ -202,6 +202,21 @@ for it — the label you set, never spend. Agents and waits come from
 [Monitor tracking](#monitor-tracking-optional-off-by-default); without it the page shows routes,
 stages and lanes. It starts only by hand and prints the page's URL; Ctrl-C stops it. Set the
 command up from [INSTALL.md](INSTALL.md) (a shell function and an alias for your rc file).
+
+It serves on the first free port from 47961 to 47970; `--port` moves that range and `--open` also
+opens a browser tab. The page has four views: the overview of active routes, a route's detail
+(stage strip, budget label, lane board, wave graph, agents, gate logs), a read-only detail of one
+run, and the ended routes. Times are 24-hour, in your browser's time zone.
+
+| Key | Does |
+|---|---|
+| `o`, `Esc` | overview |
+| `e` | ended routes |
+| `1`–`9` | open the nth active route |
+| `j`, `k` · `Enter` | move to the next or previous item · open it |
+| `r` | refresh now |
+| `t` | switch theme: auto, light, dark |
+| `?` | show or hide the shortcut sheet |
 
 It writes nothing anywhere: no lock, PID, cache or log file. Its git reads take no lock, so a
 session's commits never wait on it. The page requests nothing but its own server: no font, script,
