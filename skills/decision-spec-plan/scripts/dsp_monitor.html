@@ -67,7 +67,11 @@ h2 { font-size: 1rem; margin: 1rem 0 0.4rem; }
   display: inline-flex; gap: 0.3rem; align-items: baseline; padding: 0 0.45rem;
   border: 1px solid var(--line); border-radius: 999px; color: var(--fg); font-size: 0.9em;
 }
-.chip .glyph { font-weight: 700; }
+.icon {
+  width: 16px; height: 16px; flex: none; align-self: center;
+  fill: none; stroke: currentColor; stroke-width: 1.5; stroke-linecap: round; stroke-linejoin: round;
+}
+.icon .solid { fill: currentColor; fill-rule: evenodd; stroke: none; }
 [data-enum][data-v=seen], [data-enum][data-v=fresh], [data-enum][data-v=done],
 [data-enum][data-v=merged], [data-enum][data-v=green], [data-enum][data-v=returned] { color: var(--ok); border-color: currentColor; }
 [data-enum][data-v=reduced], [data-enum][data-v=slow], [data-enum][data-v=git-slow],
@@ -94,7 +98,6 @@ h3 { font-size: 0.95rem; margin: 1.1rem 0 0.4rem; }
   display: inline-flex; gap: 0.35rem; align-items: baseline; padding: 0.15rem 0.5rem;
   border: 1px solid var(--line); border-radius: 6px; background: var(--card);
 }
-.stages .glyph { font-weight: 700; }
 .board { display: grid; grid-auto-flow: column; grid-auto-columns: minmax(150px, 1fr); gap: 0.5rem; overflow-x: auto; }
 .board .col { background: var(--card); border: 1px solid var(--line); border-radius: 8px; padding: 0.4rem; min-height: 4rem; }
 .board h4 { margin: 0 0 0.4rem; font-size: 0.9rem; display: flex; gap: 0.3rem; align-items: baseline; }
@@ -109,7 +112,11 @@ h3 { font-size: 0.95rem; margin: 1.1rem 0 0.4rem; }
 .graph .bracket { stroke: var(--line); }
 .graph text { fill: var(--fg); font-size: 13px; }
 .graph text.head { fill: var(--muted); font-weight: 600; }
-.graph tspan[data-enum] { fill: currentColor; }
+.graph .cols {
+  display: flex; gap: 0.5rem; align-items: center; height: 100%; overflow: hidden;
+  font-size: 13px; line-height: 1; white-space: nowrap; color: var(--fg);
+}
+.graph .cols > span { display: inline-flex; gap: 0.25rem; align-items: center; }
 .sr-table { position: absolute; width: 1px; height: 1px; overflow: hidden; clip-path: inset(50%); white-space: nowrap; }
 .table-wrap { overflow-x: auto; }
 table.grid { border-collapse: collapse; width: 100%; background: var(--card); }
@@ -138,59 +145,59 @@ tr.maybe-stuck { outline: 2px dashed var(--warn); outline-offset: -2px; }
 "use strict";
 const LABELS = /* dsp:labels */ {
   "stage": {
-    "harvest": {"text": "harvest", "glyph": "①"}, "decisions": {"text": "decisions", "glyph": "②"},
-    "review": {"text": "review", "glyph": "③"}, "asks": {"text": "asks", "glyph": "④"},
-    "spec": {"text": "spec", "glyph": "⑤"}, "plan": {"text": "plan", "glyph": "⑥"},
-    "exec": {"text": "exec", "glyph": "⑦"}, "push": {"text": "push", "glyph": "⑧"}
+    "harvest": {"text": "harvest", "glyph": "step1"}, "decisions": {"text": "decisions", "glyph": "step2"},
+    "review": {"text": "review", "glyph": "step3"}, "asks": {"text": "asks", "glyph": "step4"},
+    "spec": {"text": "spec", "glyph": "step5"}, "plan": {"text": "plan", "glyph": "step6"},
+    "exec": {"text": "exec", "glyph": "step7"}, "push": {"text": "push", "glyph": "step8"}
   },
   "stage_state": {
-    "done": {"text": "done", "glyph": "✓"}, "current": {"text": "current", "glyph": "●"},
-    "skipped": {"text": "skipped", "glyph": "–"}, "not-reached": {"text": "not reached", "glyph": "○"}
+    "done": {"text": "done", "glyph": "check"}, "current": {"text": "current", "glyph": "dot"},
+    "skipped": {"text": "skipped", "glyph": "dash"}, "not-reached": {"text": "not reached", "glyph": "ring"}
   },
   "lane": {
-    "queued": {"text": "queued", "glyph": "◷"}, "running": {"text": "running", "glyph": "▶"},
-    "gating": {"text": "gating", "glyph": "◶"}, "ready": {"text": "ready", "glyph": "◆"},
-    "red": {"text": "red", "glyph": "✗"}, "merged": {"text": "merged", "glyph": "✓"}
+    "queued": {"text": "queued", "glyph": "clock"}, "running": {"text": "running", "glyph": "play"},
+    "gating": {"text": "gating", "glyph": "hourglass"}, "ready": {"text": "ready", "glyph": "diamond"},
+    "red": {"text": "red", "glyph": "cross"}, "merged": {"text": "merged", "glyph": "check"}
   },
   "gate": {
-    "green": {"text": "green", "glyph": "✓"}, "red": {"text": "red", "glyph": "✗"},
-    "dirty": {"text": "dirty", "glyph": "≠"}, "no-exit": {"text": "no exit", "glyph": "…"},
-    "none": {"text": "no gate", "glyph": "–"}
+    "green": {"text": "green", "glyph": "check"}, "red": {"text": "red", "glyph": "cross"},
+    "dirty": {"text": "dirty", "glyph": "notEqual"}, "no-exit": {"text": "no exit", "glyph": "dots"},
+    "none": {"text": "no gate", "glyph": "dash"}
   },
   "agent_state": {
-    "dispatched": {"text": "dispatched", "glyph": "→"}, "held": {"text": "held", "glyph": "‖"},
-    "launched": {"text": "launched", "glyph": "↗"}, "active": {"text": "active", "glyph": "▶"},
-    "idle": {"text": "idle", "glyph": "◌"}, "returned": {"text": "returned", "glyph": "↩"},
-    "stopped": {"text": "stopped", "glyph": "■"}, "failed": {"text": "failed", "glyph": "✗"},
-    "interrupted": {"text": "interrupted", "glyph": "↯"},
-    "ended-with-session": {"text": "ended with session", "glyph": "▪"}, "lost": {"text": "lost", "glyph": "?"}
+    "dispatched": {"text": "dispatched", "glyph": "arrowRight"}, "held": {"text": "held", "glyph": "pause"},
+    "launched": {"text": "launched", "glyph": "arrowUpRight"}, "active": {"text": "active", "glyph": "play"},
+    "idle": {"text": "idle", "glyph": "ringDashed"}, "returned": {"text": "returned", "glyph": "arrowBack"},
+    "stopped": {"text": "stopped", "glyph": "stop"}, "failed": {"text": "failed", "glyph": "cross"},
+    "interrupted": {"text": "interrupted", "glyph": "bolt"},
+    "ended-with-session": {"text": "ended with session", "glyph": "power"}, "lost": {"text": "lost", "glyph": "question"}
   },
   "agent_mode": {
-    "foreground": {"text": "foreground", "glyph": "▣"}, "background": {"text": "background", "glyph": "▢"},
-    "teammate": {"text": "teammate", "glyph": "◎"}
+    "foreground": {"text": "foreground", "glyph": "window"}, "background": {"text": "background", "glyph": "layers"},
+    "teammate": {"text": "teammate", "glyph": "people"}
   },
-  "run_state": {"live": {"text": "live", "glyph": "●"}, "ended": {"text": "ended", "glyph": "○"}},
-  "route_status": {"active": {"text": "active", "glyph": "●"}, "idle": {"text": "idle", "glyph": "◌"}},
+  "run_state": {"live": {"text": "live", "glyph": "dot"}, "ended": {"text": "ended", "glyph": "stop"}},
+  "route_status": {"active": {"text": "active", "glyph": "play"}, "idle": {"text": "idle", "glyph": "ringDashed"}},
   "recording": {
-    "seen": {"text": "recording", "glyph": "◉"}, "none": {"text": "not recorded", "glyph": "○"},
-    "reduced": {"text": "Recording reduced: this session's log passed its size cap, so activity is sampled", "glyph": "◐"},
-    "expired": {"text": "Agent events expired", "glyph": "⊝"}
+    "seen": {"text": "recording", "glyph": "rec"}, "none": {"text": "not recorded", "glyph": "ring"},
+    "reduced": {"text": "Recording reduced: this session's log passed its size cap, so activity is sampled", "glyph": "halfRing"},
+    "expired": {"text": "Agent events expired", "glyph": "clockOff"}
   },
   "attention": {
-    "asked": {"text": "asked", "glyph": "?"}, "input": {"text": "input needed", "glyph": "✎"},
-    "blind": {"text": "tracking blind", "glyph": "⊘"}, "dir-missing": {"text": "planning dir gone", "glyph": "⌂"},
-    "stuck": {"text": "may be stuck", "glyph": "◔"}, "reduced": {"text": "recording reduced", "glyph": "◐"},
-    "git-slow": {"text": "git slow", "glyph": "◴"}, "unreadable": {"text": "unreadable", "glyph": "⚠"},
-    "flag": {"text": "flag", "glyph": "⚑"}
+    "asked": {"text": "asked", "glyph": "bubble"}, "input": {"text": "input needed", "glyph": "pencil"},
+    "blind": {"text": "tracking blind", "glyph": "eyeOff"}, "dir-missing": {"text": "planning dir gone", "glyph": "folderOff"},
+    "stuck": {"text": "may be stuck", "glyph": "clockAlert"}, "reduced": {"text": "recording reduced", "glyph": "halfRing"},
+    "git-slow": {"text": "git slow", "glyph": "snail"}, "unreadable": {"text": "unreadable", "glyph": "warning"},
+    "flag": {"text": "flag", "glyph": "pennant"}
   },
   "git_state": {
-    "pending": {"text": "git pending", "glyph": "…"}, "fresh": {"text": "git fresh", "glyph": "✓"},
-    "slow": {"text": "git slow", "glyph": "◴"}, "not_tracked": {"text": "git not tracked", "glyph": "–"}
+    "pending": {"text": "git pending", "glyph": "dots"}, "fresh": {"text": "git fresh", "glyph": "check"},
+    "slow": {"text": "git slow", "glyph": "snail"}, "not_tracked": {"text": "git not tracked", "glyph": "dash"}
   },
   "board_column": {
-    "queued": {"text": "queued", "glyph": "◷"}, "running": {"text": "running", "glyph": "▶"},
-    "ready": {"text": "ready", "glyph": "◆"}, "merged": {"text": "merged", "glyph": "✓"},
-    "blocked": {"text": "blocked", "glyph": "⊗"}, "failed": {"text": "failed", "glyph": "✗"}
+    "queued": {"text": "queued", "glyph": "clock"}, "running": {"text": "running", "glyph": "play"},
+    "ready": {"text": "ready", "glyph": "diamond"}, "merged": {"text": "merged", "glyph": "check"},
+    "blocked": {"text": "blocked", "glyph": "prohibit"}, "failed": {"text": "failed", "glyph": "cross"}
   },
   "copy": {
     "title": "dsp monitor",
@@ -323,6 +330,53 @@ const ENDED_HASH = "#/ended";
 /* the wave graph's layout, in SVG user units */
 const GRAPH = {col: 190, node_w: 150, node_h: 40, gap: 12, pad: 40, head: 28, bend: 36,
   bracket: 8, radius: 6, text_x: 10, line1: 17, line2: 33};
+/* The state icons on a 16-unit grid: each "line" path is stroked, each "solid" path filled. A label's glyph names one. */
+const RING = "M14 8a6 6 0 1 1-12 0 6 6 0 0 1 12 0z";
+const ICONS = {
+  check: {line: "M3 8.5l3.25 3.25L13 4.75"},
+  cross: {line: "M4.25 4.25l7.5 7.5m0-7.5l-7.5 7.5"},
+  dash: {line: "M4.5 8h7"},
+  dots: {solid: "M4.85 8a1.1 1.1 0 1 1-2.2 0 1.1 1.1 0 0 1 2.2 0zM9.1 8a1.1 1.1 0 1 1-2.2 0 1.1 1.1 0 0 1 2.2 0zM13.35 8a1.1 1.1 0 1 1-2.2 0 1.1 1.1 0 0 1 2.2 0z"},
+  dot: {solid: "M12 8a4 4 0 1 1-8 0 4 4 0 0 1 8 0z"},
+  ring: {line: RING},
+  ringDashed: {line: "M6.75 2.13A6 6 0 0 1 9.25 2.13M12.46 3.99A6 6 0 0 1 13.71 6.15M13.71 9.85A6 6 0 0 1 12.46 12.01M9.25 13.87A6 6 0 0 1 6.75 13.87M3.54 12.01A6 6 0 0 1 2.29 9.85M2.29 6.15A6 6 0 0 1 3.54 3.99"},
+  rec: {line: RING, solid: "M10.75 8a2.75 2.75 0 1 1-5.5 0 2.75 2.75 0 0 1 5.5 0z"},
+  halfRing: {line: RING, solid: "M8 2.5a5.5 5.5 0 0 0 0 11z"},
+  play: {line: "M5 3.25v9.5L12.75 8z"},
+  pause: {line: RING + "M6.5 5.75v4.5M9.5 5.75v4.5"},
+  stop: {line: RING, solid: "M6 6h4v4H6z"},
+  clock: {line: RING + "M8 4.75V8l2.25 1.5"},
+  clockOff: {line: "M13.5 9a5.5 5.5 0 1 1-11 0 5.5 5.5 0 0 1 11 0zM6.25 1.5h3.5M8 1.5v2M2.75 3.75l10.5 10.5"},
+  clockAlert: {line: "M11.5 8.75a5 5 0 1 1-10 0 5 5 0 0 1 10 0zM6.5 6v2.75L8.25 10M14 3.25v5.5", solid: "M15 11.75a1 1 0 1 1-2 0 1 1 0 0 1 2 0z"},
+  hourglass: {line: "M4 2.25h8M4 13.75h8M5 2.25v1.5c0 2 3 2.5 3 4.25s-3 2-3 4.25v1.5M11 2.25v1.5c0 2-3 2.5-3 4.25s3 2 3 4.25v1.5", solid: "M6.25 12.75h3.5L8 10.5z"},
+  diamond: {line: "M8 2.25 13.75 8 8 13.75 2.25 8z"},
+  prohibit: {line: RING + "M3.75 3.75l8.5 8.5"},
+  bolt: {line: "M9.25 1.75 3.5 9.25H8l-1.25 5 5.75-7.5H8z"},
+  power: {line: "M8 2.25V7.5M4.75 4.25a5.25 5.25 0 1 0 6.5 0"},
+  question: {line: RING + "M6.25 6.25a1.75 1.75 0 1 1 2.5 1.6c-.45.22-.75.6-.75 1.1v.3", solid: "M8.85 11.25a.85.85 0 1 1-1.7 0 .85.85 0 0 1 1.7 0z"},
+  bubble: {line: "M3 2.75h10c.55 0 1 .45 1 1v6.5c0 .55-.45 1-1 1H8l-3.5 2.5v-2.5H3c-.55 0-1-.45-1-1v-6.5c0-.55.45-1 1-1zM6.5 5.5a1.5 1.5 0 1 1 2.15 1.35c-.4.2-.65.5-.65.95", solid: "M8.8 9.25a.8.8 0 1 1-1.6 0 .8.8 0 0 1 1.6 0z"},
+  pencil: {line: "M10.25 2.75l3 3-7.5 7.5H2.75v-3zM8.75 4.25l3 3"},
+  eyeOff: {line: "M1.75 8C3.1 5.25 5.4 3.75 8 3.75s4.9 1.5 6.25 4.25C12.9 10.75 10.6 12.25 8 12.25S3.1 10.75 1.75 8zM2.75 2.75l10.5 10.5", solid: "M9.5 8a1.5 1.5 0 1 1-3 0 1.5 1.5 0 0 1 3 0z"},
+  folderOff: {line: "M1.75 3.25c0-.55.45-1 1-1h3.1c.3 0 .6.15.8.4l1.35 1.85h5.25c.55 0 1 .45 1 1v6.75c0 .55-.45 1-1 1H2.75c-.55 0-1-.45-1-1zM2.75 2.75l10.5 10.5"},
+  snail: {line: "M11.25 7.75a4.75 4.75 0 1 1-9.5 0 4.75 4.75 0 0 1 9.5 0zM8 7.75a1.5 1.5 0 1 0-1.5 1.5M1 13h11.75a1.75 1.75 0 0 0 1.75-1.75V6.5"},
+  warning: {line: "M7.13 2.75a1 1 0 0 1 1.74 0l5.4 9.5a1 1 0 0 1-.87 1.5H2.6a1 1 0 0 1-.87-1.5zM8 6.25v3.25", solid: "M8.95 11.75a.95.95 0 1 1-1.9 0 .95.95 0 0 1 1.9 0z"},
+  pennant: {line: "M3.5 14V2.5M3.5 3h8.75l-2 3 2 3H3.5"},
+  notEqual: {line: "M3.25 6h9.5M3.25 10h9.5M10.25 3 5.75 13"},
+  arrowRight: {line: "M2.75 8h10.5M9 3.75 13.25 8 9 12.25"},
+  arrowUpRight: {line: "M4.5 11.5l7-7M5.75 4.5h5.75v5.75"},
+  arrowBack: {line: "M6.25 2.75 3 6l3.25 3.25M3 6h6.5a3.5 3.5 0 0 1 0 7H8"},
+  window: {line: "M3 2.75h10c.55 0 1 .45 1 1v8.5c0 .55-.45 1-1 1H3c-.55 0-1-.45-1-1v-8.5c0-.55.45-1 1-1zM2 6h12"},
+  layers: {line: "M8 2.75l6 3.25-6 3.25-6-3.25zM2 9.5l6 3.25 6-3.25"},
+  people: {line: "M8.25 5.25a2.25 2.25 0 1 1-4.5 0 2.25 2.25 0 0 1 4.5 0zM1.75 13.25c0-2.35 1.9-4.25 4.25-4.25s4.25 1.9 4.25 4.25M10.75 3.1a2.25 2.25 0 0 1 0 4.3M12 9.35c1.35.6 2.25 1.95 2.25 3.9"},
+  step1: {line: RING + "M6.5 6.25 8 5v6"},
+  step2: {line: RING + "M6.25 6.75a1.75 1.75 0 1 1 3.5 0c0 1.5-3.5 2.5-3.5 4.25h3.5"},
+  step3: {line: RING + "M6.25 5h3.5L7.75 7.5a1.75 1.75 0 1 1-1.5 2.75"},
+  step4: {line: RING + "M8.75 11V5L5.75 9.25h4.25"},
+  step5: {line: RING + "M9.5 5H6.75L6.5 7.6c.4-.25.9-.35 1.4-.35a1.85 1.85 0 1 1-1.65 2.75"},
+  step6: {line: RING + "M9.25 5.25C7.6 5.6 6.25 7.1 6.25 9.15M9.95 9.15a1.85 1.85 0 1 1-3.7 0 1.85 1.85 0 0 1 3.7 0z"},
+  step7: {line: RING + "M6.25 5h3.5L7.5 11"},
+  step8: {line: RING + "M9.4 6.4a1.4 1.4 0 1 1-2.8 0 1.4 1.4 0 0 1 2.8 0zM9.6 9.4a1.6 1.6 0 1 1-3.2 0 1.6 1.6 0 0 1 3.2 0z"},
+};
 
 const poll = {timer: 0, busy: false, failures: 0, failedAt: null, text: "", state: null, first: null};
 const ui = {expanded: new Set(), updated: null, theme: null, help: null};
@@ -365,11 +419,26 @@ function label(enumName, value) {
   return Object.hasOwn(labels, value) ? labels[value] : null;
 }
 
-/* A state as glyph and text, styled by data-enum/data-v; an unknown value shows raw. */
+/* A label's drawn icon in its text colour; the text beside it carries the meaning. */
+function icon(lab) {
+  const shape = lab && Object.hasOwn(ICONS, lab.glyph) ? ICONS[lab.glyph] : null;
+  if (!shape) {
+    return null;
+  }
+  const pic = svg("svg", {"class": "icon", "viewBox": "0 0 16 16", "aria-hidden": "true"});
+  for (const part of ["line", "solid"]) {
+    if (shape[part]) {
+      pic.append(svg("path", {"class": part, "d": shape[part]}));
+    }
+  }
+  return pic;
+}
+
+/* A state as icon and text, styled by data-enum/data-v; an unknown value shows raw. */
 function chip(enumName, value) {
   const lab = label(enumName, value);
   return el("span", {"class": "chip", "data-enum": enumName, "data-v": value}, [
-    lab ? el("span", {"class": "glyph", "aria-hidden": "true"}, lab.glyph) : null,
+    icon(lab),
     el("span", {}, lab ? lab.text : String(value)),
   ]);
 }
@@ -650,7 +719,7 @@ function stageStrip(stages) {
     const name = label("stage", st.name);
     const state = label("stage_state", st.state);
     return el("li", {"data-enum": "stage_state", "data-v": st.state}, [
-      state ? el("span", {"class": "glyph", "aria-hidden": "true"}, state.glyph) : null,
+      icon(state),
       el("span", {}, name ? name.text : String(st.name)),
       el("span", {"class": "muted"}, state ? state.text : String(st.state)),
     ]);
@@ -703,7 +772,7 @@ function laneBoard(rep, lanes) {
     const lab = label("board_column", col);
     return el("section", {"class": "col"}, [
       el("h4", {"data-enum": "board_column", "data-v": col}, [
-        lab ? el("span", {"class": "glyph", "aria-hidden": "true"}, lab.glyph) : null,
+        icon(lab),
         el("span", {}, lab ? lab.text : String(col)),
         el("span", {"class": "muted"}, fmt(copy.column_count, {n: cards.length})),
       ]),
@@ -782,12 +851,15 @@ function waveGraph(rep, lanes) {
     const node = svg("g", {});
     node.append(svg("rect", {"class": "node", "x": x, "y": y, "width": g.node_w, "height": g.node_h, "rx": g.radius}));
     node.append(svg("text", {"x": x + g.text_x, "y": y + g.line1}, p));
-    const cols = svg("text", {"x": x + g.text_x, "y": y + g.line2});
-    for (const col of columnsOf.get(p) || []) {
+    /* the second line, from a gap above its baseline to the node's foot, laid out as HTML */
+    const top = g.line2 - g.gap;
+    const cols = svg("foreignObject", {"x": x + g.text_x, "y": y + top,
+      "width": g.node_w - g.text_x - g.text_x, "height": g.node_h - top});
+    cols.append(el("div", {"class": "cols"}, (columnsOf.get(p) || []).map((col) => {
       const lab = label("board_column", col);
-      cols.append(svg("tspan", {"data-enum": "board_column", "data-v": String(col)},
-        (lab ? lab.glyph + " " + lab.text : shown(col)) + " "));
-    }
+      return el("span", {"data-enum": "board_column", "data-v": String(col)},
+        [icon(lab), lab ? lab.text : shown(col)]);
+    })));
     node.append(cols);
     pic.append(node);
   }
