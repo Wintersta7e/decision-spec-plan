@@ -723,7 +723,9 @@ class Route(Sandbox):
 # "page", deletes os.nice with "delete_nice", and with "probe" appends one JSON line
 # per report.collect and subprocess.run call to that file: what ran, its thread and
 # the thread's name, use_git and the planning dir (collect), whether no git deadline
-# was set, its argv and timeout (run), and its start and end.
+# was set, its argv and timeout (run), and its start and end. Start and end are
+# time.monotonic(), the clock the monitor's deadlines run on: the wall clock can step
+# forward mid-call (a VM's clock sync does, by seconds), which reads as a late call.
 MONITOR_ENTRY: Final[str] = """
 import json, os, pathlib, sys, threading, time
 opts = json.loads(sys.argv[1])
@@ -745,19 +747,19 @@ if opts["probe"] is not None:
         line = {"what": what, "thread": threading.get_ident(),
                 "thread_name": threading.current_thread().name,
                 "deadline_unset": common.GIT_DEADLINE.get() is None,
-                "t0": t0, "t1": time.time(), **extra}
+                "t0": t0, "t1": time.monotonic(), **extra}
         with lock, open(opts["probe"], "a", encoding="utf-8") as f:
             f.write(json.dumps(line) + "\\n")
     collect, run = report.collect, subprocess.run
     def collect_probe(*a, **k):
-        t0 = time.time()
+        t0 = time.monotonic()
         try:
             return collect(*a, **k)
         finally:
             note("collect", t0, use_git=k.get("use_git"),
                  planning_dir=a[0].planning_dir)
     def run_probe(*a, **k):
-        t0 = time.time()
+        t0 = time.monotonic()
         try:
             return run(*a, **k)
         finally:

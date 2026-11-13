@@ -1366,10 +1366,10 @@ class Refresh(support.MonitorSandbox):
         probe = d / "probe.jsonl"
         mon = self.monitor_on(m, consts=QUICK, probe=probe, path_prefix=[d / "shim"])
         window = 6.0
-        w0 = time.time()
+        w0 = time.monotonic()
 
         def poll() -> None:
-            while time.time() < w0 + window:
+            while time.monotonic() < w0 + window:
                 _ = mon.get("/api/state")
                 time.sleep(0.2)
 
@@ -1378,7 +1378,7 @@ class Refresh(support.MonitorSandbox):
             t.start()
         for t in threads:
             t.join()
-        w1 = time.time()
+        w1 = time.monotonic()
         per_route: dict[str, int] = {}
         for x in probed(probe):
             t0 = cast("float", x["t0"])
@@ -1429,7 +1429,7 @@ class Refresh(support.MonitorSandbox):
         good = git_of(s, key_d)
         self.ok("route-d: a good refresh first", good["state"] == "fresh", good)
         _ = flag.write_text("8")
-        t_flag = time.time()
+        t_flag = time.monotonic()
 
         def slow_d() -> list[dict[str, object]]:
             return [
