@@ -15,6 +15,9 @@ from typing import ClassVar, NotRequired, Required, TypedDict, cast
 import support
 from support import PLUGIN, SCRIPTS
 
+REPO = PLUGIN.parents[1]
+# README.md and INSTALL.md live at the repo root: an installed copy ships neither
+in_checkout = unittest.skipUnless((REPO / ".git").exists(), "not in a repo checkout")
 SKILL_LIMIT = 19000  # characters of SKILL.md, under the 20,000 a compaction keeps
 # the guarded events hooks.json runs in the background: none can block the session
 ASYNC = [
@@ -251,9 +254,10 @@ class PluginFiles(support.Sandbox):
             support.grep(crit, "__tests__", F=True),
         )
 
+    @in_checkout
     def test_readme_tells_what_the_hook_shows(self) -> None:
         """README says the hook shows the recorded budget, not a wave's spend."""
-        readme = (PLUGIN.parents[1] / "README.md").read_text(encoding="utf-8")
+        readme = (REPO / "README.md").read_text(encoding="utf-8")
         for gone in ("wave spend", "spend vs quota"):
             self.ok(f"README: no {gone!r}", gone not in readme)
         for said in (
@@ -265,15 +269,16 @@ class PluginFiles(support.Sandbox):
         ):
             self.ok(f"README says {said!r}", said in readme)
 
+    @in_checkout
     def test_monitor_switch_is_documented(self) -> None:
         """README, INSTALL.md and --help name the switch as switch.NAME spells it."""
         from dsp_route import record, switch  # the hook imports them lazily (TID253)
 
-        readme = (PLUGIN.parents[1] / "README.md").read_text(encoding="utf-8")
+        readme = (REPO / "README.md").read_text(encoding="utf-8")
         events = "~/" + str(record.EVENTS.relative_to(Path.home()))
         for said in (switch.NAME, "POSIX hook shell", events, "opportunistic"):
             self.ok(f"README says {said!r}", said in readme)
-        install = (PLUGIN.parents[1] / "INSTALL.md").read_text(encoding="utf-8")
+        install = (REPO / "INSTALL.md").read_text(encoding="utf-8")
         self.ok(f"INSTALL.md says {switch.NAME}", switch.NAME in install)
         hooks = cast(
             "_HooksFile", json.loads((PLUGIN / "hooks/hooks.json").read_text())
@@ -290,9 +295,10 @@ class PluginFiles(support.Sandbox):
             fails,
         )
 
+    @in_checkout
     def test_install_monitor_command(self) -> None:
         """INSTALL.md's dsp-monitor function finds the enabled plugin and runs it."""
-        install = (PLUGIN.parents[1] / "INSTALL.md").read_text(encoding="utf-8")
+        install = (REPO / "INSTALL.md").read_text(encoding="utf-8")
         lines = install.split("\n")
         start = next(
             (i for i, ln in enumerate(lines) if ln == "    dsp_monitor() {"), 0
@@ -361,9 +367,10 @@ class PluginFiles(support.Sandbox):
             r.out,
         )
 
+    @in_checkout
     def test_readme_states_the_monitor_boundary(self) -> None:
         """README's Monitor section says who can reach the monitor and what it shows."""
-        readme = (PLUGIN.parents[1] / "README.md").read_text(encoding="utf-8")
+        readme = (REPO / "README.md").read_text(encoding="utf-8")
         head = re.search(r"^## Monitor$", readme, re.MULTILINE)
         section = ""
         if head:
@@ -383,9 +390,10 @@ class PluginFiles(support.Sandbox):
         nav = next((ln for ln in readme.splitlines() if "[Hooks](#hooks)" in ln), "")
         self.ok("README's nav links [Monitor](#monitor)", "[Monitor](#monitor)" in nav)
 
+    @in_checkout
     def test_readme_layout_names_the_monitor_page(self) -> None:
         """README's Layout tree says scripts/ holds the monitor and its HTML page."""
-        readme = (PLUGIN.parents[1] / "README.md").read_text(encoding="utf-8")
+        readme = (REPO / "README.md").read_text(encoding="utf-8")
         head = re.search(r"^## Layout$", readme, re.MULTILINE)
         rest = readme[head.end() :] if head else ""
         fence = re.search(r"^```\n(.*?)^```$", rest, re.MULTILINE | re.DOTALL)
@@ -395,13 +403,14 @@ class PluginFiles(support.Sandbox):
         for said in ("dsp_monitor", "HTML page"):
             self.ok(f"Layout's scripts/ line says {said!r}", said in line, line)
 
+    @in_checkout
     def test_readme_publishes_no_outbound_after_the_browser_check(self) -> None:
         """README's Monitor section says the page requests nothing but its own server.
 
         Published only after a headless browser loaded every view and logged no other
         origin.
         """
-        readme = (PLUGIN.parents[1] / "README.md").read_text(encoding="utf-8")
+        readme = (REPO / "README.md").read_text(encoding="utf-8")
         head = re.search(r"^## Monitor$", readme, re.MULTILINE)
         section = ""
         if head:
