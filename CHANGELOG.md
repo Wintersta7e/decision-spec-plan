@@ -1,5 +1,13 @@
 # Changelog
 
+## [1.3.1](https://github.com/Wintersta7e/decision-spec-plan/compare/v1.3.0...v1.3.1) (2026-11-14)
+
+
+### Bug Fixes
+
+* **tests:** lower the git floor in the session-interference test ([4f9242f](https://github.com/Wintersta7e/decision-spec-plan/commit/4f9242fd6ff73967d7a9731ae9852666991ebb08))
+* **tests:** skip the repo-doc checks outside a checkout ([06d1fdc](https://github.com/Wintersta7e/decision-spec-plan/commit/06d1fdc5eb6c5bf600e04c7f6cbe4c53c9de419a))
+
 ## [1.3.0](https://github.com/Wintersta7e/decision-spec-plan/compare/v1.2.0...v1.3.0) (2026-11-13)
 
 
