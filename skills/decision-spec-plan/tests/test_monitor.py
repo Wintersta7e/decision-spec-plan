@@ -2205,7 +2205,9 @@ class Isolation(support.MonitorSandbox):
         m, lanes = self.lane_machine(d)
         base0 = {s: self.pair(m, s, r) for s, (r, _) in lanes.items()}
         _, log = self.git_shim(d / "shim")
-        mon = self.monitor_on(m, consts=QUICK, path_prefix=[d / "shim"])
+        # the commit loop can end in 0.4 s: QUICK's 1 s floor would hold every refresh
+        consts = {**QUICK, "GIT_FLOOR_S": 0.05}
+        mon = self.monitor_on(m, consts=consts, path_prefix=[d / "shim"])
 
         def fresh(s: dict[str, object]) -> bool:
             git = [cast("dict[str, object]", r["git"])["state"] for r in live_runs(s)]
