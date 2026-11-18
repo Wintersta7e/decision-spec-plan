@@ -9,15 +9,13 @@ is printed while the group brief is missing or keeps an ADAPT slot.
 
 import json
 import unittest
-from typing import TYPE_CHECKING, cast
+from pathlib import Path
+from typing import cast
 
 from typing_extensions import override
 
 import support
 from support import RS, jline
-
-if TYPE_CHECKING:
-    from pathlib import Path
 
 REFUSED = 2  # --next with no usable brief
 INDEX = """# Phase 1 plans
@@ -157,6 +155,20 @@ class Next(support.Route):
             "once it ended, the next group is g2",
             "exec-p1-02-g2" in self.calls(self.next_().out),
         )
+
+    def test_lane_dir(self) -> None:
+        """A repo on a Windows drive gets its lane worktree on WSL's own disk."""
+        from dsp_route.next_groups import lane_dir
+
+        cases = {
+            "/mnt/c/src/app": Path.home() / "dsp-worktrees/app-p1-01",
+            "/mnt/d/work/app": Path.home() / "dsp-worktrees/app-p1-01",
+            "/mnt/wsl/app": Path("/mnt/wsl/app-p1-01"),
+            "/home/u/app": Path("/home/u/app-p1-01"),
+        }
+        for top, want in cases.items():
+            got = lane_dir(Path(top), "p1-01")
+            self.ok(f"{top}: {got}", got == want, f"want {want}")
 
 
 if __name__ == "__main__":
