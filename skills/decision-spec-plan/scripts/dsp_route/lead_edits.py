@@ -4,9 +4,11 @@
 import json
 import pathlib
 from collections.abc import Mapping
+from typing import NamedTuple, cast
 
 from .common import (
     REGISTRY,
+    Budget,
     RegistryEntry,
     RouteArgs,
     as_dict,
@@ -19,58 +21,101 @@ from .common import (
 # A rebase, merge or cherry-pick in progress: a conflict the lead resolves itself is
 # cheaper than a group's checkpoint.
 IN_PROGRESS = ("rebase-merge", "rebase-apply", "MERGE_HEAD", "CHERRY_PICK_HEAD")
-FIRST, EVERY = 2, 10
+# The files the lead may edit itself after a budget before the hold: a one-line fix is
+# cheaper than a group; a third file is execution.
+FREE = 2
 
 
-def repo_edit(event: Mapping[str, object], route: RouteArgs) -> bool:
-    """Return whether the edited file is one of the route's repository's.
+class Edit(NamedTuple):
+    """One counted edit: its file, whether in a linked worktree, and the tally."""
 
-    Of it or of a worktree of it, outside the planning dir, not ignored, with no rebase
-    or merge in progress there.
+    path: pathlib.Path
+    worktree: bool
+    budget: Budget
+    seen: list[str]
+    tally: pathlib.Path
+
+
+def repo_edit(
+    event: Mapping[str, object], route: RouteArgs
+) -> tuple[pathlib.Path, bool] | None:
+    """Return the edited file and whether it is in a linked worktree, else None.
+
+    A file of the route's repository or of a worktree of it, outside the planning dir,
+    not ignored, with no rebase or merge in progress there.
     """
     inp = as_dict(event.get("tool_input")) or {}
     raw = str(inp.get("file_path") or inp.get("notebook_path") or "")
     if not raw:
-        return False
+        return None
     path = (pathlib.Path(str(event.get("cwd") or ".")) / raw).resolve()
     if path.is_relative_to(pathlib.Path(route.planning_dir)):
-        return False
+        return None
     where = ("rev-parse", "--path-format=absolute", "--git-common-dir", "--git-dir")
     rc, out = git(path.parent, *where)
-    _, own = git(route.repo or route.planning_dir, *where[:3])
-    if rc or not own or out.splitlines()[0] != own:
-        return False
+    _, own = git(route.repo or route.planning_dir, *where)
+    if rc or not own or out.splitlines()[0] != own.splitlines()[0]:
+        return None
     gitdir = pathlib.Path(out.splitlines()[-1])
     if any((gitdir / n).exists() for n in IN_PROGRESS):
-        return False
-    return git(path.parent, "check-ignore", "-q", str(path))[0] != 0
+        return None
+    if git(path.parent, "check-ignore", "-q", str(path))[0] == 0:
+        return None
+    # another checkout than the route's own is a lane's worktree
+    return path, str(gitdir) != own.splitlines()[-1]
 
 
-def lead_edits(
+def _counted(
     event: Mapping[str, object], session: str, entry: RegistryEntry
-) -> str | None:
-    """Return the nudge at the lead's FIRST edit of the repository since the budget.
-
-    The phase's last budget; and every EVERY edits after it; else None.
-    """
+) -> Edit | None:
+    """Return the lead's counted edit; None before a budget or for one that is not."""
     marker = load_json(pathlib.Path(entry["marker"]))
     route = route_args(marker)
     found = budgets(route.planning_dir, marker, route.phase)
-    if not found or not repo_edit(event, route):
+    if not found or not (hit := repo_edit(event, route)):
         return None
     b = found[-1]
-    tally_path = REGISTRY / f"{session}.edits"
-    tally = load_json(tally_path)
-    seen = tally.get("n", 0)
-    n = (seen if isinstance(seen, int) else 0) + 1 if tally.get("at") == b["at"] else 1
-    _ = tally_path.write_text(json.dumps({"at": b["at"], "n": n}))
-    if n < FIRST or (n - FIRST) % EVERY:
+    tally = REGISTRY / f"{session}.edits"
+    t = load_json(tally)
+    files = t.get("files") if t.get("at") == b["at"] else None
+    seen = (
+        [str(f) for f in cast("list[object]", files)] if isinstance(files, list) else []
+    )
+    return Edit(hit[0], hit[1], b, seen, tally)
+
+
+def edit_hold(
+    event: Mapping[str, object], session: str, entry: RegistryEntry
+) -> tuple[str, str] | None:
+    """Return (decision, reason) on the lead's edit of a new repository file, or None.
+
+    Past FREE files since the phase's last budget: deny in a lane's worktree, which its
+    group owns; ask the user in the main checkout. A file already edited passes.
+    """
+    if not (e := _counted(event, session, entry)):
         return None
-    return (
-        f"route_state.py (hook): you edited {n} files of the repository yourself since "
-        f"this phase's budget ({b.get('label')}). Execution is a fresh group's, never "
+    if str(e.path) in e.seen or len(e.seen) < FREE:
+        return None
+    why = (
+        f"you edited {len(e.seen)} files of the repository yourself since this phase's "
+        f"budget ({e.budget.get('label')}). Execution is a fresh group's, never "
         "yours: a fix, a post-merge bug, a real-data run or an investigation gets an "
         "`exec-` group with its own checkpoint (execution.md). Edits while a rebase or "
         "merge is in progress do not count. Why: after its last lane returned, one "
         "lead made 126 edits itself and spent 30.4M of its 45.4M there (F68)."
     )
+    if e.worktree:
+        return (
+            "deny",
+            f"{e.path.name} is in a lane's worktree, which its group owns; {why}",
+        )
+    return "ask", why
+
+
+def record_edit(
+    event: Mapping[str, object], session: str, entry: RegistryEntry
+) -> None:
+    """Add the file of a lead's edit that ran to the phase's tally."""
+    if (e := _counted(event, session, entry)) and str(e.path) not in e.seen:
+        files = [*e.seen, str(e.path)]
+        _ = e.tally.write_text(json.dumps({"at": e.budget["at"], "files": files}))
