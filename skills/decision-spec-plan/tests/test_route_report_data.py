@@ -357,6 +357,36 @@ class Waves(support.Sandbox):
             f"{got}\n{want}",
         )
 
+    def test_titles(self) -> None:
+        """Each plan's title: its first heading after the dash, else the heading."""
+        plan = self.T / "t"
+        _ = self.write(plan / "plans/p1-00-index.md", INDEX)
+        heads = {
+            "p1-01-a": "# p1-01-a — Lane 0: two `shipped` defects\n\nGoal.\n",
+            "p1-02-b": "\n# Plan P02 – Foundation - the lock\n",
+            "p1-03-c": "Intro line\n## Not the title\n# Types and `Any`\n",
+            "p1-04-d": "no heading at all\n",
+            "p1-05-e": "#    \n",
+        }
+        for stem, text in heads.items():
+            _ = self.write(plan / f"plans/{stem}.md", text)
+        argv = [str(plan), "--phase", "1"]
+        waves = collect_json(type(self), argv, use_git=False)["waves"]
+        got = {i: w["title"] for i, w in waves.items()}
+        self.ok(
+            f"titles of {len(got)} plans",
+            got
+            == {
+                "p1-01": "Lane 0: two shipped defects",
+                "p1-02": "Foundation - the lock",
+                "p1-03": "Types and Any",
+                "p1-04": None,
+                "p1-05": None,
+                "p1-06": None,
+            },
+            got,
+        )
+
 
 # a plan id and nothing else
 PLAN_ONLY = re.compile(r"p\d+-\d+[a-z]?")

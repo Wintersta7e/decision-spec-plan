@@ -1278,6 +1278,31 @@ class Attention(support.MonitorSandbox):
         order = ["blind", "dir-missing", "reduced", "unreadable"]
         self.ok(f"{len(top)} items: red, oldest first, then amber", kinds == order, top)
 
+    def test_band_active_only(self) -> None:
+        """The top band holds active routes' items; an idle route keeps its own."""
+        m = support.Machine(self.T / "band")
+        ages = {"route-a": 10, "route-b": dsp_monitor.IDLE_S + 100}
+        for i, (name, age) in enumerate(ages.items(), 1):
+            r = m.fixture_route(name, repo=False)
+            _ = m.put_entry(f"s{i}", r, activated=time.time() - age)
+            self.touch(r.marker, -age)
+            self.rm(r.plan)
+        live = dsp_monitor.Live(dsp_monitor.read_page(dsp_monitor.PAGE), "n")
+        live.bound(0)
+        live.publish(model_of(m))
+        state = cast("dict[str, object]", json.loads(live.state))
+        top = [x["route"] for x in cast("list[dict[str, object]]", state["attention"])]
+        idle = cast("list[dict[str, object]]", state["idle"])
+        run = cast("dict[str, object]", idle[0]["run"]) if idle else {}
+        own = [x["kind"] for x in cast("list[dict[str, object]]", run["attention"])]
+        self.ok(
+            f"band {top}, the idle route's own {own}",
+            top == [m.routes["route-a"].key]
+            and [r["key"] for r in idle] == [m.routes["route-b"].key]
+            and own == ["dir-missing"],
+            state,
+        )
+
 
 # every interval of the refresher at most 1 s, so a test sees several cycles
 QUICK = {"SCAN_S": 0.05, "FREE_TTL_S": 1, "GIT_TTL_S": 1, "GIT_FLOOR_S": 1}

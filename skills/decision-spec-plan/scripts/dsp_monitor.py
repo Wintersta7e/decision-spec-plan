@@ -2045,8 +2045,14 @@ class Live:
         )
         runs = [(r, run) for r in live if (run := r.live) is not None]
         waits = sorted((i for r, run in runs for i in waiting(r, run)), key=_oldest)
+        # an idle route's items stay on its own page: the band is for routes in motion
         items = sorted(
-            (i for r, run in runs for i in attention(r, run, reports[r.key])),
+            (
+                i
+                for r, run in runs
+                if r.status == "active"
+                for i in attention(r, run, reports[r.key])
+            ),
             key=_urgent,
         )
         self.state = as_json(

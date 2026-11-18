@@ -85,6 +85,13 @@ h2 { font-size: 1rem; margin: 1rem 0 0.4rem; }
 .idle-list { list-style: none; margin: 0.3rem 0 0; padding: 0; }
 .idle-list li { padding: 0.15rem 0; }
 .idle-list .when { color: var(--muted); margin-left: 0.5rem; }
+.idle-list .attn { color: var(--warn); margin-left: 0.5rem; }
+.band .route-name { font-weight: 600; }
+.band li > ul { list-style: none; margin: 0.25rem 0 0 1rem; padding: 0; }
+.band li > ul > li { border-left: none; padding: 0.15rem 0; margin: 0; }
+.band .group { padding: 0 0.5rem; }
+.clamp { overflow: hidden; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; }
+.lane .title { color: var(--muted); font-size: 0.88em; margin-top: 0.15rem; }
 .more { display: flex; flex-wrap: wrap; gap: 1rem; align-items: baseline; margin-top: 1rem; }
 h3 { font-size: 0.95rem; margin: 1.1rem 0 0.4rem; }
 .detail-head { display: flex; flex-wrap: wrap; align-items: baseline; gap: 0.4rem 1rem; }
@@ -105,18 +112,23 @@ h3 { font-size: 0.95rem; margin: 1.1rem 0 0.4rem; }
 .lane .plan { font-weight: 600; margin-right: 0.4rem; }
 .lane .chips { margin-top: 0.25rem; }
 .badge { color: var(--warn); border-color: currentColor; }
-.graph { position: relative; }
-.graph svg { display: block; max-width: 100%; height: auto; }
+.graph { position: relative; overflow-x: auto; overflow-y: hidden; }
+.graph svg { display: block; }
 .graph .node { fill: var(--card); stroke: var(--line); }
 .graph .edge, .graph .bracket { fill: none; stroke: var(--muted); stroke-width: 1.5px; }
 .graph .bracket { stroke: var(--line); }
 .graph text { fill: var(--fg); font-size: 13px; }
-.graph text.head { fill: var(--muted); font-weight: 600; }
+.graph .head { color: var(--muted); font-weight: 600; font-size: 13px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.graph .node-body {
+  height: 100%; display: flex; flex-direction: column; justify-content: space-between;
+  font-size: 13px; line-height: 1.25; color: var(--fg);
+}
 .graph .cols {
-  display: flex; gap: 0.5rem; align-items: center; height: 100%; overflow: hidden;
+  display: flex; gap: 0.5rem; align-items: center; overflow: hidden;
   font-size: 13px; line-height: 1; white-space: nowrap; color: var(--fg);
 }
-.graph .cols > span { display: inline-flex; gap: 0.25rem; align-items: center; }
+.graph .cols > span { display: inline-flex; gap: 0.25rem; align-items: center; flex: none; }
+.graph .cols > .muted { display: block; flex: 0 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; }
 .sr-table { position: absolute; width: 1px; height: 1px; overflow: hidden; clip-path: inset(50%); white-space: nowrap; }
 .table-wrap { overflow-x: auto; }
 table.grid { border-collapse: collapse; width: 100%; background: var(--card); }
@@ -242,11 +254,17 @@ const LABELS = /* dsp:labels */ {
     "board_heading": "Lanes",
     "board_empty": "No lanes yet",
     "column_count": "({n})",
-    "wave_n": "wave {n}",
+    "wave_n": "Wave {n}",
+    "wave_head": "{wave} · {what}",
+    "wave_plans": "{n} plans",
+    "attention_group": "{name} · {n} items",
+    "idle_attention": "{n} need attention",
+    "kind_count": "×{n}",
     "gating_badge": "gate running",
     "graph_heading": "Wave graph",
     "graph_empty": "No waves yet",
     "graph_plan": "plan",
+    "graph_title": "what it does",
     "graph_wave": "wave",
     "graph_after": "depends on",
     "budget_label": "label",
@@ -328,8 +346,8 @@ const ROUTE_PREFIX = "#/r/";
 const RUN_PREFIX = "#/run/";
 const ENDED_HASH = "#/ended";
 /* the wave graph's layout, in SVG user units */
-const GRAPH = {col: 190, node_w: 150, node_h: 40, gap: 12, pad: 40, head: 28, bend: 36,
-  bracket: 8, radius: 6, text_x: 10, line1: 17, line2: 33};
+const GRAPH = {col: 250, node_w: 210, node_h: 64, gap: 12, pad: 40, head: 28, bend: 36,
+  bracket: 8, radius: 6, text_x: 10, text_y: 6, head_h: 22};
 /* The state icons on a 16-unit grid: each "line" path is stroked, each "solid" path filled. A label's glyph names one. */
 const RING = "M14 8a6 6 0 1 1-12 0 6 6 0 0 1 12 0z";
 const ICONS = {
@@ -591,30 +609,77 @@ function card(r, nowMs) {
     el("div", {"class": "chips"}, [
       chip("recording", run.recording),
       chip("git_state", run.git.state),
-      ...run.attention.map((a) => chip("attention", a.kind)),
+      ...kindChips(run.attention),
     ]),
   ]);
 }
 
-function idleRow(s, nowMs) {
-  const open = ui.expanded.has("idle-row");
-  const button = el("button", {"type": "button", "aria-expanded": String(open), "data-key": "idle-row"},
-    fmt(copy.idle_row, {n: s.counts.idle}));
-  const list = el("ul", {"class": "idle-list", "hidden": !open}, s.idle.map((r) => el("li", {}, [
-    link("r/" + encodeURIComponent(r.key), r.name, r.key),
-    el("span", {"class": "when"}, age(r.last_activity_at, nowMs)),
-  ])));
+/* One chip per attention kind, in the server's order, with its count past one. */
+function kindChips(items) {
+  const counts = new Map();
+  for (const a of items) {
+    counts.set(a.kind, (counts.get(a.kind) || 0) + 1);
+  }
+  return [...counts].map(([kind, n]) => {
+    const c = chip("attention", kind);
+    if (n > 1) {
+      c.append(el("span", {"class": "muted"}, fmt(copy.kind_count, {n: n})));
+    }
+    return c;
+  });
+}
+
+/* A button that shows or hides list, its state kept in ui.expanded under key. */
+function disclosure(key, children, list) {
+  const open = ui.expanded.has(key);
+  list.hidden = !open;
+  const button = el("button", {"type": "button", "class": "group", "aria-expanded": String(open), "data-key": key},
+    children);
   button.addEventListener("click", () => {
     const now = list.hidden;
     list.hidden = !now;
     button.setAttribute("aria-expanded", String(now));
     if (now) {
-      ui.expanded.add("idle-row");
+      ui.expanded.add(key);
     } else {
-      ui.expanded.delete("idle-row");
+      ui.expanded.delete(key);
     }
   });
-  return el("div", {}, [button, list]);
+  return button;
+}
+
+function idleRow(s, nowMs) {
+  const list = el("ul", {"class": "idle-list"}, s.idle.map((r) => el("li", {}, [
+    link("r/" + encodeURIComponent(r.key), r.name, r.key),
+    el("span", {"class": "when"}, age(r.last_activity_at, nowMs)),
+    r.run.attention.length
+      ? el("span", {"class": "attn"}, fmt(copy.idle_attention, {n: r.run.attention.length}))
+      : null,
+  ])));
+  return el("div", {}, [disclosure("idle-row", fmt(copy.idle_row, {n: s.counts.idle}), list), list]);
+}
+
+/* The band's items, one row per route in the server's order (most urgent first): a lone
+   item as it is, several behind one button that names the route and its kinds. */
+function attentionBand(s) {
+  const names = new Map(s.routes.map((r) => [r.key, r.name]));
+  const by = new Map();
+  for (const item of s.attention) {
+    by.set(item.route, [...(by.get(item.route) || []), item]);
+  }
+  const rows = [...by].map(([route, items]) => {
+    const name = el("span", {"class": "route-name"}, names.get(route) || route);
+    const go = (item) => link("r/" + encodeURIComponent(route), item.text, itemKey(item));
+    if (items.length === 1) {
+      return el("li", {"data-severity": items[0].severity},
+        [chip("attention", items[0].kind), " ", name, " · ", go(items[0])]);
+    }
+    const list = el("ul", {}, items.map((item) => el("li", {}, [chip("attention", item.kind), " ", go(item)])));
+    const head = disclosure("attention:" + route,
+      [fmt(copy.attention_group, {name: names.get(route) || route, n: items.length})], list);
+    return el("li", {"data-severity": items[0].severity}, [head, " ", ...kindChips(items), list]);
+  });
+  return el("section", {"class": "band attention"}, [el("h2", {}, copy.attention_heading), el("ul", {}, rows)]);
 }
 
 function renderOverview(s, root) {
@@ -629,11 +694,7 @@ function renderOverview(s, root) {
   }
   root.append(waiting);
   if (s.attention.length) {
-    root.append(band("attention", copy.attention_heading, s.attention, (item) =>
-      el("li", {"data-severity": item.severity}, [
-        chip("attention", item.kind), " ",
-        link("r/" + encodeURIComponent(item.route), item.text, itemKey(item)),
-      ])));
+    root.append(attentionBand(s));
   }
   root.append(el("h2", {}, copy.routes_heading));
   root.append(s.routes.length
@@ -740,12 +801,21 @@ function budgetPanel(b) {
   ]);
 }
 
+/* "Wave <n>" of a plan's wave fact, its raw cell when the cell holds no number. */
+function waveName(w) {
+  if (!w) {
+    return copy.missing;
+  }
+  return w.wave_no === null ? shown(w.wave) : fmt(copy.wave_n, {n: w.wave_no});
+}
+
 function laneCard(lane, waves, lanes) {
-  const wave = Object.hasOwn(waves, lane.plan) ? waves[lane.plan].wave : null;
+  const w = Object.hasOwn(waves, lane.plan) ? waves[lane.plan] : null;
   const gating = Object.hasOwn(lanes, lane.id) && lanes[lane.id].gating;
   return el("article", {"class": "lane"}, [
     el("span", {"class": "plan"}, shown(lane.plan)),
-    el("span", {"class": "muted"}, wave === null ? copy.missing : fmt(copy.wave_n, {n: wave})),
+    el("span", {"class": "muted"}, waveName(w)),
+    w && w.title ? el("div", {"class": "title clamp", "title": w.title}, w.title) : null,
     el("div", {"class": "chips"}, [
       chipOr("gate", lane.gate),
       gating ? el("span", {"class": "chip badge"}, copy.gating_badge) : null,
@@ -818,11 +888,18 @@ function waveGraph(rep, lanes) {
   const height = top + Math.max(...rows) * (g.node_h + g.gap) + g.pad;
   const pic = svg("svg", {"viewBox": ["0 0", width, height].join(" "), "width": width, "height": height,
     "aria-hidden": "true", "focusable": "false"});
+  const titleOf = (p) => waves[p].title || p;
   const brackets = nos.map((no, i) => {
     const x = g.pad + i * g.col;
     const bottom = top + rows[i] * (g.node_h + g.gap) - g.gap;
     const spine = x + g.node_w + g.bracket;
-    pic.append(svg("text", {"class": "head", "x": x, "y": g.pad}, no === null ? copy.missing : fmt(copy.wave_n, {n: no})));
+    /* a wave of one plan is named by it, a larger one by its size */
+    const members = plans.filter((p) => waves[p].wave_no === no);
+    const what = members.length === 1 ? titleOf(members[0]) : fmt(copy.wave_plans, {n: members.length});
+    const text = fmt(copy.wave_head, {wave: waveName(waves[members[0]]), what: what});
+    const head = svg("foreignObject", {"x": x, "y": g.pad - g.head_h, "width": g.node_w, "height": g.head_h});
+    head.append(el("div", {"class": "head", "title": text}, text));
+    pic.append(head);
     pic.append(svg("path", {"class": "bracket",
       "d": ["M", x + g.node_w, top, "H", spine, "V", bottom, "H", x + g.node_w].join(" ")}));
     return {x: spine, y: (top + bottom) * 0.5};
@@ -850,24 +927,30 @@ function waveGraph(rep, lanes) {
     const {x, y} = at.get(p);
     const node = svg("g", {});
     node.append(svg("rect", {"class": "node", "x": x, "y": y, "width": g.node_w, "height": g.node_h, "rx": g.radius}));
-    node.append(svg("text", {"x": x + g.text_x, "y": y + g.line1}, p));
-    /* the second line, from a gap above its baseline to the node's foot, laid out as HTML */
-    const top = g.line2 - g.gap;
-    const cols = svg("foreignObject", {"x": x + g.text_x, "y": y + top,
-      "width": g.node_w - g.text_x - g.text_x, "height": g.node_h - top});
-    cols.append(el("div", {"class": "cols"}, (columnsOf.get(p) || []).map((col) => {
-      const lab = label("board_column", col);
-      return el("span", {"data-enum": "board_column", "data-v": String(col)},
-        [icon(lab), lab ? lab.text : shown(col)]);
-    })));
-    node.append(cols);
+    /* the plan's title over two lines at most, then its id and its lanes' columns, laid out as HTML */
+    const body = svg("foreignObject", {"x": x + g.text_x, "y": y + g.text_y,
+      "width": g.node_w - g.text_x - g.text_x, "height": g.node_h - g.text_y - g.text_y});
+    const tip = waves[p].title ? waves[p].title + " (" + p + ")" : p;
+    body.append(el("div", {"class": "node-body", "title": tip}, [
+      el("div", {"class": "clamp"}, titleOf(p)),
+      el("div", {"class": "cols"}, [
+        waves[p].title ? el("span", {"class": "muted"}, p) : null,
+        ...(columnsOf.get(p) || []).map((col) => {
+          const lab = label("board_column", col);
+          return el("span", {"data-enum": "board_column", "data-v": String(col)},
+            [icon(lab), lab ? lab.text : shown(col)]);
+        }),
+      ]),
+    ]));
+    node.append(body);
     pic.append(node);
   }
   const deps = (w) => [...w.after, ...w.after_waves.map((n) => fmt(copy.wave_n, {n: n}))].join(", ");
   return el("div", {"class": "graph"}, [
     pic,
-    grid("sr-table", [copy.graph_plan, copy.graph_wave, copy.graph_after], plans.map((p) => el("tr", {}, [
+    grid("sr-table", [copy.graph_plan, copy.graph_title, copy.graph_wave, copy.graph_after], plans.map((p) => el("tr", {}, [
       el("td", {}, p),
+      el("td", {}, shown(waves[p].title)),
       el("td", {}, shown(waves[p].wave)),
       el("td", {}, deps(waves[p]) || copy.missing),
     ]))),
@@ -976,6 +1059,13 @@ function renderRoute(s, root, key) {
   ]));
   if (run.recording_hint !== null) {
     root.append(el("p", {"class": "hint"}, run.recording_hint));
+  }
+  if (run.attention.length) {
+    root.append(el("section", {"class": "band attention"}, [
+      el("h3", {}, copy.attention_heading),
+      el("ul", {}, run.attention.map((item) => el("li", {"data-severity": item.severity},
+        [chip("attention", item.kind), " ", el("span", {}, item.text)]))),
+    ]));
   }
   root.append(...runSections(run, Date.now(), r.key, false));
 }
