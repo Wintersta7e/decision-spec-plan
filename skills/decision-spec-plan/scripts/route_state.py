@@ -88,6 +88,9 @@ wakes it when the job ends (F92). It holds the lead's `exec-` dispatch while
 `decision_check.py --verifier` wrote. It numbers each user message to the lead and
 holds an `exec-` dispatch, and sends the lead's Stop back once, until each has a line
 in `<planning-dir>/asks.md`; PreCompact keeps the unlisted ones in the summary (F105).
+Its Stop also goes back once when a fenced block in the lead's last message would fail
+pasted: a WSL stop among other lines, a prompt program followed by its input, a `cd` or
+`git -C` to a missing directory (F107).
 
 Registration: the plugin's `hooks/hooks.json` runs `route_state.py --hook` under
 SessionStart matcher `compact|resume`, PostToolUse matcher `*`, UserPromptSubmit,

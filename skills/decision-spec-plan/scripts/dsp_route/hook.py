@@ -9,6 +9,7 @@ up front made the no-route call 70% slower.
 
 import contextlib
 import io
+import json
 import os
 import pathlib
 import sys
@@ -408,6 +409,26 @@ def _registered(
         _record(name, event, entry, t0)
 
 
+def _stop(event: Mapping[str, object], session: str, entry: RegistryEntry) -> None:
+    """Send the lead's turn back once while its message or its asks fall short.
+
+    A user message with no line in the ask list (F105), a command handed to the user
+    that fails when pasted (F107).
+    """
+    if event.get("stop_hook_active"):
+        return
+    from .asks import asks_hold
+    from .handed import handed_hold
+
+    why = [
+        w
+        for w in (checked(asks_hold, session, entry), checked(handed_hold, event))
+        if w
+    ]
+    if why:
+        print(json.dumps({"decision": "block", "reason": "\n\n".join(why)}))
+
+
 def _asks(
     name: str, event: Mapping[str, object], session: str, entry: RegistryEntry
 ) -> bool:
@@ -418,10 +439,10 @@ def _asks(
     """
     if name not in ("Stop", "PreCompact", "UserPromptSubmit"):
         return False
-    from .asks import keep, record_ask, stop_hold
+    from .asks import keep, record_ask
 
     if name == "Stop":
-        _ = checked(stop_hold, event, session, entry)
+        _stop(event, session, entry)
     elif name == "PreCompact":
         if text := checked(keep, session, entry):
             print(text)  # the compaction summary's instructions
@@ -474,7 +495,9 @@ def hook() -> int:
     checkout — and PostToolUse counts the files whose edit ran: execution is a fresh
     group's (F68). Each user message is numbered and owed a line in the ask list: an
     `exec-` dispatch is held and the lead's Stop sent back once until each has one,
-    and PreCompact tells the summary to keep the unlisted ones verbatim (F105).
+    and PreCompact tells the summary to keep the unlisted ones verbatim (F105). The
+    lead's Stop is also sent back once when a command its last message hands the user
+    fails when pasted (F107).
 
     Returns:
         The hook's exit code: 2 sends an agent back to its running job, else 0.
