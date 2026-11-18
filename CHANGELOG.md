@@ -1,5 +1,28 @@
 # Changelog
 
+## [1.4.0](https://github.com/Wintersta7e/decision-spec-plan/compare/v1.3.1...v1.4.0) (2026-11-18)
+
+
+### Features
+
+* **asks:** hold a wave until each user message has an ask-list line ([82d5ba1](https://github.com/Wintersta7e/decision-spec-plan/commit/82d5ba196f7d396a07db8f0a33b0070f2ed9bb19))
+* **gate,push-guard:** let one gate log count for every commit of a tree ([8e497b1](https://github.com/Wintersta7e/decision-spec-plan/commit/8e497b1186f76c34c4ff20b0faf65249dd1c4090))
+* **gate:** run gates at low priority in a shared machine slot ([46376bf](https://github.com/Wintersta7e/decision-spec-plan/commit/46376bf27d265ede1605d6fc5e4f18ee7692ebc2))
+* **handed:** send the lead back when a command for the user would fail ([f25e234](https://github.com/Wintersta7e/decision-spec-plan/commit/f25e234f4a1d5c0bd1a20aa523d88ebfd6ff925b))
+* **lead-edits:** hold the lead's third repository file after a budget ([7f4b53f](https://github.com/Wintersta7e/decision-spec-plan/commit/7f4b53f066fd7592eadf2defe2ab2cbfe8e8564d))
+* **monitor,report:** group attention by route, name plans by title ([a94a52f](https://github.com/Wintersta7e/decision-spec-plan/commit/a94a52f87492c91f09173a0e5fc0473855167438))
+* **route-state:** print each due task group's Agent call with --next ([b016ec3](https://github.com/Wintersta7e/decision-spec-plan/commit/b016ec3538ec5db36a15bc94004caa62c1cb0bdd))
+* **route-state:** put a Windows-drive repo's lanes on WSL's disk ([f8f0902](https://github.com/Wintersta7e/decision-spec-plan/commit/f8f0902d295c7d5adbd5d48b678e1ff21544d475))
+
+
+### Bug Fixes
+
+* **gate:** restore gate.py's executable bit ([da16e5c](https://github.com/Wintersta7e/decision-spec-plan/commit/da16e5cb5a7672fa346916fa79bea12ec4c13067))
+* **report:** read a gate log's commit when more fields follow dirty= ([4c7ffb1](https://github.com/Wintersta7e/decision-spec-plan/commit/4c7ffb1e26384a873cbae74ea01b5967df6bf22e))
+* **report:** read plan ids of a phase named by a word ([c4259de](https://github.com/Wintersta7e/decision-spec-plan/commit/c4259dea9c9613f8035c40ee02a2472ab01215b1))
+* **report:** retire red gate logs a later green replaced ([23f249f](https://github.com/Wintersta7e/decision-spec-plan/commit/23f249f1c6f74c2a4c38c653ca2d02eba58782c2))
+* **tests:** hold a lane at its Final SHA until the monitor checks it ([5dd52d3](https://github.com/Wintersta7e/decision-spec-plan/commit/5dd52d3bb2861a69e0e1fd6ae9cb1260d275496b))
+
 ## [1.3.1](https://github.com/Wintersta7e/decision-spec-plan/compare/v1.3.0...v1.3.1) (2026-11-14)
 
 
