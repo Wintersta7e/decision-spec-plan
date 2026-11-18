@@ -7,7 +7,8 @@ PreToolUse:Bash — while a decision-spec-plan route is active in a repository
 push` may only send commits the full gate passed: a gate log under <planning-dir>/lanes/
 that names no CI harness, whose first `sha=` line, within its first 20 lines (codegen or
 a build may print first), is `sha=<that commit> dirty=0` and whose last `exit=` line is
-`exit=0`.
+`exit=0`. A clean log of another commit counts when its `tree=` field (gate.py writes
+it) is that commit's tree: a reword or a merge that changed no file gates nothing new.
 
 With the sins on (`--sins on` in the marker: rung L's phase-end push, or a review the
 user asked for) the push also needs a seven-sins review that covers it: a verdict under
@@ -306,33 +307,43 @@ def _last_exit(log: pathlib.Path) -> str | None:
     return last
 
 
-def _logs_commit(head: Sequence[str], sha: str, harness: str | None) -> bool:
-    """Return whether a log whose head is head is one of sha, naming harness or none."""
-    first = next((ln for ln in head if ln.startswith("sha=")), "")
-    if first.split(" ")[0] != f"sha={sha}":
+def _logs_commit(
+    head: Sequence[str], sha: str, harness: str | None, tree: str | None = None
+) -> bool:
+    """Return whether a log whose head is head is one of sha, naming harness or none.
+
+    Or of another commit with sha's tree: the same files, so the same gate result.
+    """
+    fields = next((ln for ln in head if ln.startswith("sha=")), "").split(" ")
+    if fields[0] != f"sha={sha}" and not (tree and f"tree={tree}" in fields[1:]):
         return False
     named = [ln for ln in head if ln.startswith("harness=")]
     return (f"harness={harness}" in named) if harness else not named
 
 
 def gated(
-    planning: str, sha: str, harness: str | None = None, why: list[str] | None = None
+    planning: str,
+    sha: str,
+    harness: str | None = None,
+    why: list[str] | None = None,
+    tree: str | None = None,
 ) -> bool:
-    """Return whether a gate log for sha passed.
+    """Return whether a gate log for sha, or for a commit with its tree, passed.
 
     With harness, one that names it, else one that names none. Its first sha= line may
-    carry more fields after `dirty=0` (`wt=<lane>`). why, a list, gets each log of sha
-    that fails and the reason: a hold that named none made a lead edit a log to fit
-    (2026-10-31).
+    carry more fields after `dirty=0` (`wt=<lane>`, `tree=<tree>`): a reworded commit
+    or a merge that changed no file keeps its tree, and its gate. why, a list, gets each
+    log of sha that fails and the reason: a hold that named none made a lead edit a log
+    to fit (2026-10-31).
     """
     for log in sorted(pathlib.Path(planning, "lanes").glob("*-gate*.log")):
         if not log.is_file():
             continue
         head = head_lines(log, 20)
-        if not _logs_commit(head, sha, harness):
+        if not _logs_commit(head, sha, harness, tree):
             continue
         first = next((ln for ln in head if ln.startswith("sha=")), "")
-        if not re.fullmatch(rf"sha={sha} dirty=0(\s.*)?", first):
+        if not re.fullmatch(r"sha=[0-9a-f]{40} dirty=0(\s.*)?", first):
             if why is not None:
                 why.append(f"{log.name}: `{first[:80]}`, not dirty=0")
             continue
@@ -1438,12 +1449,13 @@ class Guard:
         ci = route.harness and (main is None or not branch_ref or to == main)
         why: list[str] = []
         src, sha = sent.src, sent.sha
-        if not gated(route.planning, sha, why=why):
+        tree = git(repo, "rev-parse", "--verify", "-q", f"{sha}^{{tree}}")
+        if not gated(route.planning, sha, why=why, tree=tree):
             reason = (
                 "; ".join(why) or f"no gate log under {route.planning}/lanes/ names it"
             )
             self.missing.append(f"{src} = {sha[:12]} — {reason}")
-        elif ci and not gated(route.planning, sha, route.harness):
+        elif ci and not gated(route.planning, sha, route.harness, tree=tree):
             self.no_harness.append(f"{src} = {sha[:12]}")
         elif route.review:
             onto = sent.onto or commit(repo, f"refs/remotes/{remote}/{to}")
@@ -1484,7 +1496,8 @@ on a clean tree and run the full gate through the gate runner, which writes the 
 The push goes through once a log there has `sha=<the commit> dirty=0` as its first \
 `sha=` line,
 within its first 20 lines (a build may print first), and `exit=0` as its last `exit=` \
-line.
+line —
+or a clean log of another commit with the same tree (`tree=` on that line).
 Bypass only on the user's explicit instruction: prefix the push with \
 DSP_SKIP_PUSH_GUARD=1.""")
         if self.no_harness:

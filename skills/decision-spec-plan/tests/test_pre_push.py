@@ -140,8 +140,11 @@ class PrePushHook(support.Sandbox):
         self.gate("w1", "--", "echo built")
         self.push3(0, "-", "main")
         # every ref git sends is read, --all included: a branch no gate passed is named
+        # a tree of its own: an empty commit shares main's tree, which main's log covers
         _ = self.git("-C", r3, "checkout", "-q", "-b", "side")
-        _ = self.git("-C", r3, "commit", "-q", "--allow-empty", "-m", "side")
+        _ = self.write(r3 / "side.txt", "side\n")
+        _ = self.git("-C", r3, "add", "side.txt")
+        _ = self.git("-C", r3, "commit", "-q", "-m", "side")
         _ = self.git("-C", r3, "checkout", "-q", "main")
         self.push3(1, "not gated: refs/heads/side", "--all")
         self.push3(1, "not gated: refs/heads/side", "HEAD~0:refs/heads/x", "side")
