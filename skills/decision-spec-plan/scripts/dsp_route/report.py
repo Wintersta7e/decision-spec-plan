@@ -237,7 +237,10 @@ class GitLane(TypedDict):
 
 
 class GitFacts(TypedDict):
-    """The git half of the object; main_missing is the --main given that is not."""
+    """The git half of the object; main_missing is the --main given that is not.
+
+    superseded: the red gate logs a later green gate of their harness replaced.
+    """
 
     as_of: float
     repo: str
@@ -248,6 +251,7 @@ class GitFacts(TypedDict):
     drift: list[str]
     pushed: bool | None
     lanes: dict[str, GitLane]
+    superseded: list[str]
 
 
 class Lane(TypedDict):
@@ -842,6 +846,40 @@ def _git_lane(lanes: _Lanes, lane_id: str, sha: str) -> GitLane:
     return fact
 
 
+def _mtime(path: pathlib.Path) -> float:
+    """Return a file's mtime, 0 when it is gone."""
+    try:
+        return path.stat().st_mtime
+    except OSError:
+        return 0.0
+
+
+def superseded(repo: str, lanes: pathlib.Path, logs: list[GateLogFact]) -> list[str]:
+    """Return the red gate logs a green gate of the same harness replaced.
+
+    Replaced: a clean green ran on a descendant of the red's commit, or on that commit
+    after the red was written. One `rev-list` per harness with a red, none without.
+    """
+    reds = [x for x in logs if x["exit"] and x["sha"]]
+    greens = [x for x in logs if x["exit"] == 0 and x["dirty"] == 0 and x["sha"]]
+    out: list[str] = []
+    for harness in dict.fromkeys(x["harness"] for x in reds):
+        mine = [g for g in greens if g["harness"] == harness]
+        if not mine:
+            continue
+        # the strict ancestors of every green; a commit not in the repo is skipped
+        parents = [f"{s}^@" for s in dict.fromkeys(g["sha"] for g in mine)]
+        rc, text = git(repo, "rev-list", "--ignore-missing", *parents, "--")
+        below = set(text.split()) if rc == 0 else set[str]()
+        for red in (x for x in reds if x["harness"] == harness):
+            when = _mtime(lanes / red["log"])
+            if red["sha"] in below or any(
+                g["sha"] == red["sha"] and _mtime(lanes / g["log"]) > when for g in mine
+            ):
+                out.append(red["log"])
+    return sorted(out)
+
+
 def _git_facts(
     a: RouteArgs,
     repo: str,
@@ -887,6 +925,9 @@ def _git_facts(
         "drift": drift,
         "pushed": None,
         "lanes": {i: _git_lane(lanes, i, s) for i, s in found.items()},
+        "superseded": superseded(
+            repo, pathlib.Path(a.planning_dir) / "lanes", state["gate_logs"]
+        ),
     }
     return facts, cache
 
@@ -1283,11 +1324,14 @@ def _checkpoint_flags(c: CheckpointFact, lane: Lane, g: GitFacts | None) -> list
     return out
 
 
-def _gate_flags(logs: Iterable[GateLogFact]) -> list[Flag]:
-    """Return a flag per red or unfinished gate log."""
+def _gate_flags(logs: Iterable[GateLogFact], g: GitFacts | None) -> list[Flag]:
+    """Return a flag per red gate log no green replaced, and per unfinished one."""
+    retired = set(g["superseded"]) if g else set[str]()
     out: list[Flag] = []
     for x in logs:
         rel, code, ci = f"lanes/{x['log']}", x["exit"], x["harness"]
+        if x["log"] in retired:
+            continue
         if code is None:
             what = "gate log has no exit= line"
             out.append(_flag("gate-no-exit", x["log"], f"{what:<34} {rel}"))
@@ -1323,7 +1367,7 @@ def _flags(state: State, lanes: list[Lane]) -> list[Flag]:
     out += _plan_flags(state, by_path)
     for c, lane in zip(state["checkpoints"], lanes, strict=False):
         out += _file_flags([by_path[c["path"]]]) + _checkpoint_flags(c, lane, g)
-    return out + _gate_flags(state["gate_logs"]) + _file_flags(of("wave"))
+    return out + _gate_flags(state["gate_logs"], g) + _file_flags(of("wave"))
 
 
 def _exec_complete(state: State, lanes: Iterable[Lane]) -> bool:
@@ -1502,8 +1546,12 @@ def _summary(state: State) -> list[str]:
         lanes += f"{g['lane_worktrees']} lane worktrees"
     out.append(lanes)
     logs = [gate_state(x) for x in state["gate_logs"]]
+    retired = len(g["superseded"]) if g else 0
+    red = f"{logs.count('red')} red" + (
+        f" ({retired} replaced by a later green)" if retired else ""
+    )
     out.append(
-        f"gates      {logs.count('green')} green · {logs.count('red')} red · "
+        f"gates      {logs.count('green')} green · {red} · "
         f"{logs.count('no-exit')} without exit= · "
         f"{len(state['integration_files'])} integration files"
     )
