@@ -2164,8 +2164,23 @@ class Isolation(support.MonitorSandbox):
         outs = sorted(MINUTE.sub("<time>", p.stdout) for p in done)
         return [p.returncode for p in done], outs
 
+    @staticmethod
+    def status_seen(log: Path, wt: Path, since: int) -> None:
+        """Wait up to 60 s for the monitor's `git status` in wt, stamped after since."""
+        end = time.monotonic() + 60
+        while time.monotonic() < end:
+            for t, _, a in (x.partition(" ") for x in log.read_text().splitlines()):
+                if int(t) >= since and " status " in f" {a} " and str(wt) in a:
+                    return
+            time.sleep(0.05)
+
     def commit_loop(
-        self, m: support.Machine, r: support.FixtureRoute, wt: Path, session: str
+        self,
+        m: support.Machine,
+        r: support.FixtureRoute,
+        wt: Path,
+        session: str,
+        log: Path,
     ) -> tuple[list[tuple[list[int], list[str]]], list[str]]:
         """COMMITS commits in wt, the lane's Final SHA following HEAD after each.
 
@@ -2186,6 +2201,11 @@ class Isolation(support.MonitorSandbox):
                 r.plan / "lanes/p1-01-x-checkpoint.md", f"Final SHA: {sha}\n"
             )
             if n in MID_PAIRS:
+                # a refresh runs `git status` only when the worktree's HEAD is the
+                # checkpoint's SHA, each read at its own moment; CI's took up to
+                # 0.6 s, a dozen of this loop's commits, and never matched: the lane
+                # holds at its Final SHA until one has, the other lanes committing
+                self.status_seen(log, wt, time.time_ns())
                 pairs.append(self.pair(m, session, r))
         pairs.append(self.pair(m, session, r))
         return pairs, failed
@@ -2270,7 +2290,7 @@ class Isolation(support.MonitorSandbox):
         try:
             with concurrent.futures.ThreadPoolExecutor(len(lanes)) as pool:
                 futures = {
-                    s: pool.submit(self.commit_loop, m, r, wt, s)
+                    s: pool.submit(self.commit_loop, m, r, wt, s, log)
                     for s, (r, wt) in lanes.items()
                 }
                 done = {s: f.result() for s, f in futures.items()}
