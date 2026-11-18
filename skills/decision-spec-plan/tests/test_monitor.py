@@ -1326,6 +1326,24 @@ def live_runs(state: dict[str, object]) -> list[dict[str, object]]:
     ]
 
 
+def git_ran(stamps: list[tuple[str, str, str]], t0: int, t1: int) -> dict[str, int]:
+    """Count the git shim's commands stamped between t0 and t1, by subcommand."""
+    ran: dict[str, int] = {}
+    for t, _, a in stamps:
+        words = a.split()
+        if t0 <= int(t) <= t1 and words:
+            cmd = words[2] if words[0] == "-C" and words[2:] else words[0]
+            ran[cmd] = ran.get(cmd, 0) + 1
+    return ran
+
+
+def runs_git(mon: support.Monitor) -> list[object]:
+    """Each live run's git state as the monitor serves it; [] when it is not up."""
+    with contextlib.suppress(OSError):
+        return [r["git"] for r in live_runs(mon.state())]
+    return []
+
+
 def git_of(state: dict[str, object], key: str) -> dict[str, object]:
     """The `git` of route key's live run; {} while it is not listed."""
     runs = [r for r in live_runs(state) if str(r["key"]).startswith(f"{key}-")]
@@ -2261,11 +2279,17 @@ class Isolation(support.MonitorSandbox):
             stop.set()
             for t in pollers:
                 t.join()
+            last = runs_git(mon)
             _ = mon.stop()
         base60 = {s: self.pair(m, s, r) for s, (r, _) in lanes.items()}
         stamps = [x.partition(" ") for x in log.read_text().splitlines()]
         status = sum(
             t0 <= int(t) <= t1 and " status " in f" {a} " for t, _, a in stamps
+        )
+        # what the monitor's git did in the loop, for a failure only CI has shown
+        seen = (
+            f"loop {(t1 - t0) / 1e9:.1f} s; git in it: {git_ran(stamps, t0, t1)}; "
+            f"git per run at its end: {last}"
         )
         failed = [o for _, f in done.values() for o in f]
         locks = [o for o in failed if "index.lock" in o]
@@ -2273,7 +2297,7 @@ class Isolation(support.MonitorSandbox):
         msg = f"{commits} commits, {len(locks)} failed on index.lock"
         self.ok(msg, commits and not locks, locks[:3])
         self.ok(f"{len(failed)} commits failed at all", not failed, failed[:3])
-        self.ok(f"{status} monitor git status spawns during the loop", status)
+        self.ok(f"{status} monitor git status spawns during the loop", status, seen)
         runs = [p for pairs, _ in done.values() for p in pairs]
         runs += [*base0.values(), *base60.values()]
         hooks = [c for codes, _ in runs for c in codes]
