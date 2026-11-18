@@ -1089,11 +1089,10 @@ def _checkpoint_facts(
         lane_id = c.name[: -len("-checkpoint.md")]
         sha, final = _checkpoint_sha(text)
         rulings = c.with_name(lane_id + "-rulings.md")
-        plan = PLAN_ID.match(lane_id)
         out.append(
             {
                 "id": lane_id,
-                "plan": plan[0] if plan else lane_id,
+                "plan": _plan_id(lane_id, p),
                 "path": files[-1]["path"],
                 "sha": sha,
                 "final_sha_line": final,
@@ -1120,9 +1119,12 @@ def _gate_fact(gate: GateLog) -> GateLogFact:
     }
 
 
-def _plan_id(stem: str) -> str:
-    """Return a plan's id: the PLAN_ID its stem opens with, else the stem."""
-    m = PLAN_ID.match(stem)
+def _plan_id(stem: str, p: str) -> str:
+    """Return a plan's id: the PLAN_ID its stem opens with, else the stem.
+
+    A phase named by a word (`--phase strict`) has ids like `pstrict-01` too.
+    """
+    m = PLAN_ID.match(stem) or re.match(rf"p{re.escape(p)}-\d+[a-z]?(?=-|$)", stem)
     return m[0] if m else stem
 
 
@@ -1154,12 +1156,12 @@ def _waves(base: pathlib.Path, p: str) -> dict[str, WaveFact]:
     rows = scope_check.plan_table(str(index))
     direct, reach = scope_check.edges(rows), scope_check.depends(rows)
     return {
-        _plan_id(s): {
+        _plan_id(s, p): {
             "wave": wave,
             "wave_no": scope_check.wave_no(wave),
-            "after": sorted(map(_plan_id, direct[s][0])),
+            "after": sorted(_plan_id(d, p) for d in direct[s][0]),
             "after_waves": sorted(direct[s][1]),
-            "waits_for": sorted(map(_plan_id, reach[s])),
+            "waits_for": sorted(_plan_id(d, p) for d in reach[s]),
             "title": plan_title(base / "plans" / f"{s}.md"),
         }
         for s, (wave, _) in rows.items()
