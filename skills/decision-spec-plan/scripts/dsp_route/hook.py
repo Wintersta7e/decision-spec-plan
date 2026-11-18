@@ -160,19 +160,23 @@ def _pre_tool_use(
         from .agent import agent_pre
 
         return checked(agent_pre, event, session, entry) or 0
+    if event.get("tool_name") in EDITS:
+        from .lead_edits import edit_hold
+
+        if held := checked(edit_hold, event, session, entry):
+            return deny(held[1], held[0])
     return _lead_dispatch(event, entry)
 
 
 def _post_tool_use_line(
     event: Mapping[str, object], session: str, entry: RegistryEntry
 ) -> str | None:
-    """Return the unthrottled PostToolUse line: the lead's own edits or the tally."""
+    """Return the unthrottled PostToolUse line: the answers' tally; count lead edits."""
     tool = event.get("tool_name")
     if tool in EDITS:
-        from .lead_edits import lead_edits
+        from .lead_edits import record_edit
 
-        if line := checked(lead_edits, event, session, entry):
-            return line
+        _ = checked(record_edit, event, session, entry)
     if tool == "AskUserQuestion":
         from .inject import took
 
@@ -438,9 +442,10 @@ def hook() -> int:
     whole report and what to re-read. Each names the skill's files changed since the
     session read them. After an AskUserQuestion, unthrottled, PostToolUse tallies
     whether each answer took the recommended option, and says so past TAKE_RATE of the
-    last TAKE_WINDOW. After the lead's own edit of the repository once the phase has a
-    budget, unthrottled, it says at the second and every tenth after that execution is a
-    fresh group's (F68).
+    last TAKE_WINDOW. Once the phase has a budget, PreToolUse holds the lead's edit of a
+    third repository file of its own — denied in a lane's worktree, asked in the main
+    checkout — and PostToolUse counts the files whose edit ran: execution is a fresh
+    group's (F68).
 
     Returns:
         The hook's exit code: 2 sends an agent back to its running job, else 0.
