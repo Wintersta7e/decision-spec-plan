@@ -182,6 +182,21 @@ class PluginFiles(support.Sandbox):
             "every dispatch names decision-spec-plan:dsp-*", not hits, "\n".join(hits)
         )
 
+    def test_shebang_files_are_executable(self) -> None:
+        """Each tracked file of the plugin with a shebang is executable in git."""
+        # ruff's EXE001 is off under WSL, whose Windows drives show every file as
+        # executable: a mode git lost there failed only CI's lint
+        ls = self.git("-C", PLUGIN, "ls-files", "-s", check=False)
+        if ls.code != 0:
+            self.skipTest("not a git checkout: an installed copy")
+        entries = (ln.split(maxsplit=3) for ln in ls.out.splitlines())
+        lost = [
+            path
+            for mode, *_, path in entries
+            if mode == "100644" and (PLUGIN / path).read_bytes()[:2] == b"#!"
+        ]
+        self.ok(f"{len(lost)} files with a shebang not executable", not lost, lost)
+
     def test_named_files_and_cited_rows_exist(self) -> None:
         """Every file SKILL.md names and every failure-mode row a file cites exists."""
         # SKILL.md's pointer to the ask format once named a file the skill never
