@@ -23,6 +23,7 @@ Usage:
     route_state.py <planning-dir> --phase P [--repo DIR] [--main BRANCH]
         [--sections 38-48 | 38-] [--spec-dir DIR] [--all]
         [--activate [--rung S|M|L] [--ci-harness LABEL] [--sins on|off]]
+    route_state.py <planning-dir> --phase P --repo DIR --next [--group-size N]
     route_state.py --budget LABEL --estimate M [--groups N --tasks T] [--phase P]
         [--repo R] [--base pin|catch-up|merge]
 
@@ -47,6 +48,15 @@ the hooks read (Claude Code changed its format), it prints a line naming the che
 are off: each lets every call through on a shape it cannot find. `--ci-harness <label>`
 names a suite CI runs that the local full gate does not; push_guard.py then also wants,
 per pushed commit, a gate log whose first 20 lines hold `harness=<label>` (F90).
+
+--next prints, for each lane of the plan index that can take a task group now, the
+Agent call to send as it stands: its name (`exec-<plan-id>-g<k>`), the phase's group
+brief (`<planning-dir>/GROUP-BRIEF-p<P>.md`; no call while it is missing or keeps an
+ADAPT slot), the plan, the group's tasks (from the checkpoint's `Next task:` line,
+`--group-size` of them), the worktree, checkpoint and rulings file, and the ETA. Every
+other lane gets why it takes none: merged, a plan it waits for, an `exec-` agent of it
+out (unfinished, its transcript written in the last 30 min), a red or running gate, a
+green one for the integrator (F48, F102).
 
 --budget records the route's estimate in M units (costs.md) — the lead, every review and
 agent of the stages left — in <planning-dir>/route-budget.json, one budget a route
@@ -129,6 +139,12 @@ def main() -> int:
     ap = parser(__doc__)
     a = ap.parse_args(namespace=RouteArgs())
     flags = {"--rung": a.rung, "--sins": a.sins, "--ci-harness": a.ci_harness}
+    if a.next:
+        if a.activate:
+            ap.error("--next takes no --activate")
+        from dsp_route.next_groups import next_groups
+
+        return next_groups(a)
     if (given := [f for f, v in flags.items() if v]) and not a.activate:
         # dropped in silence, a lead believed the route had them (live)
         ap.error(f"{', '.join(given)} take effect only with --activate")

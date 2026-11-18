@@ -110,6 +110,8 @@ class RouteArgs(argparse.Namespace):
     sins: Literal["on", "off"] | None = None
     ci_harness: str | None = None
     activate: bool = False
+    next: bool = False
+    group_size: int = 5
 
 
 def parse_json(text: str | bytes) -> object:
@@ -271,6 +273,19 @@ def parser(description: str | None = None) -> argparse.ArgumentParser:
         action="store_true",
         help="also write these arguments to <git-common-dir>/dsp-route-<id>.json (one "
         "per planning dir) and register this session",
+    )
+    _ = ap.add_argument(
+        "--next",
+        action="store_true",
+        help="print the Agent call of each lane that can take a task group now, and "
+        "why each other lane takes none",
+    )
+    _ = ap.add_argument(
+        "--group-size",
+        type=int,
+        default=5,
+        help="with --next: the tasks a group takes (default 5; 2 when they run an "
+        "end-to-end or GUI suite)",
     )
     return ap
 
