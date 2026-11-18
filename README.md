@@ -205,8 +205,12 @@ command up from [INSTALL.md](INSTALL.md) (a shell function and an alias for your
 
 It serves on the first free port from 47961 to 47970; `--port` moves that range and `--open` also
 opens a browser tab. The page has four views: the overview of active routes, a route's detail
-(stage strip, budget label, lane board, wave graph, agents, gate logs), a read-only detail of one
-run, and the ended routes. Times are 24-hour, in your browser's time zone.
+(what needs attention, stage strip, budget label, lane board, wave graph, agents, gate logs), a
+read-only detail of one run, and the ended routes. The overview's attention band holds active routes
+only, one row per route; an idle route shows a count in the idle list and its items on its own page.
+The wave graph and lane cards name each plan by its title, the first heading of its plan file. A red
+gate log stops counting once a clean green of the same harness ran on a later commit. Times are
+24-hour, in your browser's time zone.
 
 | Key | Does |
 |---|---|

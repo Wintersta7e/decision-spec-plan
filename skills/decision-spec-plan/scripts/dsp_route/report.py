@@ -279,7 +279,8 @@ class WaveFact(TypedDict):
     """A plan's row of the plan index: its Wave cell and number, what it waits for.
 
     after: the plan ids its `Depends on` cell names; after_waves: the waves an `all`
-    cell waits for; waits_for: every plan id it waits for, directly or through others.
+    cell waits for; waits_for: every plan id it waits for, directly or through others;
+    title: what its plan file's first heading says it does, None without one.
     """
 
     wave: str
@@ -287,6 +288,7 @@ class WaveFact(TypedDict):
     after: list[str]
     after_waves: list[int]
     waits_for: list[str]
+    title: str | None
 
 
 class Stage(TypedDict):
@@ -1124,6 +1126,23 @@ def _plan_id(stem: str) -> str:
     return m[0] if m else stem
 
 
+def plan_title(path: pathlib.Path) -> str | None:
+    """Return what a plan's first `# ` heading says, after its id's dash; None without.
+
+    `# p1-01-a — Lane 0: two defects` gives `Lane 0: two defects`; a heading with no
+    em or en dash between spaces is the title whole. Backticks are dropped.
+    """
+    try:
+        with path.open(encoding="utf-8", errors="replace") as f:
+            for line in f:
+                if m := re.match(r"#[ \t]+(.*\S)", line):
+                    title = re.split(r" [—–] ", m[1], maxsplit=1)[-1]
+                    return title.replace("`", "").strip() or None
+    except OSError:
+        return None
+    return None
+
+
 def _waves(base: pathlib.Path, p: str) -> dict[str, WaveFact]:
     """Return each plan's wave and dependencies by plan id, from the plan index.
 
@@ -1141,6 +1160,7 @@ def _waves(base: pathlib.Path, p: str) -> dict[str, WaveFact]:
             "after": sorted(map(_plan_id, direct[s][0])),
             "after_waves": sorted(direct[s][1]),
             "waits_for": sorted(map(_plan_id, reach[s])),
+            "title": plan_title(base / "plans" / f"{s}.md"),
         }
         for s, (wave, _) in rows.items()
     }
