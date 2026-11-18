@@ -205,8 +205,9 @@ behind — and branch the next wave from the new SHA. **Why:** in two runs the l
 **Push only gated commits.** While the route is active, `scripts/push_guard.py` (a PreToolUse hook)
 blocks a `git push` of any commit without a gate log in `<planning-dir>/lanes/` whose first `sha=`
 line (within its first 20 lines) is `sha=<that commit> dirty=0` and whose last `exit=` line is
-`exit=0` — the integrator's last log covers the main it returns; a commit you add after it needs
-its own full gate first, written by the gate runner, never by hand:
+`exit=0` — the integrator's last log covers the main it returns, and any commit with the same tree
+(a reword, a merge that changed no file: `gate.py` writes `tree=`); a commit that changes a file
+needs its own full gate first, written by the gate runner, never by hand:
 `<skill-dir>/scripts/gate.py <planning-dir> <name> -- '<full gate>'` (it writes the `sha=`, `cmd=`
 and `exit=` lines itself, streams the output and exits with the gate's status).
 On a route activated with `--ci-harness <label>` a push also needs a log of the CI's own suite

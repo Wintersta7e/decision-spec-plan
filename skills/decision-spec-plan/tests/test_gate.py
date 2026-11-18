@@ -46,6 +46,7 @@ class GateLog(support.Sandbox):
         """The log's lines, its name, a dirty tree and a missing command."""
         r3, p3 = self.R3, self.P3
         head = self.rev(r3)
+        tree = self.git("-C", r3, "rev-parse", "HEAD^{tree}").strip()
         cmd = f"echo out; echo err >&2; exit {GATE_STATUS}"
         r = self.py("gate.py", p3, "g1", "--repo", r3, "--", cmd)
         log = p3 / "lanes/g1-gate.log"
@@ -55,7 +56,7 @@ class GateLog(support.Sandbox):
             "in the "
             "log; output still printed",
             r.code == GATE_STATUS
-            and got[0] == f"sha={head} dirty=0"
+            and got[0] == f"sha={head} dirty=0 tree={tree}"
             and got[1] == f"cmd={cmd}"
             and grep_file(log, "err", x=True)
             and got[-1] == f"exit={GATE_STATUS}"
@@ -73,7 +74,7 @@ class GateLog(support.Sandbox):
             "exit= on its own line",
             got[:5]
             == [
-                f"sha={head} dirty=0 wt=p1-01",
+                f"sha={head} dirty=0 wt=p1-01 tree={tree}",
                 "harness=e2e",
                 "cmd=printf 'a b'",
                 "a b",
@@ -85,7 +86,7 @@ class GateLog(support.Sandbox):
         r = self.py("gate.py", p3, "g3", "--repo", r3, "--", "true", merge=True)
         self.ok(
             "gate.py: a dirty tree is counted and warned about",
-            grep_file(p3 / "lanes/g3-gate.log", "^sha=.* dirty=1$")
+            grep_file(p3 / "lanes/g3-gate.log", "^sha=.* dirty=1 tree=[0-9a-f]*$")
             and grep(r.out, "gates no commit"),
             r.out,
         )
@@ -172,7 +173,7 @@ class GateNoLock(support.Sandbox):
         first = lines(pd / "lanes/g-gate.log")[0]
         self.ok(
             "gate.py: index unchanged and no index.lock in a stat-dirty tree; dirty=0",
-            after == before and first.endswith(" dirty=0"),
+            after == before and " dirty=0 " in first,
             f"before {before}\nafter  {after}\n{first}",
         )
         _ = self.git("-C", r, "status", "--porcelain")

@@ -171,7 +171,18 @@ class GuardGateLogs(support.Route):
             grep(out, "no gate log under .* names"),
             out,
         )
+        # a clean green log of another commit with gl's tree clears gl: a reword or a
+        # merge that changed no file; dirty or another tree does not
         self.rm(log)
+        _ = g(2, repo, "git push origin gl")
+        tl = lanes / "tree-gate.log"
+        _ = self.write(tl, f"sha={self.MAIN} dirty=0 tree={tree}\nok\nexit=0\n")
+        _ = g(0, repo, "git push origin gl")
+        _ = self.write(tl, f"sha={self.MAIN} dirty=1 tree={tree}\nok\nexit=0\n")
+        _ = g(2, repo, "git push origin gl")
+        _ = self.write(tl, f"sha={self.MAIN} dirty=0 tree={'0' * 40}\nok\nexit=0\n")
+        _ = g(2, repo, "git push origin gl")
+        self.rm(tl)
         _ = self.git("-C", repo, "branch", "-q", "-D", "gl")
         # a directory named like a gate log is no log; a guard that crashes holds the
         # push

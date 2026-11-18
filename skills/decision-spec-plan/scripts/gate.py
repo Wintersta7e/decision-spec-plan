@@ -8,7 +8,7 @@
 Runs <command> in --repo (default: the current directory) and writes
 <planning-dir>/lanes/<name>-gate.log (`<name>-<label>-gate.log` with --harness):
 
-    sha=<HEAD> dirty=<tracked files changed>[ wt=<lane>]
+    sha=<HEAD> dirty=<tracked files changed>[ wt=<lane>] tree=<HEAD's tree>
     harness=<label>       (with --harness: a suite CI runs that the local gate does not)
     cmd=<command>
     <the command's output, stdout and stderr merged>
@@ -151,6 +151,7 @@ def main() -> int:
         sys.exit("gate.py: no command after --")
     repo = pathlib.Path(a.repo).resolve()
     sha = git(repo, "rev-parse", "HEAD").strip()
+    tree = git(repo, "rev-parse", "HEAD^{tree}").strip()
     dirty = len(git(repo, "status", "--porcelain", "--untracked-files=no").splitlines())
     lanes = pathlib.Path(a.planning_dir, "lanes")
     lanes.mkdir(parents=True, exist_ok=True)
@@ -165,7 +166,7 @@ def main() -> int:
     shown = command[0] if len(command) == 1 else shlex.join(command)
     with log.open("w", newline="\n") as out:
         wt = f" wt={a.wt}" if a.wt else ""
-        _ = out.write(f"sha={sha} dirty={dirty}{wt}\n")
+        _ = out.write(f"sha={sha} dirty={dirty}{wt} tree={tree}\n")
         if a.harness:
             _ = out.write(f"harness={a.harness}\n")
         _ = out.write(f"cmd={shown}\n")
