@@ -49,6 +49,11 @@ run `criteria_check.py` on the one spec file.)
   **inside** the worktree. **Never link the planning dir in**: every path to it in a dispatch is
   absolute, in the main checkout. **Why:** a planning dir under a tracked `docs/` was linked as
   `docs/docs` in a lane worktree, and agents wrote through it into the main checkout.
+- **A repo on a Windows drive under WSL** (`/mnt/<drive>/…`): the lane worktree goes to
+  `~/dsp-worktrees/<repo>-<plan-id>` instead, its install run there with a venv or `node_modules`
+  of its own; `route_state.py --next` prints that path. Tests the project runs on Windows itself run
+  from the main checkout after the merge. **Why:** the same tests ran 3.7 times slower from
+  `/mnt/c` (22.0 s against 5.9 s), and a full gate 20 minutes against CI's 6.
 - Dispatch the lane's execution agents **one task group at a time**, sequentially in the lane's
   worktree: a group is about 100 turns — **size it by what its tasks run, not by their count**: up to
   ~5 consecutive tasks that stay on one side of the stack, **2** when a task's steps run an

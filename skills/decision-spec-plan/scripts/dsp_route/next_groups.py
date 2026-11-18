@@ -27,6 +27,7 @@ OUT_MIN = 30  # an unfinished agent unwritten this long counts as gone, not out
 NEXT = re.compile(r"^Next task:\s*(\d+|none)\b", re.MULTILINE | re.IGNORECASE)
 ADAPT = "\u2039ADAPT"  # the brief templates' slot, `<ADAPT` in angle quotes
 TASK = re.compile(r"^#{2,3} Task (\d+)\b", re.MULTILINE)
+WINDOWS_DRIVE = re.compile(r"/mnt/[a-z]/")  # how WSL mounts a Windows drive
 
 
 def _agents(session: str) -> dict[str, float | None]:
@@ -67,14 +68,24 @@ def _start(checkpoint: pathlib.Path, tasks: list[int]) -> int | str | None:
     return None if m[1].lower() == "none" else int(m[1])
 
 
+def lane_dir(top: pathlib.Path, plan: str) -> pathlib.Path:
+    """Return where `execution.md` puts a new lane worktree of the repo at top.
+
+    Beside the repo, or under `~/dsp-worktrees` when the repo is on a Windows drive:
+    WSL ran the same tests 3.7 times slower from `/mnt/<drive>`.
+    """
+    if WINDOWS_DRIVE.match(f"{top}/"):
+        return pathlib.Path.home() / "dsp-worktrees" / f"{top.name}-{plan}"
+    return top.with_name(f"{top.name}-{plan}")
+
+
 def _worktree(state: "State", lane: "Lane", repo: str) -> str:
-    """Return the lane's worktree, or where `execution.md` puts a new one."""
+    """Return the lane's worktree, or where a new one goes."""
     g = state["git"]
     facts = g["lanes"].get(lane["id"]) if g else None
     if facts and facts["worktree"] and facts["worktree"]["path"]:
         return facts["worktree"]["path"]
-    top = pathlib.Path(repo).resolve()
-    return str(top.with_name(f"{top.name}-{lane['plan']}"))
+    return str(lane_dir(pathlib.Path(repo).resolve(), lane["plan"]))
 
 
 def _why_not(
