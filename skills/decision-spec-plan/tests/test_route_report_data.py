@@ -387,6 +387,33 @@ class Waves(support.Sandbox):
             got,
         )
 
+    def test_named_phase(self) -> None:
+        """A phase named by a word: one lane per plan id, its wave and title joined."""
+        plan = self.T / "n"
+        _ = self.write(
+            plan / "plans/pstrict-00-index.md",
+            "| Plan | Wave | Depends on |\n|---|---|---|\n"
+            "| pstrict-01-lane0 | W1 | — |\n| pstrict-02-types | W2 | pstrict-01 |\n",
+        )
+        _ = self.write(plan / "plans/pstrict-01-lane0.md", "# P01 — Lane 0 fixes\n")
+        _ = self.write(plan / "plans/pstrict-02-types.md", "# P02 — Types\n")
+        _ = self.write(plan / "lanes/pstrict-01-lane0-checkpoint.md", "lane 0\n")
+        argv = [str(plan), "--phase", "strict"]
+        s = collect_json(type(self), argv, use_git=False)
+        lanes = [(ln["id"], ln["plan"], ln["basis"]) for ln in s["lanes"]]
+        waves = {i: (w["wave_no"], w["title"]) for i, w in s["waves"].items()}
+        self.ok(
+            f"lanes {lanes}, waves {waves}",
+            lanes
+            == [
+                ("pstrict-01-lane0", "pstrict-01", "no-sha"),
+                ("pstrict-02", "pstrict-02", "planned"),
+            ]
+            and waves
+            == {"pstrict-01": (1, "Lane 0 fixes"), "pstrict-02": (2, "Types")},
+            s["lanes"],
+        )
+
 
 # a plan id and nothing else
 PLAN_ONLY = re.compile(r"p\d+-\d+[a-z]?")
