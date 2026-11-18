@@ -629,3 +629,77 @@ class Deadline(support.Sandbox):
             out == {1.0: "deadline", 30.0: full_text},
             out,
         )
+
+
+class Superseded(support.Sandbox):
+    """A red gate log a later green gate of its harness replaced is no flag."""
+
+    def test_superseded(self) -> None:
+        """Retired: red under a green descendant, red then green on one commit.
+
+        Kept: red after green on one commit, a harness red under a full green, a red
+        under a dirty green only, a red off every green's history; a green whose
+        commit is not in the repository retires nothing.
+        """
+        r = self.init_repo(self.T / "r", commits=("base",))
+        lanes = r / ".plan/lanes"
+        _ = self.git("-C", r, "switch", "-q", "-c", "p1-01-a")
+        c1 = self.commit_file(r, "f1", "one\n")
+        c2 = self.commit_file(r, "f1", "two\n")
+        _ = self.git("-C", r, "switch", "-q", "-c", "p1-02-a", "main")
+        c3 = self.commit_file(r, "f3", "three\n")
+        c4 = self.commit_file(r, "f3", "four\n")
+        _ = self.git("-C", r, "switch", "-q", "main")
+        side = self.commit_file(r, "f9", "side\n")
+        logs = [
+            # (log, sha, dirty, exit, harness, mtime offset)
+            ("p1-01-a-g1-gate.log", c1, 0, 1, None, -50),
+            ("p1-01-a-g2-gate.log", c2, 0, 1, None, -40),
+            ("p1-01-a-g2-pg-gate.log", c2, 0, 1, "pg", -40),
+            ("p1-01-a-g2-r2-gate.log", c2, 0, 0, None, -30),
+            ("p1-01-a-late-gate.log", c2, 0, 2, None, -20),
+            ("p1-02-a-g1-gate.log", c3, 0, 1, None, -50),
+            ("p1-02-a-g2-gate.log", c4, 3, 0, None, -40),
+            ("p1-03-side-gate.log", side, 0, 1, None, -50),
+            ("p1-04-gone-gate.log", "f" * 40, 0, 0, None, -10),
+        ]
+        for log, sha, dirty, code, harness, offset in logs:
+            head = f"sha={sha} dirty={dirty}\n" + (
+                f"harness={harness}\n" if harness else ""
+            )
+            path = self.write(lanes / log, f"{head}ran\nexit={code}\n")
+            self.touch(path, offset)
+        s = collect_json(
+            type(self), [str(r / ".plan"), "--phase", "1", "--repo", str(r)]
+        )
+        red = sorted(f["subject"] for f in s["flags"] if f["kind"] == "gate-red")
+        want = [
+            "p1-01-a-g2-pg-gate.log",
+            "p1-01-a-late-gate.log",
+            "p1-02-a-g1-gate.log",
+            "p1-03-side-gate.log",
+        ]
+        git = s["git"]
+        self.ok(
+            f"red flags {red}, retired {git and git['superseded']}",
+            red == want
+            and git is not None
+            and git["superseded"] == ["p1-01-a-g1-gate.log", "p1-01-a-g2-gate.log"],
+            s["flags"],
+        )
+        from dsp_route import report
+
+        text = report.render(s, show_all=False)
+        self.ok(
+            "the summary counts the retired reds",
+            "· 6 red (2 replaced by a later green) ·" in text,
+            text,
+        )
+
+    @classmethod
+    def commit_file(cls, repo: Path, name: str, text: str) -> str:
+        """Return the SHA of a commit in repo writing text to name."""
+        _ = cls.write(repo / name, text)
+        _ = cls.git("-C", repo, "add", name)
+        _ = cls.git("-C", repo, "commit", "-q", "-m", name)
+        return cls.rev(repo)
