@@ -104,6 +104,8 @@ class PluginFiles(support.Sandbox):
             f"PostCompact  {g}",
             f"PostToolUse * {route}",
             f"PostToolUseFailure Agent {g}",
+            # the user messages the ask list lacks, kept by the summary (F105)
+            f"PreCompact  {route}",
             (
                 "PreToolUse Agent|Bash|Write|Edit|MultiEdit|NotebookEdit|SendMessage "
                 f"{route}"
@@ -116,7 +118,7 @@ class PluginFiles(support.Sandbox):
             f"PreToolUse ^mcp__.*create_note$ {route}",
             f"SessionEnd  {g}",
             f"SessionStart compact|resume {route}",
-            f"Stop  {g}",
+            f"Stop  {route}",
             f"StopFailure  {g}",
             f"SubagentStart  {g}",
             f"SubagentStop  {route}",

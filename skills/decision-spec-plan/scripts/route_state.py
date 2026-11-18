@@ -85,18 +85,20 @@ background shell or monitor runs back to wait on it, twice at most per job: noth
 wakes it when the job ends (F92). It holds the lead's `exec-` dispatch while
 `decision_check.py` fails on the phase — one whose index did not exist at its first
 --activate — and a `verify-` agent whose prompt is not the file
-`decision_check.py --verifier` wrote.
+`decision_check.py --verifier` wrote. It numbers each user message to the lead and
+holds an `exec-` dispatch, and sends the lead's Stop back once, until each has a line
+in `<planning-dir>/asks.md`; PreCompact keeps the unlisted ones in the summary (F105).
 
 Registration: the plugin's `hooks/hooks.json` runs `route_state.py --hook` under
 SessionStart matcher `compact|resume`, PostToolUse matcher `*`, UserPromptSubmit,
 PreToolUse matcher `Agent|Bash|Write|Edit|MultiEdit|NotebookEdit|SendMessage`,
 PreToolUse matcher `^mcp__.*create_note$` (a review note posted through an MCP tool,
-held as a `gh` or `glab` review comment is), SubagentStop and TeammateIdle; and
-`push_guard.py` under PreToolUse matcher `Bash`. Eight more run `--hook` only when the
-hook shell sees `DSP_MONITOR=1`: SubagentStart, PostToolUseFailure matcher `Agent`,
-PostCompact, Notification, Stop, StopFailure, SessionEnd and PreToolUse matcher
-`AskUserQuestion`. They record the session's events under `~/.claude/dsp-routes/events/`
-(README, Monitor tracking). Those eight print nothing.
+held as a `gh` or `glab` review comment is), Stop, PreCompact, SubagentStop and
+TeammateIdle; and `push_guard.py` under PreToolUse matcher `Bash`. Seven more run
+`--hook` only when the hook shell sees `DSP_MONITOR=1`: SubagentStart,
+PostToolUseFailure matcher `Agent`, PostCompact, Notification, StopFailure, SessionEnd
+and PreToolUse matcher `AskUserQuestion`. They record the session's events under
+`~/.claude/dsp-routes/events/` (README, Monitor tracking). Those seven print nothing.
 """
 
 import sys

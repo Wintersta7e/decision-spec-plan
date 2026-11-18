@@ -572,6 +572,9 @@ class Folded(support.Route):
             "answered": at,
         }
         _ = cls.write(cls.P / "route-budget.json", json.dumps({"budgets": [budget]}))
+        # the tests' prompts listed, so no dispatch or Stop waits on the ask list (F105)
+        listed = "".join(f"Msg{n} | not an ask\n" for n in range(1, 31))
+        _ = cls.write(cls.P / "asks.md", listed)
 
     @property
     def events_dir(self) -> Path:

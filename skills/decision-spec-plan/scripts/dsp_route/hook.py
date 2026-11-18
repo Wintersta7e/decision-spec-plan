@@ -47,7 +47,6 @@ RECORD_ONLY = frozenset(
         "PostToolUseFailure",
         "PostCompact",
         "Notification",
-        "Stop",
         "StopFailure",
         "SessionEnd",
     }
@@ -95,8 +94,11 @@ def _outward(event: Mapping[str, object], act: str) -> int:
     )
 
 
-def _lead_dispatch(event: Mapping[str, object], entry: RegistryEntry) -> int:
-    """Run the lead's PreToolUse holds: a dead recipient, rung S, ledger and budget."""
+def _lead_dispatch(
+    event: Mapping[str, object], session: str, entry: RegistryEntry
+) -> int:
+    """Run the lead's PreToolUse holds: a dead recipient, rung S, ledgers and budget."""
+    from .asks import asks_hold
     from .holds import dead_recipient, gate_dispatch, ledger_hold, s_harvester
 
     if dead := checked(dead_recipient, event, entry):
@@ -114,6 +116,7 @@ def _lead_dispatch(event: Mapping[str, object], entry: RegistryEntry) -> int:
         return 0
     if agent_name.startswith((EXEC, "verify-")) and (
         held := checked(ledger_hold, event, entry)
+        or (checked(asks_hold, session, entry) if agent_name.startswith(EXEC) else None)
     ):
         return deny(held)
     if agent_name.startswith(EXEC):
@@ -165,7 +168,7 @@ def _pre_tool_use(
 
         if held := checked(edit_hold, event, session, entry):
             return deny(held[1], held[0])
-    return _lead_dispatch(event, entry)
+    return _lead_dispatch(event, session, entry)
 
 
 def _post_tool_use_line(
@@ -405,6 +408,30 @@ def _registered(
         _record(name, event, entry, t0)
 
 
+def _asks(
+    name: str, event: Mapping[str, object], session: str, entry: RegistryEntry
+) -> bool:
+    """Run the ask list's part of the lead's event; whether that was all of it (F105).
+
+    A Stop and a PreCompact are only that, and a user message (no agent's return) is
+    numbered; a lead's Stop must never reach the report.
+    """
+    if name not in ("Stop", "PreCompact", "UserPromptSubmit"):
+        return False
+    from .asks import keep, record_ask, stop_hold
+
+    if name == "Stop":
+        _ = checked(stop_hold, event, session, entry)
+    elif name == "PreCompact":
+        if text := checked(keep, session, entry):
+            print(text)  # the compaction summary's instructions
+    elif line := checked(record_ask, event, session, entry):
+        emit(name, line)
+    else:
+        return False
+    return True
+
+
 def _dispatch(
     name: str,
     event: Mapping[str, object],
@@ -417,7 +444,7 @@ def _dispatch(
         return _agent_stop(event, session)
     if name == "PreToolUse":
         return _pre_tool_use(event, session, entry)
-    if event.get("agent_id"):
+    if event.get("agent_id") or _asks(name, event, session, entry):
         return 0
     if name == "PostToolUse" and (line := _post_tool_use_line(event, session, entry)):
         emit(name, line)
@@ -445,7 +472,9 @@ def hook() -> int:
     last TAKE_WINDOW. Once the phase has a budget, PreToolUse holds the lead's edit of a
     third repository file of its own — denied in a lane's worktree, asked in the main
     checkout — and PostToolUse counts the files whose edit ran: execution is a fresh
-    group's (F68).
+    group's (F68). Each user message is numbered and owed a line in the ask list: an
+    `exec-` dispatch is held and the lead's Stop sent back once until each has one,
+    and PreCompact tells the summary to keep the unlisted ones verbatim (F105).
 
     Returns:
         The hook's exit code: 2 sends an agent back to its running job, else 0.

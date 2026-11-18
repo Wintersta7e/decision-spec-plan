@@ -240,6 +240,7 @@ def sequence(cwd: str) -> list[dict[str, object]]:
             is_interrupt=False,
             duration_ms=7,
         ),
+        lead("PreCompact", trigger="auto", custom_instructions=None),
         lead("PostCompact", trigger="auto"),
         lead("Notification", notification_type="idle_prompt", message="m"),
         lead("Stop"),

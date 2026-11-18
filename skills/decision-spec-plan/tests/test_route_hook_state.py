@@ -77,7 +77,10 @@ class StateHook(support.Route):
     """The state hook: who it speaks to."""
 
     def test_who_it_speaks_to(self) -> None:
-        """The lead's session hears the report; agents, others and prompts do not."""
+        """The lead's session hears the report; agents, others and prompts do not.
+
+        A user's prompt hears only its number in the ask list (F105).
+        """
         _ = self.hook("report", ev("PostToolUse", "s1", '"tool_name":"Agent"'))
         _ = self.hook(
             "silent", ev("PostToolUse", "s1", '"tool_name":"Read"')
@@ -93,7 +96,7 @@ class StateHook(support.Route):
             "silent", ev("PostToolUse", "s2", '"tool_name":"Read"')
         )  # never activated
         _ = self.hook(
-            "silent",
+            r"/^This is user message Msg1\. (?!.*route state ·)/",
             ev("UserPromptSubmit", "s1", '"prompt":"what is left on the todo?"'),
         )
         _ = self.hook(

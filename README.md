@@ -149,8 +149,8 @@ sequenceDiagram
 |---|---|---|
 | `push_guard.py --pre-push` | git's `pre-push`, written into the repository by `--activate` | A push of any commit that no full gate passed, read from the exact refs git sends |
 | `push_guard.py` | PreToolUse:Bash | A push that would skip the git hook (`--no-verify`); a bypass (`DSP_SKIP_*`), which you approve and agents may not use; every push, where the repository's hooks live elsewhere (`core.hooksPath`) |
-| `route_state.py --hook` | PreToolUse (including an MCP `create_note` tool), PostToolUse, UserPromptSubmit, SessionStart, SubagentStop, TeammateIdle | Route state and the recorded budget; a wave's dispatch held once its spend passes the budget; outward actions held for your answer; a review comment held while its Coverage fails; hand-written gate logs refused; an agent stopping while its own background jobs still run |
-| `route_state.py --hook` (recording) | PreToolUse:AskUserQuestion, SubagentStart, PostToolUseFailure:Agent, PostCompact, Notification, Stop, StopFailure, SessionEnd | Nothing: with `DSP_MONITOR=1` they record the session's events for the monitor |
+| `route_state.py --hook` | PreToolUse (including an MCP `create_note` tool), PostToolUse, UserPromptSubmit, SessionStart, Stop, PreCompact, SubagentStop, TeammateIdle | Route state and the recorded budget; a wave's dispatch held once its spend passes the budget; a wave's dispatch and the lead's turn end held until each of your messages has a line in the route's ask list, which a compaction keeps; outward actions held for your answer; a review comment held while its Coverage fails; hand-written gate logs refused; an agent stopping while its own background jobs still run |
+| `route_state.py --hook` (recording) | PreToolUse:AskUserQuestion, SubagentStart, PostToolUseFailure:Agent, PostCompact, Notification, StopFailure, SessionEnd | Nothing: with `DSP_MONITOR=1` they record the session's events for the monitor |
 
 The guards target careless agents, not adversaries:
 [`references/gates.md`](skills/decision-spec-plan/references/gates.md) says what each check
@@ -163,7 +163,7 @@ status.
 
 ### Monitor tracking (optional, off by default)
 
-The eight recording-only hooks record a routed session's events for the monitor, and only while
+The seven recording-only hooks record a routed session's events for the monitor, and only while
 tracking is on. Turn it on with one line in your user settings file, `~/.claude/settings.json`
 (recommended):
 
