@@ -6,7 +6,7 @@ the project's stack; keep every rule.
 
 ---
 
-The four briefs are full text in `briefs/` (decision, spec, reconcile, plan). This file holds the
+The five briefs are full text in `briefs/` (decision, spec, reconcile, plan, task group). This file holds the
 four documents the **lead** writes: the decision index, the arbiter, the scope section, the plan index
 — and, first, the layout and numbering they all use (§0).
 
@@ -17,6 +17,7 @@ four documents the **lead** writes: the decision index, the arbiter, the scope s
 ```
 <planning-dir>/                        # gitignored; may name real paths and projects
   DECISION-BRIEF-p<P>.md  SPEC-BRIEF-p<P>.md  RECONCILE-BRIEF-p<P>.md  PLAN-BRIEF-p<P>.md
+  GROUP-BRIEF-p<P>.md    (Stage 5; `route_state.py --next` names it in each group's call)
   decisions/phase<P>/  00-index.md  harvest-{spec,code,design}.md  D<n>-<slug>.md  00-seams.md  00-arbiter.md
   spec/        <N>-<slug>.md   (scope section first, register last; §-numbers continue across phases)
   reconcile/   p<P>-<dimension>.md

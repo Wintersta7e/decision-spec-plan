@@ -67,20 +67,23 @@ run `criteria_check.py` on the one spec file.)
   project's pipeline (a push, asked like any), and the next group or the integrator reads that
   log. **Never dispatch a group whose only task is a gate**: it closes the last group with work.
   **Why:** a local three-database gate cost 12.12M and 553 agent-minutes and never completed;
-  four gate-only groups cost 2.31M (`failure-modes` F90). Each agent gets the plan path, its task numbers, the
-  previous group's checkpoint, the lane's rulings file and any archived ruling ids its tasks need,
-  the brief's house rules, "run a gate into a file and read the file, never pipe it through
-  `tail`/`head`" (the pipe's exit status turns a red gate green; groups that never read the plan
-  brief piped 17 gates in one wave, each refused by the project's own hook), the
-  commit-message rules (the subject convention the repo's `git log` shows — a `type:` prefix, a
-  scope — subject length, body length, trailers — **state them; subagents default to adding their
-  own trailers**; one route's briefs left out the repo's `type:` prefix, the lead's rewords collided
-  with the agents' own and voided a gate), and "commit, **overwrite** `<planning-dir>/lanes/<plan-id>-checkpoint.md`
-  with the lane's current state — ≤15 lines: the lane's tasks done with SHAs, gate state, what the
-  next group must know; then an **orientation map** for the next group's tasks — the files and
-  symbols to open, with file:line, and the exact test commands that cover them; last a line
-  `Final SHA: <sha>`; ≤35 lines in all — and report the exact SHA you finished on" —
-  `route_state.py` takes the lane's SHA from that line and flags a longer file. The next group opens
+  four gate-only groups cost 2.31M (`failure-modes` F90).
+  **Dispatch each group from `route_state.py <planning-dir> --phase <P> --repo <repo> --next`**
+  (`--group-size 2` when the tasks run an end-to-end or GUI suite, or the fit `usage_report.py
+  --groups` printed): send each Agent call it prints as it stands — add only a `model`/`effort`
+  you announced for groups and the archived ruling ids a task needs. Each other lane gets a line
+  saying why it takes none: an agent out, a red gate, a plan it waits for, ready for the
+  integrator. The calls name `<planning-dir>/GROUP-BRIEF-p<P>.md`, which you write once before
+  the phase's first group from `briefs/group-brief.md`: the house rules, the commit-message rules
+  (the subject convention the repo's `git log` shows, lengths, trailers — **state them; subagents
+  default to adding their own trailers**), "run a gate into a file and read the file, never pipe
+  it through `tail`/`head`", and the checkpoint each group overwrites — ≤35 lines with an
+  orientation map, a `Next task: <n>` line and `Final SHA: <sha>` last, the two lines
+  `route_state.py` reads. `--next` prints no call while the brief keeps an `‹ADAPT›`. **Why:** a
+  lead-written brief dropped one rule from 21 of 24 dispatches (F48); one route's briefs left out
+  the repo's `type:` prefix and the lead's rewords collided with the agents' own and voided a
+  gate; groups that never read the plan brief piped 17 gates in one wave, each refused by the
+  project's own hook. The next group opens
   what the map names before it explores. **Why:** fresh groups reached 120–245k tokens of context
   before their first edit, mostly reading code the previous group had already read (`failure-modes`
   F67); with the map they reached a median ~85k, but checkpoints that kept every earlier group's
