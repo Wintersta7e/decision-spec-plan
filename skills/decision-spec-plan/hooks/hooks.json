@@ -34,6 +34,16 @@
         ]
       }
     ],
+    "PreCompact": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python3 \"${CLAUDE_PLUGIN_ROOT}/scripts/route_state.py\" --hook"
+          }
+        ]
+      }
+    ],
     "Notification": [
       {
         "hooks": [
@@ -50,7 +60,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "[ \"$DSP_MONITOR\" = 1 ] && python3 \"${CLAUDE_PLUGIN_ROOT}/scripts/route_state.py\" --hook || true"
+            "command": "python3 \"${CLAUDE_PLUGIN_ROOT}/scripts/route_state.py\" --hook"
           }
         ]
       }
