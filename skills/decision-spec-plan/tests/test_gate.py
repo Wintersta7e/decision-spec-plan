@@ -4,6 +4,8 @@
 The log holds sha and dirty before the run, the status after it.
 """
 
+import fcntl
+import os
 import unittest
 from pathlib import Path
 from typing import ClassVar
@@ -92,6 +94,64 @@ class GateLog(support.Sandbox):
         self.ok(
             "gate.py with no command: refused, no log",
             r.code != 0 and not (p3 / "lanes/g4-gate.log").exists(),
+        )
+
+
+class GateMachine(support.Sandbox):
+    """gate.py keeps the machine the user's: half the cores, and a shared slot."""
+
+    def test_half_the_cores(self) -> None:
+        """The build tools' parallelism is half the cores unless the caller set it."""
+        r, pd = self.T / "hc/r", self.T / "hc/pd"
+        _ = self.init_repo(r)
+        cmd = 'echo "jobs=$CARGO_BUILD_JOBS cmake=$CMAKE_BUILD_PARALLEL_LEVEL"'
+        _ = self.py("gate.py", pd, "a", "--repo", r, "--", cmd)
+        half = max(1, (os.cpu_count() or 2) // 2)
+        self.ok(
+            "gate.py: unset parallelism is half the cores",
+            grep_file(pd / "lanes/a-gate.log", f"jobs={half} cmake={half}", x=True),
+            (pd / "lanes/a-gate.log").read_text(),
+        )
+        env = {"CARGO_BUILD_JOBS": "3"}
+        _ = self.py("gate.py", pd, "b", "--repo", r, "--", cmd, env=env)
+        self.ok(
+            "gate.py: a set value is kept",
+            grep_file(pd / "lanes/b-gate.log", f"jobs=3 cmake={half}", x=True),
+            (pd / "lanes/b-gate.log").read_text(),
+        )
+        _ = self.py("gate.py", pd, "c", "--repo", r, "--", "echo ni=$(ps -o ni= -p $$)")
+        self.ok(
+            "gate.py: the gate runs at nice 19",
+            grep_file(pd / "lanes/c-gate.log", "ni= *19", x=True),
+            (pd / "lanes/c-gate.log").read_text(),
+        )
+
+    def test_slot_held(self) -> None:
+        """With every slot held, gate.py waits its time out, then runs anyway."""
+        r, pd = self.T / "sl/r", self.T / "sl/pd"
+        _ = self.init_repo(r)
+        slots = self.HOME / ".claude/dsp-routes/gate-slots"
+        slots.mkdir(parents=True, exist_ok=True)
+        env = {"DSP_GATE_SLOTS": "1", "DSP_GATE_WAIT_MIN": "0"}
+        free = self.py(
+            "gate.py", pd, "a", "--repo", r, "--", "true", env=env, merge=True
+        )
+        with (slots / "0.lock").open("a") as held:
+            fcntl.flock(held, fcntl.LOCK_EX)
+            busy = self.py(
+                "gate.py", pd, "b", "--repo", r, "--", "true", env=env, merge=True
+            )
+        self.ok(
+            "gate.py: a free slot runs without a word",
+            free.code == 0 and "slot" not in free.out,
+            free.out,
+        )
+        self.ok(
+            "gate.py: a held slot past the wait runs anyway and says so",
+            busy.code == 0
+            and grep(busy.out, "no gate slot came free")
+            and lines(pd / "lanes/b-gate.log")[-1] == "exit=0",
+            busy.out,
         )
 
 
