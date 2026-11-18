@@ -316,6 +316,24 @@ class WaveEdges(support.Sandbox):
         )
 
 
+class GateHead(support.Sandbox):
+    """A gate log's first line read for its commit, with gate.py's later fields too."""
+
+    def test_more_fields(self) -> None:
+        """`wt=` and `tree=` after `dirty=` keep the log's commit and dirty count."""
+        from dsp_route import report
+
+        sha, tree = "a" * 40, "b" * 40
+        log = self.T / "gh/lanes/x-gate.log"
+        _ = self.write(log, f"sha={sha} dirty=0 wt=p1-01 tree={tree}\nok\nexit=0\n")
+        got = report.gate_logs(log.parent, "1")
+        self.ok(
+            "the commit and dirty count are read",
+            [g[1:4] for g in got] == [(sha, "0", "0")],
+            got,
+        )
+
+
 class Waves(support.Sandbox):
     """Each plan's wave and dependencies in the object, by plan id (AC-P1-2-21)."""
 
