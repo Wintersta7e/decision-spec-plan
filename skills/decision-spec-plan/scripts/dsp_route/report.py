@@ -449,7 +449,8 @@ def _gate_log(log: pathlib.Path) -> GateLog:
                 harness = ln[len("harness=") :].strip()
             if m := re.fullmatch(r"exit=(\d+)\s*", ln):
                 last = m[1]
-    head = re.fullmatch(r"sha=([0-9a-f]{40}) dirty=(\d+)\s*", first)
+    # gate.py writes more fields after dirty= (`wt=<lane>`, `tree=<tree>`)
+    head = re.fullmatch(r"sha=([0-9a-f]{40}) dirty=(\d+)(?:\s.*)?\s*", first)
     sha, dirty = (head[1], head[2]) if head else ("", "")
     return log, sha, dirty, last, harness
 
