@@ -86,14 +86,6 @@ def asks_hold(session: str, entry: RegistryEntry) -> str | None:
     )
 
 
-def stop_hold(event: Mapping[str, object], session: str, entry: RegistryEntry) -> int:
-    """Send the lead's turn back once while a user message has no line; 0."""
-    if event.get("stop_hook_active") or not (why := asks_hold(session, entry)):
-        return 0
-    print(json.dumps({"decision": "block", "reason": why}))
-    return 0
-
-
 def keep(session: str, entry: RegistryEntry) -> str | None:
     """Return the compaction's instruction to keep the unlisted messages verbatim."""
     if not (rows := unlisted(session, entry)):
