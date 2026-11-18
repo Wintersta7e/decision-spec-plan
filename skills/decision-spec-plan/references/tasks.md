@@ -24,6 +24,15 @@ A review of a change, at S, rests its verdict on what it read and ran (F104):
 4. The verdict says unfinished while any file is Not read or no probe has run;
    `decision_check.py` fails the index otherwise, and the hook refuses posting the review's
    comments while it fails.
+5. Post the review as one structured comment, never several.
+
+**Text the user's team reads** — a review, an MR description, a ticket, a note — follows that
+project's rules, not the route's: its template or contributing file, the format the user named, and
+the team's own terms, kept in the language the team writes them in, in a plain register. Before
+drafting, find those rules or the user's earlier posts of that kind; write the text to a file, then
+post it. **Why:** in five sessions users corrected posted text five times — several comments for
+one review, a table they had asked for, a ticket in the wrong format, a translated term, a tone
+that read as generated (F106).
 
 Every shape keeps the route's verification:
 - each code claim is re-verified before a ruling;
