@@ -260,6 +260,33 @@ class PluginFiles(support.Sandbox):
         rows = [ln for ln in prompts.splitlines() if ln.startswith("|")]
         self.ok("the role table names hunt-", any("hunt-" in ln for ln in rows))
 
+    def test_hunt_brief_measured_sections(self) -> None:
+        """The three sections the second hunt trial measured, their evidence, cost."""
+        # one project, two 5-hunter runs at one SHA, blind-regraded together (F111)
+        refs = PLUGIN / "references"
+        brief = (refs / "briefs/hunt-brief.md").read_text()
+        order = (
+            "## Ports and processes",
+            "## Attack the boundaries",
+            "## Build the harness",
+            "## No early stop",
+            "## Prove it or drop it",
+        )
+        at = [brief.find(f"\n{h}\n") for h in order]
+        self.ok("hunt-brief.md holds each section", all(i >= 0 for i in at), at)
+        self.ok("hunt-brief.md orders the sections", at == sorted(at), at)
+        self.ok("hunt-brief.md labels a seam probe", "measured (seam:" in brief)
+        modes = (refs / "failure-modes.md").read_text()
+        self.ok("failure-modes.md has row F111", "\n| F111 |" in modes)
+        costs = (refs / "costs.md").read_text().splitlines()
+        self.ok(
+            "costs.md has a 2026-11-19 hunt row",
+            any(
+                ln.startswith("|") and "unt" in ln and "2026-11-19" in ln
+                for ln in costs
+            ),
+        )
+
     def test_hunt_routing_costs_and_evidence(self) -> None:
         """The hunt's routing row, its cost rows and its failure-mode rows exist."""
         refs = PLUGIN / "references"

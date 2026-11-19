@@ -27,6 +27,8 @@ the conversion from older figures: Sources, below.
 | Claim-only verifier (`prompts.md` §1f) | ~0.6M as a `dsp-deep` agent; 0 on the second model | ~$2.40 | unmeasured: the S review agent's figure |
 | Hunter (`prompts.md` §8) · a hunt of 5 hunters | ≈0.8M in 17–21 min · ≈4.0M | ≈$3.20 · ≈$16.00 | P11 benchmark, 2026-11-12 |
 | The suspects check (`prompts.md` §8c), one per hunt | ≈1.1M, +11–16 min after the hunters | ≈$4.40 | P11 benchmark, 2026-11-12 |
+| Hunter with the brief's three measured sections (`failure-modes` F111) · a hunt of 5 hunters | ≈1.0M in 8–15 min · ≈4.8M | ≈$4.00 · ≈$19.20 | live trial, one project, 2026-11-19 |
+| The suspects check after a hunt of 5 with those sections | ≈0.5–0.6M, +7–10 min after the last hunter | ≈$2.00–2.40 | live trial, one project, 2026-11-19 |
 | The fix-regression check (`prompts.md` §8b), one per fix round | ~0.6M | ~$2.40 | unmeasured: the claim-only verifier's figure |
 | Rung S review of a merge request, no harvester | ≈2.6M (0.9–5.8M) | ≈$10.40 | J |
 | Rung S review, all | 4.2M (1.6–10.8M); with a harvester 4.9–8.0M (`failure-modes` F87) | $16.80 | I, 2026-10-07..20 |
