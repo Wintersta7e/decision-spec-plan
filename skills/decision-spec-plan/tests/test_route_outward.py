@@ -335,18 +335,23 @@ class ReviewPosts(support.Route):
         _ = self.hook("silent", tool("mcp__gitlab__create_note"))
 
 
-# A computed word after a publisher's static subcommand is its argument, not a verb:
+# A computed word after a publisher's inert subcommand is its argument, not a verb:
 # a live hunt's test runs were held as publishes.
 ARGUMENTS = (
     "cargo test --workspace --all-features --locked $1 -- --nocapture --exact $1",
     "cargo test --workspace --all-features --locked $t -- --nocapture --exact $t",
+    "cargo test --workspace $1",
+    "cargo nextest run $T",
+    "cargo clippy $ARGS",
     "npm test $1",
+    "pnpm test $1",
 )
-ARGUMENT_FORMS = 3
+ARGUMENT_FORMS = 7
 # ...and still outward: a computed subcommand, the verb itself, a tool whose every word
-# may be a task or goal, a subcommand that opens a publish (`yarn npm publish`,
-# `dotnet nuget push`, `docker image push`, `docker build --push`), and a computed word
-# after a word that may be an option's value or a toolchain
+# may be a task or goal, and a computed word after any subcommand off the inert list —
+# one that runs another (`npm run $X`), opens a publish (`yarn npm $V`, `docker build
+# --push`) or none the list knows — or after a word that may be an option's value or
+# a toolchain
 STILL_OUTWARD = (
     "cargo $X",
     "npm $V",
@@ -361,8 +366,15 @@ STILL_OUTWARD = (
     "docker build $F .",
     "pnpm --filter x $V",
     "cargo +nightly $X",
+    "npm run $X",
+    "npm exec $X",
+    "pnpm exec $X",
+    "yarn workspace w $V",
+    "docker plugin $X",
+    "helm chart $X",
+    "cargo run $X",
 )
-STILL_OUTWARD_FORMS = 13
+STILL_OUTWARD_FORMS = 20
 
 
 class ComputedArguments(unittest.TestCase):

@@ -49,37 +49,26 @@ REVIEW_SHAPE_MUTATION = re.compile(
 )
 
 
-# Publishers whose every positional word is a task or goal, so a computed one may
-# publish (`gradle build $T`, `mvn clean $GOAL`).
-TASK_RUNNERS = {"gradle", "gradlew", "mvn"}
-# Subcommands that open a publish with a later word (`yarn npm publish`, `dotnet nuget
-# push`, `docker image push`, `docker build --push`): a computed word after one may be
-# that word.
-PUBLISH_OPENERS = {
-    "yarn": {"npm"},
-    "dotnet": {"nuget"},
-    "docker": {"image", "manifest", "build", "buildx", "compose"},
-    "podman": {"image", "manifest", "build", "buildx", "compose"},
+# The subcommands after which a computed word is an argument (`cargo test $1`). After
+# any other it may be the verb: a subcommand may run another (`npm run $X`), open a
+# publish with a later word (`yarn npm $V`, `docker build --push`), or take every
+# positional word as a task (`gradle build $T`, `mvn clean $GOAL`); a false match
+# only asks.
+INERT = {
+    "cargo": {"test", "build", "check", "clippy", "fmt", "doc", "bench", "nextest"},
+    **{tool: {"test"} for tool in ("npm", "pnpm", "yarn", "bun")},
 }
-SUBCOMMAND = re.compile(r"[A-Za-z][\w-]*")
 
 
 def _argued(tool: str, words: Sequence[shell_cmd.Word]) -> bool:
     """Return whether the words after a PUBLISHERS command's first are its arguments.
 
-    So when that first word is a static subcommand (`cargo test`, `npm test`) that is
-    neither the verb nor one opening a publish (PUBLISH_OPENERS), and the tool is no
-    TASK_RUNNERS one. A word before it that may be an option's value or a toolchain
-    (`pnpm --filter x $V`, `cargo +nightly $X`) leaves every computed word a verb.
+    So when that first word is a static INERT subcommand of the tool. A word before
+    it that may be an option's value or a toolchain (`pnpm --filter x $V`, `cargo
+    +nightly $X`) leaves every computed word a verb.
     """
     first = words[0] if words else None
-    return bool(
-        first
-        and first.static
-        and SUBCOMMAND.fullmatch(first.text)
-        and tool not in TASK_RUNNERS
-        and first.text not in PUBLISHERS[tool] | PUBLISH_OPENERS.get(tool, set())
-    )
+    return bool(first and first.static and first.text in INERT.get(tool, ()))
 
 
 def publish_word(tool: str, w: shell_cmd.Word, *, argument: bool = False) -> bool:
@@ -89,7 +78,7 @@ def publish_word(tool: str, w: shell_cmd.Word, *, argument: bool = False) -> boo
     gradle task that abbreviates `publish…` (`pTML`), or a computed word that may be the
     verb (`npm $V`). A computed word with a path or an `=` outside its expansions is a
     value (`-v $PWD:/app`, `-e K=$V`), and so is an argument, one after the command's
-    subcommand (_argued: `cargo test $1`); a false match only asks.
+    inert subcommand (_argued: `cargo test $1`); a false match only asks.
     """
     t = w.text
     if t in PUBLISHERS[tool] or t.startswith("--push"):
