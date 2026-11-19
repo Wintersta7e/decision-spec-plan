@@ -327,8 +327,9 @@ HELD_ALIASES = {
     "sh": "!git commit",
 }
 HELD_ALIAS_FORMS = 4
-# git a hunter runs in its own clone but points at the hunted repository {r}: by an
-# option or a variable, either form; a read passes
+# git a hunter runs in its own clone that may point at the hunted repository {r}: by
+# an option or a config key, either form, or any GIT_ variable in the text; a read
+# passes
 POINTED_GIT = (
     ("git --git-dir={r}/.git stash", "deny:find-only"),
     ("git --git-dir {r}/.git reset --hard", "deny:find-only"),
@@ -338,10 +339,16 @@ POINTED_GIT = (
     ("env GIT_WORK_TREE={r} git checkout -- .", "deny:find-only"),
     ("export GIT_COMMON_DIR={r}/.git; git stash", "deny:find-only"),
     ("GIT_INDEX_FILE={r}/.git/index git add -A", "deny:find-only"),
+    ("git -c core.worktree={r} stash", "deny:find-only"),
+    ("git --config-env core.worktree=W stash", "deny:find-only"),
+    ("export GIT_DIR={r}/.git; git stash", "deny:find-only"),
+    ("GIT_OBJECT_DIRECTORY=x git stash", "deny:find-only"),
     ("git --git-dir={r}/.git log", "silent"),
+    ("git -c core.pager=cat log", "silent"),
+    ("GIT_PAGER=cat git log", "silent"),
     ("git stash", "silent"),
 )
-POINTED_GIT_FORMS = 10
+POINTED_GIT_FORMS = 16
 # clones of the hunted repository {r} run inside it that write into it, or where the
 # hook cannot tell: {out} is outside it, a word that only looks like the destination
 CLONE_INTO_REPO = (

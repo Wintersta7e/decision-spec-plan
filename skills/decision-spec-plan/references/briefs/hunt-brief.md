@@ -53,10 +53,10 @@ the product in your clone for a probe.
 - No network beyond what the cached dependencies need.
 - The route's hook refuses a hunter's commit (plumbing included), git config write, inline alias
   or config include, a repository alias that runs one of those, any git inside the route's
-  repository or pointed at one by `--git-dir`, `--work-tree` or `GIT_DIR` and its kin but a read
-  or a clone out of it (a saving `git stash` there included), and a write into that repository
-  outside its planning dir by an edit tool, a redirect or `tee`; your clone's own git,
-  `git stash` included, stays free.
+  repository, or that may point at one (`--git-dir`, `--work-tree`, any `-c`, any `GIT_` variable
+  in the command), but a read or a clone out of it (a saving `git stash` there included), and a
+  write into that repository outside its planning dir by an edit tool, a redirect or `tee`; your
+  clone's own git, `git stash` included, stays free.
   It is a backstop against a slip, not a sandbox: it cannot tell `sed -i` or `cp` in your clone
   from the same in the repository, so this rule binds where the hook cannot see. **Why:** hunters
   under a find-only brief committed, changed the hooks path and wrote outside their tree (F109).

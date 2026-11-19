@@ -29,11 +29,12 @@ CONFIG_VARS = re.compile(r"(?<![\w$])GIT_CONFIG_(?:PARAMETERS|COUNT|KEY_\d+)=")
 # git runs; and a subcommand word git can run (a computed one read as text is not).
 CONFIG_HOMES = re.compile(r"(?<![\w$])(?:HOME|XDG_CONFIG_HOME|GIT_\w+)=")
 GIT_WORD = re.compile(r"[A-Za-z0-9][\w.-]*")
-# Git's options and variables that point it at a repository whatever its directory:
-# for a hunter such a git runs inside the hunted repository (read in the text, so
-# `export` and `env` set a variable alike).
-POINTING = ("--git-dir", "--work-tree")
-POINTING_VARS = re.compile(r"(?<![\w$])GIT_(?:DIR|WORK_TREE|COMMON_DIR|INDEX_FILE)=")
+# Git's options and variables that may point it at a repository whatever its
+# directory (`--git-dir`, `-c core.worktree=…`, `GIT_DIR`, `GIT_OBJECT_DIRECTORY`):
+# for a hunter such a git runs inside the hunted repository. Any `-c`, and any GIT_
+# name in the text, so `export` and `env` set one alike: no list of them is complete.
+POINTING = ("--git-dir", "--work-tree", "-c", "--config-env")
+POINTING_VARS = re.compile(r"(?<!\w)GIT_[A-Z0-9_]*")
 # The git a hunter may run inside the hunted repository: these subcommands, and the
 # read forms _reads_only judges (config, branch, tag, worktree, remote, stash).
 READ_ONLY_GIT = {
@@ -597,7 +598,7 @@ def hunter_git(command: str, cwd: str | None, repo: str) -> str | None:
     and an alias read as push_guard.unalias reads it in the command's directory, its
     command judged in turn; an alias it cannot read is held. Inside repo — the
     directory in effect for each command, after a `cd` and `-C`; one the hook cannot
-    compute, and git pointed at a repository by POINTING or POINTING_VARS, count as
+    compute, and git that may point at a repository (POINTING, POINTING_VARS), count as
     inside — only what _reads_only passes: a denylist of writing
     forms never ends (notes, replace, symbolic-ref, reset, a saving stash, …) — and a
     `git clone` writing only outside repo (_clone_out), the brief's first step.
