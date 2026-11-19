@@ -64,6 +64,17 @@ def unread_rulings(
     return [(f, f in last) for f in files if last.get(f, 0) < f.stat().st_mtime]
 
 
+def _route_repo(entry: RegistryEntry) -> pathlib.Path:
+    """Return the route's repository: the marker's `--repo`, else the common dir's."""
+    marker_file = pathlib.Path(entry["marker"])
+    marker = load_json(marker_file)
+    # the marker sits in the repository's git common dir
+    repo = (route_args(marker).repo if "args" in marker else None) or (
+        marker_file.parent.parent
+    )
+    return pathlib.Path(repo).resolve()
+
+
 def _held_path(path: pathlib.Path, entry: RegistryEntry) -> bool:
     """Return whether a hunter may not write path.
 
@@ -77,27 +88,20 @@ def _held_path(path: pathlib.Path, entry: RegistryEntry) -> bool:
         (xdg / "git").resolve()
     ):
         return True
-    marker_file = pathlib.Path(entry["marker"])
-    marker = load_json(marker_file)
-    # the marker sits in the repository's git common dir
-    repo = (route_args(marker).repo if "args" in marker else None) or (
-        marker_file.parent.parent
-    )
     planning = pathlib.Path(entry["planning_dir"]).resolve()
-    return path.is_relative_to(pathlib.Path(repo).resolve()) and not (
-        path.is_relative_to(planning)
-    )
+    return path.is_relative_to(_route_repo(entry)) and not path.is_relative_to(planning)
 
 
 def hunt_hold(event: Mapping[str, object], entry: RegistryEntry) -> str | None:
     """Return what a `hunt-` agent's call does that its find-only brief rules out.
 
-    A commit, a git config write or an inline alias (writes_git_config), commit
-    plumbing, a repository's alias or a git subcommand the hook cannot read
-    (hunter_git), and a file written by an edit tool, a redirect or `tee` that
-    _held_path holds; None for any other call. Hunters under a find-only brief
-    committed, changed the hooks path and wrote outside their clone (F109). A backstop
-    against a slip, not a sandbox: `sed -i`, `cp`/`mv` and git's path arguments pass.
+    A commit, a git config write or an inline alias (writes_git_config); commit
+    plumbing, an alias that runs one, a git subcommand the hook cannot read, and
+    inside the route's repository any git but a read (hunter_git); a file written by
+    an edit tool, a redirect or `tee` that _held_path holds, or one the hook cannot
+    read. None for any other call. Hunters under a find-only brief committed, changed
+    the hooks path and wrote outside their clone (F109). A backstop against a slip,
+    not a sandbox: `sed -i`, `cp`/`mv` and a script's own writes pass.
     """
     tool_input = as_dict(event.get("tool_input")) or {}
     cwd = event.get("cwd")
@@ -105,23 +109,25 @@ def hunt_hold(event: Mapping[str, object], entry: RegistryEntry) -> str | None:
     tool = event.get("tool_name")
     if tool == "Bash":
         command = str(tool_input.get("command") or "")
-        if makes_commit(command, here):
-            return "a commit"
-        if writes_git_config(command, here):
-            return "a git config write or an inline alias"
-        if held := hunter_git(command, here):
+        held = (
+            "a commit"
+            if makes_commit(command, here)
+            else "a git config write or an inline alias"
+            if writes_git_config(command, here)
+            else hunter_git(command, here, str(_route_repo(entry)))
+        )
+        if held:
             return held
-        home = {"HOME": str(pathlib.Path.home())}
-        raws = [w.expand(home) for w in written_paths(command)]
+        paths = written_paths(command, here)
+        if paths is None or None in paths:
+            return "a write the hook cannot read"
     elif tool in EDITS:
-        raws = [
-            str(tool_input.get("file_path") or tool_input.get("notebook_path") or "")
-        ]
+        raw = str(tool_input.get("file_path") or tool_input.get("notebook_path") or "")
+        paths = [(pathlib.Path(here or ".") / raw).resolve()] if raw else []
     else:
         return None
-    for raw in filter(None, raws):
-        path = (pathlib.Path(here or ".") / raw).resolve()
-        if _held_path(path, entry):
+    for path in paths:
+        if path is not None and _held_path(path, entry):
             return f"a write of {path}"
     return None
 
