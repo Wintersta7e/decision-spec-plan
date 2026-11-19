@@ -303,7 +303,9 @@ All seats in one message, each `subagent_type: "decision-spec-plan:dsp-deep"`, `
 `hunt-<seat>`: the route's hook holds a `hunt-` agent find-only and its dispatch to the recorded
 budget (`failure-modes` F109). Record the whole hunt's price — its hunters and the suspects check
 (`costs.md`) — with `route_state.py --budget` before the hunters go out: the gate checks the spend at
-each dispatch and reserves nothing.
+each dispatch and reserves nothing. Run `route_state.py --fingerprint <repo>` before the first
+`hunt-` dispatch and again after the last hunter (and the suspects check) returns: a different digest
+means the repository changed under the hunt — stop the route and take both digests to the user.
 
 > You are the <seat> hunter of <project>'s bug hunt, run <run>. Read
 > `<planning-dir>/HUNT-BRIEF-p<P>.md` FIRST and follow it exactly. YOUR SEAT: **<seat>** — <its

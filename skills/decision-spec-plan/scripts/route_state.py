@@ -26,6 +26,7 @@ Usage:
     route_state.py <planning-dir> --phase P --repo DIR --next [--group-size N]
     route_state.py --budget LABEL --estimate M [--groups N --tasks T] [--phase P]
         [--repo R] [--base pin|catch-up|merge]
+    route_state.py --fingerprint REPO
 
 --main defaults to the repository's default branch. --sections `38-` counts every
 section from §38 on (a phase whose last section is not known yet). --all lists every
@@ -57,6 +58,14 @@ ADAPT slot), the plan, the group's tasks (from the checkpoint's `Next task:` lin
 other lane gets why it takes none: merged, a plan it waits for, an `exec-` agent of it
 out (unfinished, its transcript written in the last 30 min), a red or running gate, a
 green one for the integrator (F48, F102).
+
+--fingerprint prints one sha256 over a repository's git state: HEAD, its refs, the stash
+count, `git status --porcelain=v1 --ignored -z`, its own config (the local and
+worktree lists with origins, the bytes of each file they name, `config.worktree`),
+the files under its `info/`, and its hooks dir's path, names and bytes
+(`core.hooksPath` honoured); global and system config stay out. The lead prints it
+before a hunt's first dispatch and after its last return; a different digest stops
+the route for the user (prompts.md §8, F109). Exit 2 when REPO is no git repository.
 
 --budget records the route's estimate in M units (costs.md) — the lead, every review and
 agent of the stages left — in <planning-dir>/route-budget.json, one budget a route
@@ -137,6 +146,10 @@ def main() -> int:
         from dsp_route.budget import budget
 
         return budget(argv)
+    if "--fingerprint" in argv:
+        from dsp_route.fingerprint import fingerprint_cli
+
+        return fingerprint_cli(argv)
     from dsp_route.activate import activate
     from dsp_route.report import report
 
