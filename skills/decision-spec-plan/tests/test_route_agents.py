@@ -251,17 +251,55 @@ CONFIG_WRITES = (
     "git config edit",
 )
 CONFIG_WRITE_FORMS = 14
+# a hunter's git forms past a plain commit and config write: a subcommand the hook
+# cannot read, plumbing that commits, a saving stash, config indirection
+HUNTER_GIT = (
+    "git $x status",
+    'git "$(echo commit)" -m x',
+    "git commit-tree HEAD^{tree} -m x",
+    "git update-ref refs/heads/x HEAD",
+    "git stash",
+    "git stash push",
+    "git stash save x",
+    "git stash store abc",
+    "git stash create",
+    "git stash -m x",
+    "git -c include.path=/x log",
+    "git -c includeIf.onbranch:main.path=/x log",
+    "git -c INCLUDE.path=/x log",
+    "git --config-env include.path=X log",
+    "GIT_CONFIG_PARAMETERS=\"'alias.sv=commit'\" git sv",
+    "GIT_CONFIG_COUNT=1 GIT_CONFIG_KEY_0=alias.sv GIT_CONFIG_VALUE_0=commit git sv",
+    "env GIT_CONFIG_KEY_0=core.hooksPath git status",
+    "export GIT_CONFIG_COUNT=1; git status",
+)
+HUNTER_GIT_FORMS = 18
+# aliases the hunter's repository defines, each running a held command
+HELD_ALIASES = {
+    "sv": "commit",
+    "up": "update-ref refs/heads/x HEAD",
+    "cf": "config core.hooksPath h",
+    "sh": "!git commit",
+}
+HELD_ALIAS_FORMS = 4
 
 
 class HuntAgent(Route):
     """A hunt- agent is find-only: no commit, git config write, alias or repo edit."""
 
-    def call(self, agent: str, tool: str, tool_input: dict[str, str]) -> str:
-        """A PreToolUse call of tool with tool_input by agent in the lead's session."""
+    def call(
+        self, agent: str, tool: str, tool_input: dict[str, str], cwd: str | None = None
+    ) -> str:
+        """A PreToolUse call of tool with tool_input by agent in the lead's session.
+
+        In cwd when given, else in ev's directory.
+        """
         extra = (
             f'"agent_id":"{agent}","tool_name":"{tool}",'
             f'"tool_input":{json.dumps(tool_input)},"transcript_path":"{self.LEAD}"'
         )
+        if cwd is not None:
+            extra += f',"cwd":{json.dumps(cwd)}'
         return ev("PreToolUse", "s1", extra)
 
     @override
@@ -312,6 +350,69 @@ class HuntAgent(Route):
                 _ = self.hook(
                     "silent", self.call("h1", tool, {"file_path": str(allowed)})
                 )
+        home = self.HOME
+        for config in (home / ".gitconfig", home / ".config/git/config"):
+            _ = self.hook(
+                "deny:find-only", self.call("h1", "Edit", {"file_path": str(config)})
+            )
+
+    def test_plumbing_and_indirection(self) -> None:
+        """Plumbing commits, saving stashes, config indirection; unreadable fails."""
+        bash = "Bash"
+        self.ok("hunter git forms", len(HUNTER_GIT) == HUNTER_GIT_FORMS)
+        for command in HUNTER_GIT:
+            _ = self.hook("deny:find-only", self.call("h1", bash, {"command": command}))
+        for command in (
+            "git stash list",
+            "git stash show",
+            "git show HEAD",
+            "git -c core.pager=cat log",
+            "git --version",
+        ):
+            _ = self.hook("silent", self.call("h1", bash, {"command": command}))
+        _ = self.hook(
+            "silent", self.call("e1", bash, {"command": "git update-ref refs/x HEAD"})
+        )  # held for hunters alone
+
+    def test_redirects(self) -> None:
+        """A redirect or tee into the repository outside the planning dir is refused."""
+        bash, r, p, t = "Bash", self.R, self.P, self.T
+        held = (
+            f"echo x > {r}/src.py",
+            f"git diff >> {r}/d.txt",
+            f"git diff | tee -a {r}/d.txt",
+            "echo x > src.py",  # relative to the call's directory, the repository
+        )
+        for command in held:
+            _ = self.hook(
+                "deny:find-only", self.call("h1", bash, {"command": command}, str(r))
+            )
+        for command in (
+            f"echo x > {p}/hunt/n.md",
+            f"git diff > {t}/clone.diff",
+            "git diff > /dev/null",
+            f"git diff | tee {t}/d.txt",
+        ):
+            _ = self.hook("silent", self.call("h1", bash, {"command": command}, str(r)))
+
+    def test_repo_aliases(self) -> None:
+        """An alias the repository defines is judged by the command it runs."""
+        repo = self.init_repo(self.T / "aliased")
+        self.ok("alias forms", len(HELD_ALIASES) == HELD_ALIAS_FORMS)
+        for name, value in (*HELD_ALIASES.items(), ("st", "status")):
+            _ = self.git("-C", repo, "config", f"alias.{name}", value)
+        for name in HELD_ALIASES:
+            _ = self.hook(
+                "deny:find-only",
+                self.call("h1", "Bash", {"command": f"git {name}"}, str(repo)),
+            )
+        _ = self.hook(
+            "deny:find-only",
+            self.call("h1", "Bash", {"command": f"git -C {repo} sv"}),
+        )
+        _ = self.hook(
+            "silent", self.call("h1", "Bash", {"command": "git st"}, str(repo))
+        )
 
 
 class WaitsOnItsJob(Route):
