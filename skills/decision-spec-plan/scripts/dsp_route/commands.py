@@ -87,17 +87,11 @@ CLONE_VALUED = (
 CLONE_SHORT = "objuc"
 # Words that run the next word as a command (`sudo tee f`).
 RUNS_NEXT = {"sudo", "doas", "env", "command", "exec", "nohup", "nice", "stdbuf"}
-# What sets a variable past `NAME=value`, for _Writes: an assignment or a setter's
-# argument (`b=1`, `b+=1`, `read b`), arithmetic (`b=1`, `b+=1`, `b++`, `--b`), a
-# default (`${b:=x}`, `${b=x}`), and the builtins that may set any (`eval`, `source`).
-SETS = re.compile(r"([A-Za-z_]\w*)(\+?)=")
-SET_NAME = re.compile(r"[A-Za-z_]\w*(?=\+?=|$)")
-ARITH_SETS = re.compile(
-    r"(?<!\w)([A-Za-z_]\w*)\s*(?:\+\+|--|(?:[-+*/%&|^]|<<|>>)?=(?!=))"
-    r"|(?:\+\+|--)\s*([A-Za-z_]\w*)"
-)
-DEFAULT_SETS = re.compile(r"\$\{([A-Za-z_]\w*):?=")
-SETS_ANY = {"eval", "source", "."}
+# For _may_set: the builtins that may set any variable, the words that may stand
+# before a command's own (`builtin read b`), and the builtins that make a nameref.
+ANY_SETTERS = {"eval", "source", "."}
+PRECOMMANDS = shell_cmd.KEYWORDS | {"builtin", "command"}
+NAMEREFS = {"declare", "typeset", "local"}
 # `git config`'s read actions, the options that only shape a read (those in
 # CONFIG_VALUED take a value), and the subcommands that write (_config_writes).
 CONFIG_READS = {"--get", "--get-all", "--get-regexp", "--list", "-l"}
@@ -649,15 +643,55 @@ def hunter_git(command: str, cwd: str | None, repo: str) -> str | None:
     return None
 
 
+def _may_set(name: str, tokens: Sequence[shell_cmd.Token]) -> bool:
+    """Return whether the commands tokens hold may set the variable name, read as text.
+
+    Any occurrence of name but a plain `$name` or `${name}` may: a bare word, one
+    before an `=`, `+=` or `[`, a `${name…}` with an operator, a `$((…))`, quoted text
+    (`read b`, `b[0]=x`, `unset b`, `printf -v b`). So may a command that may set any
+    variable: ANY_SETTERS or a computed command word, a nameref (`declare -n`), a
+    nested shell's `-c` string. Fail closed: no list of setters is ever complete.
+    """
+    found = re.compile(rf"(?<!\w){re.escape(name)}(?!\w)")
+    plain = {f"${name}", f"${{{name}}}"}
+    command: list[str | None] = []  # the command's words so far, None for computed
+    target = False  # the word is a redirect's target, not the command's
+    for t in tokens:
+        if isinstance(t, str):
+            target = t in shell_cmd.REDIRECTS
+            command = command if target else []
+            continue
+        if any(found.search(s) for k, s in t.parts if not (k == "exp" and s in plain)):
+            return True
+        if target:
+            target = False
+            continue
+        text = t.text if t.static else None
+        lead = all(
+            c and (c in PRECOMMANDS or shell_cmd.ASSIGN.match(c)) for c in command
+        )
+        if lead and (text is None or text in ANY_SETTERS):
+            return True
+        runs = {_basename(c) for c in command if c}
+        flags = text[1:] if text and re.fullmatch(r"-[A-Za-z]+", text) else ""
+        if ("n" in flags and runs & NAMEREFS) or (
+            "c" in flags and runs & shell_cmd.SHELLS
+        ):
+            return True
+        command.append(text)
+    return False
+
+
 class _Writes:
     """The files a command writes by an output redirect or `tee`, read as bash runs it.
 
     Each is read in the directory in effect where it is written — a `cd` before it
     moves it, a subshell's ends at its `)` — with the command's own assignments, HOME
-    and PWD set; a `$( )` and a `bash -c` or `eval` string are read where they run. In
-    the body of a `for` loop over literal words its variable takes each word in turn;
-    over a computed list, in a body no `do` opens, once the body sets it again, and
-    after its `done`, it is unknown. A subshell — a `( )`, a `$( )`, a `bash -c` or
+    and PWD set; a `$( )` and a `bash -c` or `eval` string are read where they run. An
+    assignment's value, and in the body of a `for` loop over literal words its
+    variable's words in turn, hold only while the rest of the text cannot set it
+    again (_may_set); a loop's variable is unknown over a computed list, in a body no
+    `do` opens, and after its `done`. A subshell — a `( )`, a `$( )`, a `bash -c` or
     `eval` string, a pipeline stage — leaves each variable it sets unknown, and the
     variable of each loop it leaves open: never more readable than bash leaves it.
     """
@@ -708,11 +742,11 @@ class _Writes:
         literal = listed is not None and len(known) == len(values)
         self.header = (name, known if literal else None)
 
-    def open_body(self, t: shell_cmd.Word) -> None:
+    def open_body(self, t: shell_cmd.Word, rest: Sequence[shell_cmd.Token]) -> None:
         """Bind the variable of the header just read when t, its body's first, is `do`.
 
-        Another body (`{ …; }`) no `done` closes: its loop is left, its variable
-        unknown.
+        Unless the rest of the text may set it. Another body (`{ …; }`) no `done`
+        closes: its loop is left, its variable unknown.
         """
         if self.header is None:
             return
@@ -720,7 +754,7 @@ class _Writes:
         self.header = None
         if not (t.static and t.text == "do"):
             _ = self.loops.pop()
-        elif values is not None:
+        elif values is not None and not _may_set(name, rest):
             self.each[name] = values
 
     def close_loop(self) -> None:
@@ -734,64 +768,29 @@ class _Writes:
         while len(self.loops) > depth:
             self.close_loop()
 
-    def sets(self, words: list[shell_cmd.Word]) -> None:
-        """Record the variables a command sets.
+    def end(
+        self,
+        words: list[shell_cmd.Word],
+        here: str | None,
+        rest: Sequence[shell_cmd.Token],
+    ) -> str | None:
+        """Record a command's assignments and tee files; return the directory after.
 
-        An assignment's value is computed; an append's, one to a bound loop variable,
-        a SETTERS argument, `printf -v`'s and `let`'s are unknown, and every variable
-        after a SETS_ANY builtin.
+        An assignment's value is unknown when the rest of the text may set it again.
         """
-        import push_guard  # loaded by hunter_git as well
-
-        assigns = [(w, m) for w in words if (m := SETS.match(w.text))]
-        if words and len(assigns) == len(words):
-            for w, m in assigns:
-                if m[2] or m[1] in self.each:
-                    self.unbind(m[1])
-                else:
-                    value = w.expand(self.env)
-                    self.env[m[1]] = value and value.partition("=")[2]
-            return
-        i = next(
-            (i for i, w in enumerate(words) if not shell_cmd.ASSIGN.match(w.text)),
-            len(words),
-        )
-        name = _basename(words[i].text) if i < len(words) else ""
-        texts = [w.text for w in words[i + 1 :]]
-        names: list[str] = []
-        if name in SETS_ANY:
-            names = [*self.env, *self.each]
-        elif name in push_guard.SETTERS:
-            names = [m[0] for t in texts if (m := SET_NAME.match(t))]
-        elif name == "printf":
-            pairs = zip(texts, [*texts[1:], ""], strict=True)
-            names = [t[2:] or after for t, after in pairs if t.startswith("-v")]
-        elif name == "let":
-            names = [m[1] or m[2] for t in texts for m in ARITH_SETS.finditer(t)]
-        for n in names:
-            self.unbind(n)
-
-    def word_sets(self, w: shell_cmd.Word, *, arith: bool) -> None:
-        """Make unknown each variable w sets: a default, a `$((…))` sum, or w's own.
-
-        With arith w is a word of a `((…))`, arithmetic.
-        """
-        exps = [s for k, s in w.parts if k == "exp"]
-        sums = [w.text] if arith else [s for s in exps if s.startswith("$((")]
-        names = [m[1] for s in exps for m in DEFAULT_SETS.finditer(s)]
-        names += [m[1] or m[2] for s in sums for m in ARITH_SETS.finditer(s)]
-        for name in names:
-            self.unbind(name)
-
-    def end(self, words: list[shell_cmd.Word], here: str | None) -> str | None:
-        """Record a command's assignments and tee files; return the directory after."""
         while words and words[0].static and words[0].text in shell_cmd.KEYWORDS:
             if words[0].text in ("while", "until"):
                 self.loops.append(None)
             words = words[1:]
         if words and words[0].static and words[0].text in ("for", "select"):
             self.open_loop(words)
-        self.sets(words)
+        if words and all(shell_cmd.ASSIGN.match(w.text) for w in words):
+            for w in words:
+                value = w.expand(self.env)
+                name = w.text.partition("=")[0]
+                self.unbind(name)
+                if not _may_set(name, rest):
+                    self.env[name] = value and value.partition("=")[2]
         names = [_basename(w.text) for w in words]
         if "tee" in names and (names[0] == "tee" or names[0] in RUNS_NEXT):
             for w in words[names.index("tee") + 1 :]:
@@ -800,7 +799,11 @@ class _Writes:
         return _dir_after(shell_cmd.Cmd([], words), here)
 
     def add_word(
-        self, t: shell_cmd.Word, words: list[shell_cmd.Word], here: str | None
+        self,
+        t: shell_cmd.Word,
+        words: list[shell_cmd.Word],
+        here: str | None,
+        rest: Sequence[shell_cmd.Token],
     ) -> None:
         """Add t to a command's words, reading a `bash -c` or `eval` string in it.
 
@@ -808,7 +811,7 @@ class _Writes:
         loop sets its variable.
         """
         if not words:
-            self.open_body(t)
+            self.open_body(t, rest)
         if t.static and t.text == "done" and not words:
             self.close_loop()
         nested = words and (words[-1].text == "-c" or words[0].text == "eval")
@@ -828,41 +831,33 @@ class _Writes:
         stack: list[tuple[str | None, int, dict[str, str | None]]] = []
         words: list[shell_cmd.Word] = []
         op: str | None = None
-        last: shell_cmd.Token | None = None
-        arith: int | None = None  # the depth of the open `((`, whose words are sums
         piped = False  # the command being read follows a `|` or `&`
-        for t in tokens:
+        for i, t in enumerate(tokens):
             if isinstance(t, str):
                 op = t if t in shell_cmd.REDIRECTS else None
                 if op is None:
                     stage = piped or t in shell_cmd.ASYNC
                     env = dict(self.env)
-                    after = self.end(words, here)
+                    after = self.end(words, here, tokens[i:])
                     if stage:
                         self.forget(env)
                     here = None if stage and after != here else after
                     piped, words = t in shell_cmd.ASYNC, []
                     if t == "(":
-                        arith = len(stack) if arith is None and last == "(" else arith
                         stack.append((here, len(self.loops), dict(self.env)))
                     elif t == ")" and stack:
                         here, depth, env = stack.pop()
                         self.close_loops(depth)
                         self.forget(env)
-                        arith = (
-                            None if arith is not None and len(stack) < arith else arith
-                        )
-                last = t
                 continue
             for sub in t.subs:
                 self.walk(sub, here)
-            self.word_sets(t, arith=arith is not None)
             if op in shell_cmd.OUTPUTS:
                 self.place(t, here)
             elif op is None:
-                self.add_word(t, words, here)
-            op, last = None, t
-        _ = self.end(words, here)
+                self.add_word(t, words, here, tokens[i + 1 :])
+            op = None
+        _ = self.end(words, here, ())
         self.close_loops(0)
         self.forget(before)
         self.loops, self.header = outer, header
