@@ -20,6 +20,7 @@ from typing import cast
 from .common import (
     EDITS,
     EXEC,
+    HUNT,
     LAST_DECISION,
     REGISTRY,
     SCRIPT,
@@ -120,7 +121,8 @@ def _lead_dispatch(
         or (checked(asks_hold, session, entry) if agent_name.startswith(EXEC) else None)
     ):
         return deny(held)
-    if agent_name.startswith(EXEC):
+    # a hunt is held to the budget as a task group is; the ledger and asks are not its
+    if agent_name.startswith((EXEC, HUNT)):
         return checked(gate_dispatch, event, entry) or 0
     return 0
 
@@ -497,7 +499,11 @@ def hook() -> int:
     `exec-` dispatch is held and the lead's Stop sent back once until each has one,
     and PreCompact tells the summary to keep the unlisted ones verbatim (F105). The
     lead's Stop is also sent back once when a command its last message hands the user
-    fails when pasted (F107).
+    fails when pasted (F107). Inside a `hunt-` agent PreToolUse refuses a commit, a
+    `git config` write, an inline alias and an edit in the route's repository outside
+    the planning dir, and it holds the lead's `hunt-` dispatch to the budget as an
+    `exec-` one, with no ETA: a backstop against a slip, not a sandbox, that checks
+    spend at the dispatch and reserves nothing (F109).
 
     Returns:
         The hook's exit code: 2 sends an agent back to its running job, else 0.

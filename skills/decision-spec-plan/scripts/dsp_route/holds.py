@@ -15,6 +15,7 @@ from collections.abc import Iterable, Mapping
 
 from .common import (
     EXEC,
+    HUNT,
     LEDGER_CHECKS,
     PLAN_ID,
     SCRIPT,
@@ -111,14 +112,14 @@ def s_harvester(event: Mapping[str, object], entry: RegistryEntry) -> bool:
     """Return whether the lead dispatches a harvester on a rung-S route (F87).
 
     At S the lead harvests itself. A harvest named in the dispatch counts, not a task
-    group or verifier whose work names one (`Fix harvest-date parsing`) or a review of
-    harvested findings.
+    group, verifier or hunter whose work names one (`Fix harvest-date parsing`, `Hunt
+    the harvest code`) or a review of harvested findings.
     """
     if event.get("tool_name") != "Agent":
         return False
     dispatch = _tool_input(event)
     name = str(dispatch.get("name") or "")
-    if name.startswith(("exec-", "verify-")):
+    if name.startswith((EXEC, "verify-", HUNT)):
         return False
     text = f"{name} {dispatch.get('description') or ''}"
     rung = load_json(pathlib.Path(entry["marker"])).get("rung")
@@ -309,7 +310,7 @@ def _unanswered(event: Mapping[str, object], b: Budget, head: str, record: str) 
 
 
 def gate_dispatch(event: Mapping[str, object], entry: RegistryEntry) -> int:
-    """Hold an `exec-` dispatch to the route's budget; give an allowed one its ETA.
+    """Hold an `exec-` or `hunt-` dispatch to the budget; give an `exec-` one its ETA.
 
     Held until the route's budget is recorded and the user answered it in the lead
     session that recorded it — at S, recorded is enough — and once the route's spend
@@ -362,7 +363,9 @@ def gate_dispatch(event: Mapping[str, object], entry: RegistryEntry) -> int:
             f"remaining work's figure with {record}, tell the user what ran over and "
             "why, and wait for their answer (F74)."
         )
-    emit("PreToolUse", eta(paths, name, entry["planning_dir"]))
+    # an ETA is task-group arithmetic: a hunt gets none
+    if not name.startswith(HUNT):
+        emit("PreToolUse", eta(paths, name, entry["planning_dir"]))
     return 0
 
 
