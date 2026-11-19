@@ -88,7 +88,7 @@ CLONE_VALUED = (
 CLONE_SHORT = "objuc"
 # Words that run the next word as a command (`sudo tee f`).
 RUNS_NEXT = {"sudo", "doas", "env", "command", "exec", "nohup", "nice", "stdbuf"}
-# For _sets_any: the words that may set any variable wherever they stand (`eval`,
+# For _sets_any: the words that may set any of their shell's variables (`eval`,
 # `source`, `trap`, a `function` definition); bash's builtins that set the variable an
 # argument names, so a computed one may name any (`printf` and `wait` with `-v` and
 # `-p` alone); those that make a nameref; the words before a command's own.
@@ -686,17 +686,51 @@ def _named(w: shell_cmd.Word) -> bool:
     return bool(re.match(r"[A-Za-z_]\w*\+?=", head))
 
 
+def _subshells(tokens: Sequence[shell_cmd.Token]) -> dict[int, int]:
+    """Map the index of each `(` in tokens that opens a subshell to its `)`'s.
+
+    Not a `((` (an arithmetic command, run in the shell itself; a `( (` is read so too)
+    nor a function's `()`. One left open runs to the end of tokens. A `)` closes the
+    innermost `(`, a `case` pattern's too: a subshell read shorter only over-holds.
+    """
+    out: dict[int, int] = {}
+    stack: list[int | None] = []
+    for i, t in enumerate(tokens):
+        if t == "(":
+            near = {tokens[i - 1] if i else None, *tokens[i + 1 : i + 2]}
+            stack.append(None if near & {"(", ")"} else i)
+        elif t == ")" and stack and (j := stack.pop()) is not None:
+            out[j] = i
+    out.update((j, len(tokens)) for j in stack if j is not None)
+    return out
+
+
+def _outside(tokens: Sequence[shell_cmd.Token]) -> list[shell_cmd.Token]:
+    """Return tokens with each subshell (_subshells) left out but its closing `)`."""
+    groups = _subshells(tokens)
+    out: list[shell_cmd.Token] = []
+    end = -1  # the index of the `)` that closes the subshell left out
+    for i, t in enumerate(tokens):
+        if i > end:
+            end = groups.get(i, -1)
+            out.append(")" if i in groups else t)
+    return out
+
+
 def _sets_any(tokens: Sequence[shell_cmd.Token]) -> bool:
     """Return whether the commands tokens hold may set any variable, read as text.
 
     A function definition, SETS_ANY anywhere, a `.` as a command or a computed command
-    word; a nameref (`declare -n`) or a nested shell's `-c` string; a computed argument
-    to SETTING_BUILTINS or SETTING_FLAGS (`read "$v"`). Then _Writes binds none.
+    word; a nameref (`declare -n`); a computed argument to SETTING_BUILTINS or
+    SETTING_FLAGS (`read "$v"`). Then _Writes binds none. Not inside a subshell — a
+    `( )`, a `$( )` — nor a nested shell's `-c` string: none sets this shell's
+    variables, so _Writes judges each where it runs; a `$(( ))` runs here. A heredoc's
+    body is no token: data, never a definition.
     """
     command: list[str | None] = []  # the command's words so far, None for computed
     target = False  # the word is a redirect's target, not the command's
     last: shell_cmd.Token | None = None
-    for t in tokens:
+    for t in _outside(tokens):
         if isinstance(t, str):
             if t == ")" and last == "(":
                 return True  # `f() { …; }`
@@ -705,28 +739,46 @@ def _sets_any(tokens: Sequence[shell_cmd.Token]) -> bool:
             last = t
             continue
         last = t
-        if any(_sets_any(sub) for sub in t.subs):
+        # a `$(( ))`'s tokens are its `( … )`: read inside it, it runs here
+        here = any(k == "exp" and s.startswith("$((") for k, s in t.parts)
+        if here and any(_sets_any(sub[1:]) for sub in t.subs):
             return True
         if target:
             target = False
             continue
         text = t.text if t.static else None
+        named = text is None and _named(t)  # `X=$(nproc)`: a computed value, no name
         lead = all(
             c and (c in PRECOMMANDS or shell_cmd.ASSIGN.match(c)) for c in command
         )
-        if text in SETS_ANY or (lead and (text is None or text == ".")):
+        if text in SETS_ANY or (lead and not named and text in (None, ".")):
             return True
         runs = {_basename(c) for c in command if c}
         flagged = {n for n, f in SETTING_FLAGS.items() if f in command}
-        if text is None and not _named(t) and runs & (SETTING_BUILTINS | flagged):
+        if text is None and not named and runs & (SETTING_BUILTINS | flagged):
             return True
         flags = text[1:] if text and re.fullmatch(r"-[A-Za-z]+", text) else ""
-        if ("n" in flags and runs & NAMEREFS) or (
-            "c" in flags and runs & shell_cmd.SHELLS
-        ):
+        if "n" in flags and runs & NAMEREFS:
             return True
-        command.append(text)
+        command.append("_=" if named else text)
     return False
+
+
+class _Saved(NamedTuple):
+    """_Writes' variables where a shell apart begins: restored at its end."""
+
+    bind: bool
+    env: dict[str, str | None]
+    each: dict[str, list[str]]
+
+
+class _Shell(NamedTuple):
+    """A subshell _Writes reads: where it began, and what enter saved, if anything."""
+
+    here: str | None  # the directory before it
+    depth: int  # the loops open before it
+    env: dict[str, str | None]
+    apart: _Saved | None
 
 
 class _Writes:
@@ -741,15 +793,15 @@ class _Writes:
     `do` opens, and after its `done`. A subshell — a `( )`, a `$( )`, a `bash -c` or
     `eval` string, a pipeline stage — leaves each variable it sets unknown, and the
     variable of each loop it leaves open: never more readable than bash leaves it.
+    Text that may set any variable (_sets_any) binds none while it runs (enter).
     """
 
-    def __init__(self, *, bind: bool) -> None:
-        """Start with no file; with bind, HOME known, else no variable ever is."""
+    def __init__(self) -> None:
+        """Start with no file, HOME known."""
         self.out: list[pathlib.Path | None] = []
-        self.bind: bool = bind
-        self.env: dict[str, str | None] = {
-            "HOME": str(pathlib.Path.home()) if bind else None
-        }
+        # whether a variable may be bound where the words are read: see enter
+        self.bind: bool = True
+        self.env: dict[str, str | None] = {"HOME": str(pathlib.Path.home())}
         # each loop open where the words are read: its variable, None for a `while`
         self.loops: list[str | None] = []
         # the variables of the open `for` loops over literal words, with their words
@@ -778,6 +830,36 @@ class _Writes:
         for name, value in list(self.env.items()):
             if before.get(name) != value:
                 self.env[name] = None
+
+    def enter(self, tokens: Sequence[shell_cmd.Token]) -> _Saved | None:
+        """Read tokens, a shell's of their own, binding none if they may set any.
+
+        Then each variable is unknown while they run, HOME too (_sets_any), and the
+        state to restore at their end is returned: nothing they set reaches this shell.
+        None when they cannot set any, or no variable is bound here already.
+        """
+        if not (self.bind and _sets_any(tokens)):
+            return None
+        saved = _Saved(self.bind, self.env, self.each)
+        self.env = dict.fromkeys(self.env)
+        self.each, self.bind = {}, False
+        return saved
+
+    def leave(self, saved: _Saved) -> None:
+        """Restore the state enter saved, as the shell apart ends."""
+        self.bind, self.env, self.each = saved
+
+    def close_shell(self, shell: _Shell) -> str | None:
+        """End shell: leave its loops and what enter saved, else forget what it set.
+
+        Return the directory before it.
+        """
+        self.close_loops(shell.depth)
+        if shell.apart is None:
+            self.forget(shell.env)
+        else:
+            self.leave(shell.apart)
+        return shell.here
 
     def open_loop(self, words: list[shell_cmd.Word]) -> None:
         """Open the `for` or `select` loop words open; its variable binds at `do`."""
@@ -875,10 +957,13 @@ class _Writes:
         Read as a subshell: the loops open outside are set aside and each variable set
         in tokens is unknown at their end; each `( )` and pipeline stage in them alike.
         A `cd` in a pipeline stage leaves the directory unknown (bash's `lastpipe`).
+        Tokens, and each `( )` in them, that may set any variable bind none (enter).
         """
-        outer, header, before = self.loops, self.header, dict(self.env)
+        outer, header = self.loops, self.header
         self.loops, self.header = [], None
-        stack: list[tuple[str | None, int, dict[str, str | None]]] = []
+        whole = _Shell(here, 0, dict(self.env), self.enter(tokens))
+        groups = _subshells(tokens)
+        stack: list[_Shell] = []
         words: list[shell_cmd.Word] = []
         op: str | None = None
         piped = False  # the command being read follows a `|` or `&`
@@ -894,11 +979,13 @@ class _Writes:
                     here = None if stage and after != here else after
                     piped, words = t in shell_cmd.ASYNC, []
                     if t == "(":
-                        stack.append((here, len(self.loops), dict(self.env)))
+                        env = dict(self.env)  # before enter unbinds it
+                        inner = tokens[i + 1 : groups.get(i, i + 1)]
+                        stack.append(
+                            _Shell(here, len(self.loops), env, self.enter(inner))
+                        )
                     elif t == ")" and stack:
-                        here, depth, env = stack.pop()
-                        self.close_loops(depth)
-                        self.forget(env)
+                        here = self.close_shell(stack.pop())
                 continue
             for sub in t.subs:
                 self.walk(sub, here)
@@ -908,23 +995,21 @@ class _Writes:
                 self.add_word(t, words, here, tokens[i + 1 :])
             op = None
         _ = self.end(words, here, ())
-        self.close_loops(0)
-        self.forget(before)
+        _ = self.close_shell(whole)
         self.loops, self.header = outer, header
 
 
 def written_paths(command: str, cwd: str | None) -> list[pathlib.Path | None] | None:
     """Return each file the command writes by an output redirect or `tee`, resolved.
 
-    Read as _Writes reads them, from cwd; it binds no variable when the command may set
-    any (_sets_any). None in place of one the hook cannot compute
+    Read as _Writes reads them, from cwd; it binds no variable in a shell whose text
+    may set any (_sets_any). None in place of one the hook cannot compute
     (a name it cannot expand, a relative one in a directory it cannot compute), and
     for the whole when the reader fails.
     """
     try:
-        tokens = shell_cmd.scan(command)[0]
-        writes = _Writes(bind=not _sets_any(tokens))
-        writes.walk(tokens, cwd)
+        writes = _Writes()
+        writes.walk(shell_cmd.scan(command)[0], cwd)
     except Exception:  # noqa: BLE001 — text the reader fails on writes what it cannot see
         return None
     return writes.out

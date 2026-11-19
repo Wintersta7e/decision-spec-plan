@@ -413,7 +413,7 @@ LOOP_WRITES = (
     ("for b in a; do command read b; echo x > $b/f; done", "deny:find-only"),
     ("for b in a; do X=1 . ./env; echo x > dir/$b; done", "deny:find-only"),
     ('for b in a; do $SET "$X"; echo x > dir/$b; done', "deny:find-only"),
-    ("for b in a; do bash -c :; echo x > dir/$b; done", "deny:find-only"),
+    ("for b in a; do bash -c :; echo x > dir/$b; done", "silent"),
     ("b=a; unset b; echo x > repo$b/f", "deny:find-only"),
     ("for b in x y; do echo 1 > dir/$b; cp dir/$b dir/$b.bak; done", "silent"),
     ("for b in x y; do echo 1 > dir/${{b}}; git add .; done", "silent"),
@@ -428,8 +428,51 @@ LOOP_WRITES = (
     ("f(){{ X=repo; }}; X=a; f; echo x > $X/f", "deny:find-only"),
     ('export PATH="$PATH:/x"; for b in a; do echo x > dir/$b; done', "silent"),
     ('for b in a; do printf %s "$x" > dir/$b; done', "silent"),
+    ("f(){{ :; }}; for b in a; do echo x > dir/$b; done", "deny:find-only"),
+    (". ./env; for b in a; do echo x > dir/$b; done", "deny:find-only"),
+    ("b=a; (( $v = 1 )); echo x > dir/$b", "deny:find-only"),
+    ("b=a; : $(( $v = 1 )); echo x > dir/$b", "deny:find-only"),
+    # but a heredoc's body is data, and a subshell or a child shell sets none of this
+    # shell's variables: what may set any there leaves its own unknown alone
+    (
+        (
+            "cat >> f.rs <<'EOF'\nfn x() {{ eval y; }}\nEOF\ncd {t} && for b in w1 w2;"
+            " do (. ./env; cargo test $b -- --exact x) > {t}/log-$b.log 2>&1; done"
+        ),
+        "silent",
+    ),
+    (
+        (
+            "cat >> f.rs <<'EOF'\nfn x() {{ eval y; }}\nEOF\ncd {t} && for b in w1 w2;"
+            " do (. ./env; cargo test $b -- --exact x) > {r}/log-$b.log 2>&1; done"
+        ),
+        "deny:find-only",
+    ),
+    ("cat <<EOF > o\nf(){{ :; }} $(eval y)\nEOF\nX=a; echo x > dir/$X", "silent"),
+    (
+        (
+            'X=$(nproc); systemd-run -q -- sh -c "for i in \\$(seq $X); do :; done" &\n'
+            "for i in 1 2 3; do cargo test > ../log-$i.log 2>&1; done"
+        ),
+        "silent",
+    ),
+    (
+        (
+            'X=$(nproc); systemd-run -q -- sh -c "for i in \\$(seq $X); do :; done" &\n'
+            "for i in 1 2 3; do cargo test > {r}/log-$i.log 2>&1; done"
+        ),
+        "deny:find-only",
+    ),
+    ("bash -c 'f(){{ :; }}'; for b in a; do echo x > dir/$b; done", "silent"),
+    ("(f(){{ :; }}); for b in a; do echo x > dir/$b; done", "silent"),
+    ("b=a; echo $(eval y) > dir/$b", "silent"),
+    ("for b in a; do (eval x; echo x > dir/$b); done", "deny:find-only"),
+    ("for b in a; do (eval x) > dir/$b; done", "silent"),
+    ("bash -c 'f(){{ :; }}; for b in a; do echo x > dir/$b; done'", "deny:find-only"),
+    # a name in a child shell's string, unexported there, is read as one it may set
+    ("b={t}/; cd {r} && bash -c 'echo x > ${{b}}f'", "deny:find-only"),
 )
-LOOP_WRITE_FORMS = 54
+LOOP_WRITE_FORMS = 70
 
 
 class HuntAgent(Route):
