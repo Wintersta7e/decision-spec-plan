@@ -35,6 +35,10 @@ CONTEXT_STOP = 200_000
 READS = ("Read", "Bash", "Grep")
 # How long bubblewrap's probe may take before the hook counts it as unable to run.
 PROBE_S = 10
+# Where the hook runs bwrap and git from: root-owned dirs, never the caller's PATH.
+TRUSTED_DIRS = "/usr/bin:/bin:/usr/local/bin"
+# The descriptor an absent ~/.gitconfig's empty stand-in is read from.
+STAND_IN_FD = 9
 
 
 def own_rulings(planning: pathlib.Path, name: str, dispatch: str) -> list[pathlib.Path]:
@@ -87,15 +91,68 @@ def _git_configs() -> tuple[pathlib.Path, pathlib.Path]:
     return (home / ".gitconfig").resolve(), (xdg / "git").resolve()
 
 
+def trusted(name: str) -> str | None:
+    """Return the path of the program name in the hook's trusted dirs, else None.
+
+    The dirs are DSP_TRUSTED_PATH of the hook's own environment, which a hunter's
+    shell cannot change (the tests' seam), else TRUSTED_DIRS — never PATH: a hunter
+    can write a dir early on it (`~/.local/bin`), and a `bwrap` or `git` planted
+    there would run outside the boundary on every later call.
+    """
+    from shutil import which  # shutil loads bz2, lzma and zlib: the hunter path alone
+
+    return which(name, path=os.environ.get("DSP_TRUSTED_PATH") or TRUSTED_DIRS)
+
+
+def _global_hooks() -> pathlib.Path | None:
+    """Return the global `core.hooksPath` dir, resolved; None when unset or relative.
+
+    Read with the files the global config includes, which may set it. A relative one
+    is read in each repository's work tree: the hunted one is read-only already. A git
+    that cannot be run, or exits other than 1 (unset), raises: the caller refuses the
+    call.
+    """
+    git = trusted("git")
+    if git is None:
+        return None
+    got = subprocess.run(
+        [
+            git,
+            "config",
+            "--global",
+            "--includes",
+            "--type=path",
+            "--get",
+            "core.hooksPath",
+        ],
+        capture_output=True,
+        text=True,
+        timeout=PROBE_S,
+        check=False,
+    )
+    if got.returncode == 1:
+        return None
+    if got.returncode:
+        msg = f"git config core.hooksPath: exit {got.returncode}: {got.stderr.strip()}"
+        raise RuntimeError(msg)
+    path = pathlib.Path(got.stdout.strip())
+    return path.resolve() if path.is_absolute() else None
+
+
 def _held_path(path: pathlib.Path, entry: RegistryEntry) -> bool:
     """Return whether a hunter may not write path.
 
-    One inside the route's repository and outside its planning dir, or a global git
+    One inside the route's repository and outside its planning dir, a global git
     config (`~/.gitconfig`, `$XDG_CONFIG_HOME/git/`), where a hooks path or an alias
-    reaches every repository.
+    reaches every repository, or the global hooks dir those name.
     """
     gitconfig, xdg_git = _git_configs()
-    if path == gitconfig or path.is_relative_to(xdg_git):
+    hooks = _global_hooks()
+    if (
+        path == gitconfig
+        or path.is_relative_to(xdg_git)
+        or (hooks is not None and path.is_relative_to(hooks))
+    ):
         return True
     planning = pathlib.Path(entry["planning_dir"]).resolve()
     return path.is_relative_to(_route_repo(entry)) and not path.is_relative_to(planning)
@@ -134,12 +191,11 @@ def hunt_hold(event: Mapping[str, object], entry: RegistryEntry) -> str | None:
 def bwrap() -> str | None:
     """Return bubblewrap's path where it can create a namespace here, else None.
 
-    Probed with `bwrap --dev-bind / / true` once per hook process (one event): a host
-    without unprivileged user namespaces has the binary and cannot run it.
+    Found by trusted, never on PATH. Probed with `bwrap --dev-bind / / true` once per
+    hook process (one event): a host without unprivileged user namespaces has the
+    binary and cannot run it.
     """
-    from shutil import which  # shutil loads bz2, lzma and zlib: the hunter path alone
-
-    path = which("bwrap")
+    path = trusted("bwrap")
     if path is None:
         return None
     try:
@@ -160,7 +216,13 @@ def bounded(command: str, entry: RegistryEntry, path: str) -> str:
     The whole file system is bound as it is, then the repository and its git common dir
     (where the marker sits, apart from the repository for a linked worktree) read-only,
     the planning dir inside it writable again, and the global git config read-only: a
-    hooks path or an alias set there reaches every repository. The command runs as
+    hooks path or an alias set there reaches every repository. So is the global hooks
+    dir, outside the repository and git's XDG dir. One that does not exist gets a
+    read-only stand-in, or a hunter could create it: an empty file read from
+    STAND_IN_FD for ~/.gitconfig (git reads it as an empty config; /dev/null bound
+    there makes every git call inside fail), an empty tmpfs for a dir. Bubblewrap
+    leaves each missing mount point on the host, measured with 0.9.0: an empty
+    ~/.gitconfig of mode 0444, an empty dir, both harmless to git. The command runs as
     `bash -c` in the directory the call runs in; its output and exit status are its own.
     """
     repo = _route_repo(entry)
@@ -171,9 +233,23 @@ def bounded(command: str, entry: RegistryEntry, path: str) -> str:
         args += ["--ro-bind", str(common), str(common)]
     if planning.is_relative_to(repo):
         args += ["--bind", str(planning), str(planning)]
-    for config in _git_configs():
-        args += ["--ro-bind-try", str(config), str(config)]
-    return shlex.join([*args, "--", "bash", "-c", command])
+    gitconfig, xdg_git = _git_configs()
+    stand_in = not gitconfig.exists()
+    if stand_in:
+        args += ["--ro-bind-data", str(STAND_IN_FD), str(gitconfig)]
+    else:
+        args += ["--ro-bind-try", str(gitconfig), str(gitconfig)]
+    dirs = [xdg_git]
+    hooks = _global_hooks()
+    if hooks is not None and not (
+        hooks.is_relative_to(xdg_git) or hooks.is_relative_to(repo)
+    ):
+        dirs.append(hooks)
+    for d in map(str, dirs):
+        exists = pathlib.Path(d).exists()
+        args += ["--ro-bind-try", d, d] if exists else ["--tmpfs", d, "--remount-ro", d]
+    joined = shlex.join([*args, "--", "bash", "-c", command])
+    return f"{joined} {STAND_IN_FD}</dev/null" if stand_in else joined
 
 
 def hunter_pre(event: Mapping[str, object], entry: RegistryEntry) -> int:

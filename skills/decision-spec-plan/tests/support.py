@@ -526,15 +526,16 @@ class Sandbox(unittest.TestCase):
 
     @classmethod
     def bwrap_shim(cls, root: Path, code: int) -> dict[str, str]:
-        """A `bwrap` at root that exits code: the env that puts it first on PATH.
+        """A `bwrap` at root that exits code: the env where the hook finds it first.
 
-        0 passes the hook's probe (`bwrap --dev-bind / / true`) and runs nothing, so a
-        test reads the command the hook builds on any host; 1 is a host where bubblewrap
-        cannot create a namespace.
+        The hook runs bwrap and git from DSP_TRUSTED_PATH, never PATH: root, then PATH's
+        dirs for git. 0 passes the hook's probe (`bwrap --dev-bind / / true`) and runs
+        nothing, so a test reads the command the hook builds on any host; 1 is a host
+        where bubblewrap cannot create a namespace.
         """
         shim = cls.write(root / "bwrap", f"#!/bin/sh\nexit {code}\n")
         cls.chmod_x(shim)
-        return {"PATH": f"{root}{os.pathsep}{cls.env['PATH']}"}
+        return {"DSP_TRUSTED_PATH": f"{root}{os.pathsep}{cls.env['PATH']}"}
 
     @staticmethod
     def chmod_x(*paths: StrPath) -> None:

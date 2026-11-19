@@ -14,6 +14,7 @@ import unittest
 from collections.abc import Callable, Mapping
 from pathlib import Path
 from typing import TYPE_CHECKING, cast
+from unittest import mock
 
 from typing_extensions import override
 
@@ -24,8 +25,8 @@ if TYPE_CHECKING:
     from dsp_route.common import RegistryEntry
 
 SENT_BACK = 2  # the stop hook's exit that sends the agent back to wait
-# the global git config bubblewrap binds read-only: the file and git's XDG dir
-GLOBAL_CONFIGS = 2
+# the dirs the hook looks for bwrap and git in, unless its env names others
+TRUSTED_DIRS = ("/usr/bin", "/bin", "/usr/local/bin")
 
 
 class Route(support.Route):
@@ -305,9 +306,12 @@ class HuntAgent(Route):
     @override
     @classmethod
     def setUpClass(cls) -> None:
-        """Route's fixture; PATH led by a failing `bwrap`, FAKE by a passing one."""
+        """Route's fixture; the hook finds a failing `bwrap`, under FAKE a passing one.
+
+        REAL empties DSP_TRUSTED_PATH: the hook looks in TRUSTED_DIRS.
+        """
         super().setUpClass()
-        cls.REAL: dict[str, str] = {"PATH": cls.env["PATH"]}
+        cls.REAL: dict[str, str] = {"DSP_TRUSTED_PATH": ""}
         cls.FAKE: dict[str, str] = cls.bwrap_shim(cls.T / "fake-bwrap", 0)
         cls.env.update(cls.bwrap_shim(cls.T / "no-bwrap", 1))
 
@@ -397,7 +401,8 @@ class HuntAgent(Route):
                     env=self.FAKE,
                 )
         home = self.HOME
-        for config in (home / ".gitconfig", home / ".config/git/config"):
+        hooks = self.T / "no-hooks/pre-commit"  # the global core.hooksPath
+        for config in (home / ".gitconfig", home / ".config/git/config", hooks):
             _ = self.hook(
                 "deny:find-only", self.call("h1", "Edit", {"file_path": str(config)})
             )
@@ -424,11 +429,8 @@ class HuntAgent(Route):
         joined = " ".join(argv)
         self.ok("the repository read-only", f"--ro-bind {r} {r} " in joined, argv)
         self.ok("the planning dir writable", f" --bind {p} {p} " in joined, argv)
-        self.ok(
-            "the global config read-only",
-            joined.count("--ro-bind-try") == GLOBAL_CONFIGS,
-            argv,
-        )
+        for config in (self.HOME / ".gitconfig", self.HOME / ".config/git"):
+            self.ok(f"read-only  {config}", self.read_only(joined, config), argv)
         command = {"command": "echo hi > x"}
         _ = self.hook("silent", self.call("e1", "Bash", command, r), env=self.FAKE)
         lead = ev(
@@ -462,12 +464,145 @@ class HuntAgent(Route):
         args = [str(planning), "--phase", "1", "--repo", str(self.WT)]
         marker = self.write(common / "dsp-route-x.json", json.dumps({"args": args}))
         entry = {"marker": str(marker), "planning_dir": str(planning)}
-        # the two keys bounded reads, of the registry entry's many
-        joined = bounded("true", cast("RegistryEntry", cast("object", entry)), "bwrap")
+        # the two keys bounded reads, of the registry entry's many; the sandbox's HOME
+        with mock.patch.dict(os.environ, self.env):
+            joined = bounded(
+                "true", cast("RegistryEntry", cast("object", entry)), "bwrap"
+            )
         wt, c = self.WT.resolve(), common.resolve()
         self.ok("the worktree read-only", f"--ro-bind {wt} {wt} " in joined, joined)
         self.ok("its common dir read-only", f"--ro-bind {c} {c} " in joined, joined)
         self.ok("no writable bind", " --bind " not in joined, joined)
+
+    @staticmethod
+    def read_only(joined: str, path: Path) -> bool:
+        """Whether the bounded command joined binds path read-only.
+
+        The path itself where it exists, else a stand-in a hunter cannot write: an
+        empty file (`--ro-bind-data`), or an empty read-only tmpfs for a dir.
+        """
+        p = str(path)
+        return any(
+            form in f"{joined} "
+            for form in (
+                f"--ro-bind-try {p} {p} ",
+                f"--ro-bind-data 9 {p} ",
+                f"--tmpfs {p} --remount-ro {p} ",
+            )
+        )
+
+    def bounded_command(self, env: Mapping[str, str]) -> str:
+        """The command the hook bounds a hunter's `true` to under env."""
+        event = self.call("h1", "Bash", {"command": "true"}, str(self.R))
+        return str(self.updated(event, env).get("command") or "")
+
+    def test_trusted_lookup(self) -> None:
+        """A `bwrap` or `git` a hunter plants on PATH is never run by the hook."""
+        planted, ran = self.T / "planted", self.T / "planted-ran"
+        for name in ("bwrap", "git"):
+            shim = self.write(planted / name, f"#!/bin/sh\ntouch '{ran}'\nexit 0\n")
+            self.chmod_x(shim)
+        path = {"PATH": f"{planted}{os.pathsep}{self.env['PATH']}"}
+        event = self.call("h1", "Bash", {"command": "echo hi"}, str(self.R))
+        # the hook's own env names a failing bwrap: the planted one is not looked at
+        _ = self.hook("silent", event, env=path)
+        _ = self.bounded_command({**path, **self.FAKE})
+        # none named: the fixed system dirs, a bwrap there or none
+        out = self.py(
+            support.RS, "--hook", input=event + "\n", env={**path, **self.REAL}
+        ).out
+        if out:
+            data = cast("dict[str, dict[str, dict[str, str]]]", json.loads(out))
+            argv = shlex.split(data["hookSpecificOutput"]["updatedInput"]["command"])
+            self.ok("a system bwrap", Path(argv[0]).parent in map(Path, TRUSTED_DIRS))
+        self.ok("nothing planted ran", not ran.exists())
+
+    def test_stand_ins(self) -> None:
+        """An absent global config or hooks dir is bound as a read-only stand-in."""
+        home, t = self.HOME, self.T
+        gitconfig, hooks, xdg = home / ".gitconfig", t / "no-hooks", t / "xdg-none"
+        self.rm(hooks)
+        env = {**self.FAKE, "XDG_CONFIG_HOME": str(xdg)}
+        joined = " ".join(shlex.split(self.bounded_command(env)))
+        for path, form in (
+            (gitconfig, "--ro-bind-try"),
+            (xdg / "git", "--tmpfs"),
+            (hooks, "--tmpfs"),
+        ):
+            self.ok(f"{form}  {path}", f"{form} {path} " in joined, joined)
+            self.ok(f"read-only  {path}", self.read_only(joined, path), joined)
+        hooks.mkdir()
+        joined = " ".join(shlex.split(self.bounded_command(env)))
+        self.ok("the hooks dir bound", f"--ro-bind-try {hooks} {hooks} " in joined)
+        # a hooks dir inside git's XDG dir is read-only with it
+        _ = self.git("config", "--global", "core.hooksPath", f"{xdg}/git/hooks")
+        self.addCleanup(self.git, "config", "--global", "core.hooksPath", str(hooks))
+        joined = " ".join(shlex.split(self.bounded_command(env)))
+        self.ok("no bind of its own", f"{xdg}/git/hooks" not in joined, joined)
+        away = home / ".gitconfig.away"
+        _ = gitconfig.rename(away)
+        self.addCleanup(away.replace, gitconfig)
+        command = self.bounded_command(env)
+        self.ok(
+            "an empty file for ~/.gitconfig",
+            f"--ro-bind-data 9 {gitconfig} " in " ".join(shlex.split(command))
+            and command.endswith(" 9</dev/null"),
+            command,
+        )
+
+    def test_included_hooks_path(self) -> None:
+        """A hooks path set in an included file is bound; an unreadable one refuses."""
+        gitconfig, inc, hooks = (
+            self.HOME / ".gitconfig",
+            self.T / "inc",
+            self.T / "inc-h",
+        )
+        self.addCleanup(gitconfig.write_bytes, gitconfig.read_bytes())
+        _ = self.write(inc, f"[core]\n\thooksPath = {hooks}\n")
+        _ = self.write(gitconfig, f"[include]\n\tpath = {inc}\n")
+        joined = " ".join(shlex.split(self.bounded_command(self.FAKE)))
+        self.ok("the included hooks dir", self.read_only(joined, hooks), joined)
+        # git exits 128 on a config it cannot parse: not "unset", the call is refused
+        _ = self.write(gitconfig, "[core\n")
+        event = self.call("h1", "Bash", {"command": "true"}, str(self.R))
+        _ = self.hook("deny:boundary could not be set up", event, env=self.FAKE)
+
+    def test_real_stand_ins(self) -> None:
+        """For real: a hunter cannot create the global config or write a hooks dir.
+
+        Bubblewrap creates each missing mount point on the host, measured: an empty
+        ~/.gitconfig (mode 0444), an empty XDG git dir and hooks dir, each harmless
+        to git; git inside reads the stand-in as an empty config.
+        """
+        home, t = self.HOME, self.T
+        gitconfig, hooks, xdg = home / ".gitconfig", t / "real-hooks", t / "xdg-real"
+        run = self._real_runner({"XDG_CONFIG_HOME": str(xdg)})
+        _ = self.git("config", "--global", "core.hooksPath", str(hooks))
+        self.addCleanup(
+            self.git, "config", "--global", "core.hooksPath", f"{t}/no-hooks"
+        )
+        hook_write = f"mkdir -p {hooks} && echo x > {hooks}/pre-commit"
+        for missing in (True, False):
+            self.ok("hooks dir present", hooks.is_dir() != missing)
+            res = run(hook_write, self.P)
+            self.ok("a hooks write fails", res.code != 0, res.out)
+        self.ok("the hooks dir empty", list(hooks.iterdir()) == [])
+        away = home / ".gitconfig.away"
+        _ = gitconfig.rename(away)
+        self.addCleanup(away.replace, gitconfig)
+        for command in (
+            "echo x > ~/.gitconfig",
+            f"mkdir -p {xdg}/git && echo x > {xdg}/git/config",
+        ):
+            res = run(command, self.P)
+            self.ok(f"fails  {command}", res.code != 0, res.out)
+        res = run("git status >/dev/null && git config --global --list | wc -l", self.R)
+        self.ok("git reads the stand-in", (res.code, res.out) == (0, "0"), res.out)
+        self.ok(
+            "an empty ~/.gitconfig left",
+            gitconfig.is_file() and gitconfig.stat().st_size == 0,
+        )
+        self.ok("an empty XDG git dir left", list((xdg / "git").iterdir()) == [])
 
     def test_real_boundary(self) -> None:
         """Run for real: writes into the repository fail with EROFS, the rest passes."""
@@ -516,20 +651,25 @@ class HuntAgent(Route):
             f"{res.out!r} != {plain.out!r}",
         )
 
-    def _real_runner(self) -> Callable[[str, Path], support.Result]:
+    def _real_runner(
+        self, env: Mapping[str, str] | None = None
+    ) -> Callable[[str, Path], support.Result]:
         """Return a runner of a hunter's command as the hook bounds it, real bwrap.
 
-        Skips the test where bubblewrap cannot create a namespace: CI's runner may
-        lack the binary or unprivileged user namespaces.
+        env is added to the hook's environment and the command's. Skips the test where
+        bubblewrap cannot create a namespace: CI's runner may lack the binary or
+        unprivileged user namespaces.
         """
-        real = shutil.which("bwrap", path=self.REAL["PATH"])
+        real = shutil.which("bwrap", path=os.pathsep.join(TRUSTED_DIRS))
         if real is None or self.run_([real, "--dev-bind", "/", "/", "true"]).code:
             self.skipTest("bubblewrap cannot create a namespace here")
+        extra = dict(env or {})
 
         def run(command: str, cwd: Path) -> support.Result:
             event = self.call("h1", "Bash", {"command": command}, str(cwd))
-            bounded = str(self.updated(event, self.REAL).get("command") or "")
-            return self.run_(["bash", "-c", bounded], cwd=cwd, merge=True)
+            hook_env = {**self.REAL, **extra}
+            bounded = str(self.updated(event, hook_env).get("command") or "")
+            return self.run_(["bash", "-c", bounded], cwd=cwd, merge=True, env=extra)
 
         return run
 
