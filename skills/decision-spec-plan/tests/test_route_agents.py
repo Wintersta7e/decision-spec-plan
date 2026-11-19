@@ -8,16 +8,24 @@ job (F92).
 
 import json
 import os
+import shlex
+import shutil
 import unittest
+from collections.abc import Callable, Mapping
 from pathlib import Path
-from typing import cast
+from typing import TYPE_CHECKING, cast
 
 from typing_extensions import override
 
 import support
 from support import call, ev, human, jline, notice, ts, used
 
+if TYPE_CHECKING:
+    from dsp_route.common import RegistryEntry
+
 SENT_BACK = 2  # the stop hook's exit that sends the agent back to wait
+# the global git config bubblewrap binds read-only: the file and git's XDG dir
+GLOBAL_CONFIGS = 2
 
 
 class Route(support.Route):
@@ -251,13 +259,8 @@ CONFIG_WRITES = (
     "git config edit",
 )
 CONFIG_WRITE_FORMS = 14
-# a hunter's git forms past a plain commit and config write: a subcommand the hook
-# cannot read, plumbing that commits, config indirection
-HUNTER_GIT = (
-    "git $x status",
-    'git "$(echo commit)" -m x',
-    "git commit-tree HEAD^{tree} -m x",
-    "git update-ref refs/heads/x HEAD",
+# config indirection a hunter is refused: an include, an alias through the environment
+CONFIG_INDIRECTION = (
     "git -c include.path=/x log",
     "git -c includeIf.onbranch:main.path=/x log",
     "git -c INCLUDE.path=/x log",
@@ -267,219 +270,53 @@ HUNTER_GIT = (
     "env GIT_CONFIG_KEY_0=core.hooksPath git status",
     "export GIT_CONFIG_COUNT=1; git status",
 )
-HUNTER_GIT_FORMS = 12
-# the git a hunter may run inside the hunted repository: one per allowlist entry
-READ_ONLY_GIT = (
-    "git status",
-    "git log --oneline",
-    "git show HEAD",
-    "git diff HEAD~1",
-    "git blame README",
-    "git grep x",
-    "git ls-files",
-    "git ls-tree HEAD",
-    "git ls-remote .",
-    "git cat-file -t HEAD",
-    "git rev-parse HEAD",
-    "git rev-list HEAD",
-    "git describe --always",
-    "git shortlog -s HEAD",
-    "git name-rev HEAD",
-    "git merge-base HEAD main",
-    "git for-each-ref",
-    "git show-ref",
-    "git config --get user.name",
-    "git branch",
-    "git branch -a --list",
-    "git tag",
-    "git tag -l 'v*'",
-    "git worktree list",
-    "git remote",
-    "git remote -v",
-    "git remote show origin",
-    "git remote get-url origin",
-    "git stash list",
-    "git stash show",
-)
-READ_ONLY_FORMS = 30
-# git the hunted repository refuses a hunter and its own clone allows: a saving stash
-# among them
+CONFIG_INDIRECTION_FORMS = 8
+# writes into the hunted repository {r}, run from it, that bubblewrap fails with EROFS:
+# forms the shell-text hold missed among them (`>&`, `sed -i`, `git diff --output=`)
 REPO_WRITES = (
-    "git reset --hard",
-    "git notes add -m x",
-    "git symbolic-ref HEAD refs/heads/x",
-    "git branch -f x",
-    "git checkout -b x",
-    "git tag v1",
+    "touch new.txt",
+    "touch src.txt",
+    "echo x > src.txt",
+    "echo x >& all.log",
+    "sed -i s/a/b/ src.txt",
     "git stash",
-    "git stash push",
-    "git stash save x",
-    "git stash store abc",
-    "git stash create",
-    "git stash -m x",
+    "git update-ref refs/heads/x HEAD",
+    "git diff --output=d.txt HEAD",
+    "printf x > {r}/.git/hooks/pre-commit",
 )
-REPO_WRITE_FORMS = 12
-# aliases the hunter's repository defines, each running a held command
-HELD_ALIASES = {
-    "sv": "commit",
-    "up": "update-ref refs/heads/x HEAD",
-    "cf": "config core.hooksPath h",
-    "sh": "!git commit",
-}
-HELD_ALIAS_FORMS = 4
-# git a hunter runs in its own clone that may point at the hunted repository {r}: by
-# an option or a config key, either form, or any GIT_ variable in the text; a read
-# passes
-POINTED_GIT = (
-    ("git --git-dir={r}/.git stash", "deny:find-only"),
-    ("git --git-dir {r}/.git reset --hard", "deny:find-only"),
-    ("GIT_DIR={r}/.git git stash push", "deny:find-only"),
-    ("git --work-tree {r} reset --hard", "deny:find-only"),
-    ("git --work-tree={r} checkout -- .", "deny:find-only"),
-    ("env GIT_WORK_TREE={r} git checkout -- .", "deny:find-only"),
-    ("export GIT_COMMON_DIR={r}/.git; git stash", "deny:find-only"),
-    ("GIT_INDEX_FILE={r}/.git/index git add -A", "deny:find-only"),
-    ("git -c core.worktree={r} stash", "deny:find-only"),
-    ("git --config-env core.worktree=W stash", "deny:find-only"),
-    ("export GIT_DIR={r}/.git; git stash", "deny:find-only"),
-    ("GIT_OBJECT_DIRECTORY=x git stash", "deny:find-only"),
-    ("git --git-dir={r}/.git log", "silent"),
-    ("git -c core.pager=cat log", "silent"),
-    ("GIT_PAGER=cat git log", "silent"),
-    ("git stash", "silent"),
+REPO_WRITE_FORMS = 9
+# git stash quits on its index lock's EROFS without saying so (measured with strace)
+QUIET_FAILS = ("git stash",)
+# a command whose quoting must survive the wrap: quotes, `$`, a newline, heredocs
+QUOTED = (
+    "X='it'\"'\"'s'; printf '%s|%s|%s\\n' \"$X\" 'a \"q\" $HOME' \"${#X}\"\n"
+    "cat <<'EOF'\nline $1 'q' \"d\" `x`\nEOF\n"
+    "cat <<EOF\nhome=${HOME:+set} $((1 + 2))\nEOF"
 )
-POINTED_GIT_FORMS = 16
-# clones of the hunted repository {r} run inside it that write into it, or where the
-# hook cannot tell: {out} is outside it, a word that only looks like the destination
-CLONE_INTO_REPO = (
-    "git clone -q file://{r} {r}/x",
-    "git clone -q file://{r}",  # git names the destination after the source, here
-    "git clone file://{r} x",
-    'git clone file://{r} "$D"',
-    "git clone file://{r} -b {out}",
-    "git clone file://{r} --br {out}",
-    "git clone file://{r} -qb {out}",
-    "git clone --separate-git-dir={r}/g file://{r} {out}",
-    "git clone --separate-git-dir {r}/g file://{r} {out}",
-    "git clone $OPTS file://{r} {out}",
-)
-CLONE_INTO_REPO_FORMS = 10
-# `for` loops a hunter runs in {t}, outside the hunted repository {r}: a literal list
-# writes one target per word; a computed list, a variable set again in the body, a
-# target after the loop or on its `done` the hook cannot read
-LOOP_WRITES = (
-    ("for b in a b c; do printf x > dir/$b; done", "silent"),
-    ("for i in 1 2 3; do cargo test > ../log-$i.txt 2>&1; done", "silent"),
-    ("for b in a b; do for c in x y; do echo > $b$c; done; done", "silent"),
-    ("while false; do for c in x; do echo > $c; done; done", "silent"),
-    ("for b in a b c; do printf x > {r}/x$b; done", "deny:find-only"),
-    ("for b in {t}/a {r}/b; do echo > $b; done", "deny:find-only"),
-    ("for i in $(seq 3); do echo > f$i; done", "deny:find-only"),
-    ("for i in *; do echo > f$i; done", "deny:find-only"),
-    ("b={t}; for b in $(ls); do echo > $b/f; done", "deny:find-only"),
-    ("for b in {t}; do b={r}; echo > $b/f; done", "deny:find-only"),
-    ("for b in {t}; do :; done; echo > $b/f", "deny:find-only"),
-    ("for b in {t}/a; do :; done > $b/f", "deny:find-only"),
-    # a loop a subshell leaves open, a body no `done` closes, the variable set again
-    ("bash -c 'for b in a; do :; done'; echo x > {r}/$b", "deny:find-only"),
-    ("bash -c 'for b in a; do :'; echo x > dir/$b", "deny:find-only"),
-    ("echo $(for b in a; do :); echo x > dir/$b", "deny:find-only"),
-    ("(for b in a; do :); echo x > dir/$b", "deny:find-only"),
-    ("for b in a; {{ echo x > dir/$b; }}", "deny:find-only"),
-    ("for b in a; do b+=/../../repo; echo x > dir/$b; done", "deny:find-only"),
-    ("for b in a; do read b; echo x > dir/$b; done", "deny:find-only"),
-    ("for b in a; do IFS= read -r b; echo x > dir/$b; done", "deny:find-only"),
-    ("for b in a; do printf -v b %s ../repo; echo x > $b/f; done", "deny:find-only"),
-    ("for b in a; do export b=../repo; echo x > $b/f; done", "deny:find-only"),
-    ("for b in a; do ((b++)); echo x > dir/$b; done", "deny:find-only"),
-    ("for b in a; do : $((b+=1)); echo x > dir/$b; done", "deny:find-only"),
-    ("for b in a; do : ${{b:=x}}; echo x > dir/$b; done", "deny:find-only"),
-    ('for b in a; do eval "$X"; echo x > dir/$b; done', "deny:find-only"),
-    ("for b in a; do echo | b=x; echo x > dir/$b; done", "deny:find-only"),
-    ("for b in a; do read c; echo x > dir/$b; done", "silent"),
-    # a variable a subshell or a pipeline stage sets is unknown after it
-    ("b={r}; bash -c 'b={t}'; echo x > $b/f", "deny:find-only"),
-    ("b={r}; (b={t}); echo x > $b/f", "deny:find-only"),
-    ("b={r}; true | b={t}; echo x > $b/f", "deny:find-only"),
-    ("b={t}/x; b+=/../repo; echo x > $b/f", "deny:find-only"),
-    ("b={t}; echo x > $b/f", "silent"),
-    # read as text: any word naming the variable but a plain `$b` may set it, and so
-    # may a command that may set any variable
-    ("for b in a; do b[0]=repo; echo x > $b/f; done", "deny:find-only"),
-    ("for b in a; do declare -n r=b; r=repo; echo x > $b/f; done", "deny:find-only"),
-    ("for b in a; do declare -n r=$N; r=repo; echo x > $b/f; done", "deny:find-only"),
-    ("for b in a; do unset b; echo x > repo$b/f; done", "deny:find-only"),
-    ("for b in a; do builtin read b; echo x > $b/f; done", "deny:find-only"),
-    ("for b in a; do command read b; echo x > $b/f; done", "deny:find-only"),
-    ("for b in a; do X=1 . ./env; echo x > dir/$b; done", "deny:find-only"),
-    ('for b in a; do $SET "$X"; echo x > dir/$b; done', "deny:find-only"),
-    ("for b in a; do bash -c :; echo x > dir/$b; done", "silent"),
-    ("b=a; unset b; echo x > repo$b/f", "deny:find-only"),
-    ("for b in x y; do echo 1 > dir/$b; cp dir/$b dir/$b.bak; done", "silent"),
-    ("for b in x y; do echo 1 > dir/${{b}}; git add .; done", "silent"),
-    # anywhere in the text, what may set any variable leaves every one unknown: a
-    # nameref, a function, a trap, a computed argument to a builtin that sets one
-    ("declare -n r=b; for b in a; do r=repo; echo x > $b/f; done", "deny:find-only"),
-    ("f(){{ b=repo; }}; for b in a; do f; echo x > $b/f; done", "deny:find-only"),
-    ("function f {{ :; }}; for b in a; do f; echo x > $b/f; done", "deny:find-only"),
-    ("trap 'b=repo' DEBUG; for b in a; do echo x > $b/f; done", "deny:find-only"),
-    ('for b in a; do read "$v"; echo x > $b/f; done', "deny:find-only"),
-    ('for b in a; do printf -v "$v" x; echo x > $b/f; done', "deny:find-only"),
-    ("f(){{ X=repo; }}; X=a; f; echo x > $X/f", "deny:find-only"),
-    ('export PATH="$PATH:/x"; for b in a; do echo x > dir/$b; done', "silent"),
-    ('for b in a; do printf %s "$x" > dir/$b; done', "silent"),
-    ("f(){{ :; }}; for b in a; do echo x > dir/$b; done", "deny:find-only"),
-    (". ./env; for b in a; do echo x > dir/$b; done", "deny:find-only"),
-    ("b=a; (( $v = 1 )); echo x > dir/$b", "deny:find-only"),
-    ("b=a; : $(( $v = 1 )); echo x > dir/$b", "deny:find-only"),
-    # but a heredoc's body is data, and a subshell or a child shell sets none of this
-    # shell's variables: what may set any there leaves its own unknown alone
-    (
-        (
-            "cat >> f.rs <<'EOF'\nfn x() {{ eval y; }}\nEOF\ncd {t} && for b in w1 w2;"
-            " do (. ./env; cargo test $b -- --exact x) > {t}/log-$b.log 2>&1; done"
-        ),
-        "silent",
-    ),
-    (
-        (
-            "cat >> f.rs <<'EOF'\nfn x() {{ eval y; }}\nEOF\ncd {t} && for b in w1 w2;"
-            " do (. ./env; cargo test $b -- --exact x) > {r}/log-$b.log 2>&1; done"
-        ),
-        "deny:find-only",
-    ),
-    ("cat <<EOF > o\nf(){{ :; }} $(eval y)\nEOF\nX=a; echo x > dir/$X", "silent"),
-    (
-        (
-            'X=$(nproc); systemd-run -q -- sh -c "for i in \\$(seq $X); do :; done" &\n'
-            "for i in 1 2 3; do cargo test > ../log-$i.log 2>&1; done"
-        ),
-        "silent",
-    ),
-    (
-        (
-            'X=$(nproc); systemd-run -q -- sh -c "for i in \\$(seq $X); do :; done" &\n'
-            "for i in 1 2 3; do cargo test > {r}/log-$i.log 2>&1; done"
-        ),
-        "deny:find-only",
-    ),
-    ("bash -c 'f(){{ :; }}'; for b in a; do echo x > dir/$b; done", "silent"),
-    ("(f(){{ :; }}); for b in a; do echo x > dir/$b; done", "silent"),
-    ("b=a; echo $(eval y) > dir/$b", "silent"),
-    ("for b in a; do (eval x; echo x > dir/$b); done", "deny:find-only"),
-    ("for b in a; do (eval x) > dir/$b; done", "silent"),
-    ("bash -c 'f(){{ :; }}; for b in a; do echo x > dir/$b; done'", "deny:find-only"),
-    # a name in a child shell's string, unexported there, is read as one it may set
-    ("b={t}/; cd {r} && bash -c 'echo x > ${{b}}f'", "deny:find-only"),
-)
-LOOP_WRITE_FORMS = 70
 
 
 class HuntAgent(Route):
-    """A hunt- agent is find-only: no commit, git config write, alias or repo edit."""
+    """A hunt- agent is find-only: its shell runs with the repository read-only.
+
+    Its hook runs see a `bwrap` that cannot create a namespace unless a test gives
+    another, so a call the hold passes is silent on every host.
+    """
+
+    @override
+    @classmethod
+    def setUpClass(cls) -> None:
+        """Route's fixture; PATH led by a failing `bwrap`, FAKE by a passing one."""
+        super().setUpClass()
+        cls.REAL: dict[str, str] = {"PATH": cls.env["PATH"]}
+        cls.FAKE: dict[str, str] = cls.bwrap_shim(cls.T / "fake-bwrap", 0)
+        cls.env.update(cls.bwrap_shim(cls.T / "no-bwrap", 1))
 
     def call(
-        self, agent: str, tool: str, tool_input: dict[str, str], cwd: str | None = None
+        self,
+        agent: str,
+        tool: str,
+        tool_input: Mapping[str, object],
+        cwd: str | None = None,
     ) -> str:
         """A PreToolUse call of tool with tool_input by agent in the lead's session.
 
@@ -502,6 +339,18 @@ class HuntAgent(Route):
             _ = self.write(self.SUB / f"agent-{agent}.meta.json", meta)
             _ = self.write(self.SUB / f"agent-{agent}.jsonl", human(-60) + "\n")
 
+    def updated(self, event: str, env: Mapping[str, str]) -> dict[str, object]:
+        """The `updatedInput` the hook prints on event; a failed check for none."""
+        out = self.py(support.RS, "--hook", input=event + "\n", env=env).out
+        try:
+            data = cast("dict[str, object]", json.loads(out))
+            spec = cast("dict[str, object]", data["hookSpecificOutput"])
+            got = cast("dict[str, object]", spec["updatedInput"])
+        except (ValueError, KeyError, TypeError):
+            got = {}
+        self.ok("the hook rewrote the call", bool(got), out[:1500])
+        return got
+
     def test_commit_and_config(self) -> None:
         """A commit, a git config write and an inline alias are refused; reads pass."""
         bash = "Bash"
@@ -512,8 +361,10 @@ class HuntAgent(Route):
             "silent", self.call("e1", bash, {"command": "git commit -m x"})
         )  # an exec- agent's commit is judged by its rulings alone
         self.ok("writing forms", len(CONFIG_WRITES) == CONFIG_WRITE_FORMS)
+        self.ok("indirection", len(CONFIG_INDIRECTION) == CONFIG_INDIRECTION_FORMS)
         writes = (
             *CONFIG_WRITES,
+            *CONFIG_INDIRECTION,
             "git config --global core.hooksPath h",
             "git -c alias.sv=commit sv -m x",
             "git --config-env alias.sv=X sv",
@@ -528,6 +379,7 @@ class HuntAgent(Route):
             "git -c core.pager=cat log",
             "git config get user.name",
             "git status",
+            "git update-ref refs/x HEAD",  # read-only in the repo, free in a clone
         ):
             _ = self.hook("silent", self.call("h1", bash, {"command": command}))
 
@@ -538,8 +390,11 @@ class HuntAgent(Route):
         _ = self.hook("deny:find-only", self.call("h1", "Edit", {"file_path": inside}))
         for allowed in (self.P / "hunt/findings/env.md", self.T / "clone/src.py"):
             for tool in ("Write", "Edit"):
+                # an edit runs in the harness: bubblewrap never wraps it
                 _ = self.hook(
-                    "silent", self.call("h1", tool, {"file_path": str(allowed)})
+                    "silent",
+                    self.call("h1", tool, {"file_path": str(allowed)}),
+                    env=self.FAKE,
                 )
         home = self.HOME
         for config in (home / ".gitconfig", home / ".config/git/config"):
@@ -547,131 +402,136 @@ class HuntAgent(Route):
                 "deny:find-only", self.call("h1", "Edit", {"file_path": str(config)})
             )
 
-    def test_plumbing_and_indirection(self) -> None:
-        """Plumbing commits and config indirection are held; unreadable fails."""
-        bash = "Bash"
-        self.ok("hunter git forms", len(HUNTER_GIT) == HUNTER_GIT_FORMS)
-        for command in HUNTER_GIT:
-            _ = self.hook("deny:find-only", self.call("h1", bash, {"command": command}))
-        for command in (
-            "git stash list",
-            "git stash show",
-            "git show HEAD",
-            "git -c core.pager=cat log",
-            "git --version",
-        ):
-            _ = self.hook("silent", self.call("h1", bash, {"command": command}))
-        _ = self.hook(
-            "silent", self.call("e1", bash, {"command": "git update-ref refs/x HEAD"})
-        )  # held for hunters alone
-
-    def test_redirects(self) -> None:
-        """A redirect or tee into the repository outside the planning dir is refused."""
-        bash, r, p, t = "Bash", self.R, self.P, self.T
-        held = (
-            f"echo x > {r}/src.py",
-            f"git diff >> {r}/d.txt",
-            f"git diff | tee -a {r}/d.txt",
-            "echo x > src.py",  # relative to the call's directory, the repository
+    def test_rewrite(self) -> None:
+        """A hunter's Bash is bounded, its other keys kept; no other agent's is."""
+        r, p = str(self.R), str(self.P)
+        call: dict[str, object] = {
+            "command": "echo 'a b' > $X",
+            "description": "d",
+            "timeout": 5000,
+            "run_in_background": True,
+        }
+        got = self.updated(self.call("h1", "Bash", call, r), self.FAKE)
+        kept = {k: v for k, v in call.items() if k != "command"}
+        self.ok("other keys kept", {k: got.get(k) for k in kept} == kept, got)
+        argv = shlex.split(str(got.get("command") or ""))
+        self.ok(
+            "bwrap runs the original",
+            argv[:1] == [str(self.T / "fake-bwrap/bwrap")]
+            and argv[-4:] == ["--", "bash", "-c", call["command"]],
+            argv,
         )
-        for command in held:
-            _ = self.hook(
-                "deny:find-only", self.call("h1", bash, {"command": command}, str(r))
-            )
-        for command in (
-            f"echo x > {p}/hunt/n.md",
-            f"git diff > {t}/clone.diff",
-            "git diff > /dev/null",
-            f"git diff | tee {t}/d.txt",
-        ):
-            _ = self.hook("silent", self.call("h1", bash, {"command": command}, str(r)))
-
-    def test_for_loops(self) -> None:
-        """A loop over literal words writes each target; a computed one is held."""
-        bash, r, t = "Bash", self.R, self.T
-        self.ok("loop forms", len(LOOP_WRITES) == LOOP_WRITE_FORMS)
-        for form, want in LOOP_WRITES:
-            command = form.format(r=r, t=t)
-            _ = self.hook(want, self.call("h1", bash, {"command": command}, str(t)))
-
-    def test_repo_aliases(self) -> None:
-        """An alias the repository defines is judged by the command it runs."""
-        repo = self.init_repo(self.T / "aliased")
-        self.ok("alias forms", len(HELD_ALIASES) == HELD_ALIAS_FORMS)
-        for name, value in (*HELD_ALIASES.items(), ("st", "status")):
-            _ = self.git("-C", repo, "config", f"alias.{name}", value)
-        for name in HELD_ALIASES:
-            _ = self.hook(
-                "deny:find-only",
-                self.call("h1", "Bash", {"command": f"git {name}"}, str(repo)),
-            )
-        _ = self.hook(
-            "deny:find-only",
-            self.call("h1", "Bash", {"command": f"git -C {repo} sv"}),
+        joined = " ".join(argv)
+        self.ok("the repository read-only", f"--ro-bind {r} {r} " in joined, argv)
+        self.ok("the planning dir writable", f" --bind {p} {p} " in joined, argv)
+        self.ok(
+            "the global config read-only",
+            joined.count("--ro-bind-try") == GLOBAL_CONFIGS,
+            argv,
         )
-        _ = self.hook(
-            "silent", self.call("h1", "Bash", {"command": "git st"}, str(repo))
+        command = {"command": "echo hi > x"}
+        _ = self.hook("silent", self.call("e1", "Bash", command, r), env=self.FAKE)
+        lead = ev(
+            "PreToolUse",
+            "s1",
+            f'"tool_name":"Bash","tool_input":{json.dumps(command)},'
+            f'"transcript_path":"{self.LEAD}"',
         )
+        _ = self.hook("silent", lead, env=self.FAKE)
+        # no bubblewrap here: the call passes as it is
+        _ = self.hook("silent", self.call("h1", "Bash", command, r))
 
-    def test_read_only_inside_the_repo(self) -> None:
-        """Inside the hunted repository a hunter's git reads; its own clone is free."""
-        bash, r = "Bash", str(self.R)
-        clone = str(self.init_repo(self.T / "hunter-clone"))
-        self.ok("read-only forms", len(READ_ONLY_GIT) == READ_ONLY_FORMS)
+    def test_rewrite_fails_closed(self) -> None:
+        """A boundary the hook cannot build refuses the hunter's call."""
+        # a marker whose arguments do not parse: argparse exits
+        bad = self.write(self.T / "bad-common/dsp-route-x.json", '{"args":["--x"]}')
+        entry = dict(self.entry()) | {"marker": str(bad)}
+        _ = self.write(self.HOME / ".claude/dsp-routes/s9.json", json.dumps(entry))
+        event = self.call("h1", "Bash", {"command": "echo hi"}, str(self.R))
+        event = event.replace('"session_id":"s1"', '"session_id":"s9"')
+        # stdout alone, as Claude Code reads it: argparse's usage goes to stderr
+        out = self.py(support.RS, "--hook", input=event + "\n", env=self.FAKE).out
+        want = "deny:boundary could not be set up"
+        self.ok(f"hook  {want}", support.hook_matches(want, out), out)
+
+    def test_bounded_binds(self) -> None:
+        """A common dir outside the repository is read-only; a plan outside, free."""
+        from dsp_route.agent import bounded  # the hook imports it lazily (TID253)
+
+        common, planning = self.T / "common", self.T / "wt-plan"
+        args = [str(planning), "--phase", "1", "--repo", str(self.WT)]
+        marker = self.write(common / "dsp-route-x.json", json.dumps({"args": args}))
+        entry = {"marker": str(marker), "planning_dir": str(planning)}
+        # the two keys bounded reads, of the registry entry's many
+        joined = bounded("true", cast("RegistryEntry", cast("object", entry)), "bwrap")
+        wt, c = self.WT.resolve(), common.resolve()
+        self.ok("the worktree read-only", f"--ro-bind {wt} {wt} " in joined, joined)
+        self.ok("its common dir read-only", f"--ro-bind {c} {c} " in joined, joined)
+        self.ok("no writable bind", " --bind " not in joined, joined)
+
+    def test_real_boundary(self) -> None:
+        """Run for real: writes into the repository fail with EROFS, the rest passes."""
+        run = self._real_runner()
+        r, p, t = self.R, self.P, self.T
+        _ = self.write(r / "src.txt", "a\n")
+        _ = self.git("-C", r, "add", "src.txt")
+        _ = self.git("-C", r, "commit", "-q", "-m", "src")
+        _ = self.write(r / "src.txt", "a\nb\n")  # a change `git stash` would save
+        (p / "hunt").mkdir(exist_ok=True)
+        before = self.py(support.RS, "--fingerprint", r).out
         self.ok("repo write forms", len(REPO_WRITES) == REPO_WRITE_FORMS)
-        for command in READ_ONLY_GIT:
-            _ = self.hook("silent", self.call("h1", bash, {"command": command}, r))
-        for command in REPO_WRITES:
-            _ = self.hook(
-                "deny:find-only", self.call("h1", bash, {"command": command}, r)
+        for form in REPO_WRITES:
+            res = run(form.format(r=r), r)
+            self.ok(
+                f"EROFS  {form}",
+                res.code != 0
+                and (form in QUIET_FAILS or "Read-only file system" in res.out),
+                f"{res.code}: {res.out}",
             )
-            _ = self.hook("silent", self.call("h1", bash, {"command": command}, clone))
-        planning = str(self.P)  # git there still runs on the repository
-        _ = self.hook(
-            "deny:find-only",
-            self.call("h1", bash, {"command": "git reset --hard"}, planning),
+        after = self.py(support.RS, "--fingerprint", r).out
+        self.ok("the repository unchanged", after == before, f"{before} {after}")
+        self.ok("src.txt unchanged", (r / "src.txt").read_text() == "a\nb\n")
+        for command, path in (
+            (f"echo x > {p}/hunt/w.md", p / "hunt/w.md"),
+            ("echo x > w2.md", p / "w2.md"),
+            (f"echo x > {t}/outside.txt", t / "outside.txt"),
+        ):
+            res = run(command, p)
+            self.ok(f"writes  {command}", res.code == 0 and path.is_file(), res.out)
+        res = run(f"git log --oneline -1 && git clone -q {r} {t}/hunt-clone", r)
+        self.ok(
+            "git log and a clone pass", res.code == 0 and " src" in res.out, res.out
         )
-        for command, want in (
-            (f"cd {r} && git reset --hard", "deny:find-only"),
-            (f"git -C {r} reset --hard", "deny:find-only"),
-            ('cd "$X" && git status', "silent"),
-            ('cd "$X" && git reset --hard', "deny:find-only"),
-            ("pushd /x && git reset --hard", "deny:find-only"),
-            ('echo x > "$UNKNOWN"/f', "deny:find-only"),
-            (f"cd {r} && echo x > f", "deny:find-only"),
-            ("X=/dev; echo x > $X/null", "silent"),
-            ("echo x > $PWD/f", "silent"),
-        ):
-            _ = self.hook(want, self.call("h1", bash, {"command": command}, clone))
-        for command, want in (
-            (f"cd {clone} && git reset --hard && echo x > f", "silent"),
-            (f"cd {clone} && git diff | tee d.txt", "silent"),
-            ("(cd /x) && echo x > f", "deny:find-only"),
-            (f"cd {clone} & echo x > f", "deny:find-only"),  # cd runs in a subshell
-            (f"true | cd {clone}; echo x > f", "deny:find-only"),
-        ):
-            _ = self.hook(want, self.call("h1", bash, {"command": command}, r))
+        res = run("pwd; printf 'out\\n'; printf 'err\\n' >&2; exit 3", p)
+        self.ok(
+            "cwd, output and status pass through",
+            (res.code, res.out) == (3, f"{p}\nout\nerr"),
+            f"{res.code}: {res.out!r}",
+        )
+        plain = self.run_(["bash", "-c", QUOTED], cwd=p, merge=True)
+        res = run(QUOTED, p)
+        self.ok(
+            "quoting survives",
+            (res.code, res.out) == (plain.code, plain.out) and "it's|" in plain.out,
+            f"{res.out!r} != {plain.out!r}",
+        )
 
-    def test_git_pointed_at_the_repo(self) -> None:
-        """Git pointed at the hunted repository from a hunter's clone only reads."""
-        clone = str(self.init_repo(self.T / "pointed-clone"))
-        self.ok("pointed forms", len(POINTED_GIT) == POINTED_GIT_FORMS)
-        for form, want in POINTED_GIT:
-            command = form.format(r=self.R)
-            _ = self.hook(want, self.call("h1", "Bash", {"command": command}, clone))
+    def _real_runner(self) -> Callable[[str, Path], support.Result]:
+        """Return a runner of a hunter's command as the hook bounds it, real bwrap.
 
-    def test_clone_out_of_the_repo(self) -> None:
-        """The brief's clone runs from the repository; a clone into it is held."""
-        bash, r, out = "Bash", self.R, self.T / "hunt/env"
-        clone = f"git clone -q file://{r} {out}"
-        for cwd in (r, self.P, self.T):
-            _ = self.hook("silent", self.call("h1", bash, {"command": clone}, str(cwd)))
-        self.ok("clone forms", len(CLONE_INTO_REPO) == CLONE_INTO_REPO_FORMS)
-        for form in CLONE_INTO_REPO:
-            command = form.format(r=r, out=out)
-            _ = self.hook(
-                "deny:find-only", self.call("h1", bash, {"command": command}, str(r))
-            )
+        Skips the test where bubblewrap cannot create a namespace: CI's runner may
+        lack the binary or unprivileged user namespaces.
+        """
+        real = shutil.which("bwrap", path=self.REAL["PATH"])
+        if real is None or self.run_([real, "--dev-bind", "/", "/", "true"]).code:
+            self.skipTest("bubblewrap cannot create a namespace here")
+
+        def run(command: str, cwd: Path) -> support.Result:
+            event = self.call("h1", "Bash", {"command": command}, str(cwd))
+            bounded = str(self.updated(event, self.REAL).get("command") or "")
+            return self.run_(["bash", "-c", bounded], cwd=cwd, merge=True)
+
+        return run
 
 
 class WaitsOnItsJob(Route):

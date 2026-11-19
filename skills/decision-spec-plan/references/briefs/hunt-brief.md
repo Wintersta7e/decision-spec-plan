@@ -51,15 +51,21 @@ the product in your clone for a probe.
 - Read only inside your clone, the findings dir and ‹ADAPT: the caches the build needs›: no
   `find ~`, no listing or search of the home directory or the filesystem outside them.
 - No network beyond what the cached dependencies need.
-- The route's hook refuses a hunter's commit (plumbing included), git config write, inline alias
-  or config include, a repository alias that runs one of those, any git inside the route's
-  repository, or that may point at one (`--git-dir`, `--work-tree`, any `-c`, any `GIT_` variable
-  in the command), but a read or a clone out of it (a saving `git stash` there included), and a
-  write into that repository outside its planning dir by an edit tool, a redirect or `tee`; your
-  clone's own git, `git stash` included, stays free.
-  It is a backstop against a slip, not a sandbox: it cannot tell `sed -i` or `cp` in your clone
-  from the same in the repository, so this rule binds where the hook cannot see. **Why:** hunters
-  under a find-only brief committed, changed the hooks path and wrote outside their tree (F109).
+- Where bubblewrap runs, the route's hook runs each of your Bash calls with the route's repository
+  and its git directory read-only in the kernel (the planning dir stays writable): any write there
+  — `sed -i`, `cp`, a build's `target/`, `git stash` — fails with "Read-only file system". Clone
+  first and work in your clone; your clone's own git, `git stash` included, stays free. Each call
+  starts in the same directory: a `cd` lasts that call only, and a shell function or alias of the
+  session does not reach it. The hook also refuses a commit anywhere, a git config write, an inline
+  alias or config include, and an edit-tool write into the repository outside its planning dir or
+  into the global git config. Without bubblewrap your Bash runs unwrapped: only those refusals
+  hold, and the lead compares a fingerprint of the repository before and after the hunt. Inside
+  the wrap you still share the host's processes and your session bus, so a command can reach the
+  repository around it (`/proc/<pid>/root/…`, `systemd-run --user`); the wrap keeps both on
+  purpose, so a server you start with `&` outlives its call and a `systemd-run --user` load window
+  still works. A backstop against a slip, not a sandbox against a hunter set on escaping (the
+  fingerprint shows one): this rule binds where the hook cannot see. **Why:** hunters under a find-only brief
+  committed, changed the hooks path and wrote outside their tree (F109).
 
 ## Ports and processes
 

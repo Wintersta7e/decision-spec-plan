@@ -306,8 +306,16 @@ class Budget(support.Route):
         for i in range(1, 7):
             self.append(lead, sent(2, f"t{i}", f"exec-p1-0{i}-a"))
         _ = self.hook("/^ETA exec-p1-07-a/", self.dispatch("exec-p1-07-a", "t7"))
-        # a hunt within the budget goes out with no ETA: that is task-group arithmetic
-        _ = self.hook("silent", self.dispatch("hunt-env", "t7"))
+        # a hunt within the budget goes out with no ETA: that is task-group arithmetic;
+        # where bubblewrap cannot run, the lead is told what find-only rests on
+        bwrap = self.bwrap_shim(self.T / "bwrap-ok", 0)
+        _ = self.hook("silent", self.dispatch("hunt-env", "t7"), env=bwrap)
+        no_bwrap = self.bwrap_shim(self.T / "bwrap-fails", 1)
+        _ = self.hook(
+            "/no bubblewrap here: find-only rests on the brief and the fingerprint/",
+            self.dispatch("hunt-env", "t7"),
+            env=no_bwrap,
+        )
         _ = self.budget("w2", "--estimate", "0.01", "--groups", "9")
         self.append(lead, human(1))
         self.append(lead, used(2, "u1", 11000))
