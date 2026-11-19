@@ -1,5 +1,33 @@
 # Changelog
 
+## [1.5.0](https://github.com/Wintersta7e/decision-spec-plan/compare/v1.4.0...v1.5.0) (2026-11-19)
+
+
+### Features
+
+* **route-state:** fingerprint the hunted repository ([52bd4ad](https://github.com/Wintersta7e/decision-spec-plan/commit/52bd4ad6b33d8b47882f2328f4320eb0b5d2ae45))
+* **route-state:** hold a hunt's dispatch to the route's budget ([34693fc](https://github.com/Wintersta7e/decision-spec-plan/commit/34693fc84de83896827781c37ef474897591d8b6))
+* **route-state:** hold a hunter's commit, git config and repo edits ([9c2410d](https://github.com/Wintersta7e/decision-spec-plan/commit/9c2410d511bc09029df805eb4b8954dd640a7263))
+* **route-state:** run a hunter's shell with the hunted repo read-only ([847f63e](https://github.com/Wintersta7e/decision-spec-plan/commit/847f63eae5a330f5979d0db92749e114f2150f35))
+
+
+### Bug Fixes
+
+* **route-state:** bind no variable when the command may set any ([341d381](https://github.com/Wintersta7e/decision-spec-plan/commit/341d381afd8225b966633f5b5cd9939c4a938e68))
+* **route-state:** close the hunter boundary's config and lookup gaps ([1bc74ba](https://github.com/Wintersta7e/decision-spec-plan/commit/1bc74ba46f4c2c5414bc04e3f4bd9064d81eb146))
+* **route-state:** give a hunter read-only git inside the hunted repo ([c8fe8cc](https://github.com/Wintersta7e/decision-spec-plan/commit/c8fe8cc2c83b2fcbfe813957f7cf2b14d0f37f13))
+* **route-state:** hold a hunter's git pointed at another repository ([f8a7727](https://github.com/Wintersta7e/decision-spec-plan/commit/f8a7727c7dbdda6699fcadd1c0135f9af451c858))
+* **route-state:** hold a hunter's git that may point at another repo ([9597e84](https://github.com/Wintersta7e/decision-spec-plan/commit/9597e8436f43c9f9e404f24b8d4e405cec9ca907))
+* **route-state:** hold hunter plumbing commits and config indirection ([54782e2](https://github.com/Wintersta7e/decision-spec-plan/commit/54782e212bd47d51d8913bc60db8d2533d670f2e))
+* **route-state:** let a hunter clone the hunted repo out of it ([97184f3](https://github.com/Wintersta7e/decision-spec-plan/commit/97184f3eb1df81bf548b250a44d14438b50fa80f))
+* **route-state:** let a hunter stash in its own clone ([25e8f20](https://github.com/Wintersta7e/decision-spec-plan/commit/25e8f20c0f6aa0165acf30036e3249bea09b1a57))
+* **route-state:** never read a loop variable bash may have changed ([3936217](https://github.com/Wintersta7e/decision-spec-plan/commit/3936217ed1894d83bc2837280d86eafaed44b03b))
+* **route-state:** read a computed word after a subcommand as an argument ([96a94c1](https://github.com/Wintersta7e/decision-spec-plan/commit/96a94c1ebc87ca82b1f231554c30377f2835f775))
+* **route-state:** scope a hunter's taint to the shell that runs it ([262e853](https://github.com/Wintersta7e/decision-spec-plan/commit/262e853dcbd95985fb626702770def748bc254a6))
+* **route-state:** take a computed word as an argument after tests only ([8399d2d](https://github.com/Wintersta7e/decision-spec-plan/commit/8399d2d473c9b10acec3f5b230c177785db708db))
+* **route-state:** trust a variable only while the text cannot set it ([dc65ddf](https://github.com/Wintersta7e/decision-spec-plan/commit/dc65ddf26b99c50f7d619982592daae6675fff6c))
+* **shell-cmd:** expand a for loop over its literal words ([b980d74](https://github.com/Wintersta7e/decision-spec-plan/commit/b980d741f998440df31eaeaf9e9fc1ce31abeb8a))
+
 ## [1.4.0](https://github.com/Wintersta7e/decision-spec-plan/compare/v1.3.1...v1.4.0) (2026-11-18)
 
 
