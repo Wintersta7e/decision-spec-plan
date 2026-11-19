@@ -304,5 +304,55 @@ class Unwrapping(unittest.TestCase):
         assert len(tokens) == want
 
 
+# (a `for` loop, its variable, its list's words or None, its redirect target's values)
+FOR_LOOPS: list[tuple[str, str, list[str] | None, list[str | None]]] = [
+    (
+        "for b in alpha beta gamma; do printf x > dir/$b; done",
+        "b",
+        ["alpha", "beta", "gamma"],
+        ["dir/alpha", "dir/beta", "dir/gamma"],
+    ),
+    (
+        "for i in 1 2 3; do cargo test > ../log-$i.txt 2>&1; done",
+        "i",
+        ["1", "2", "3"],
+        ["../log-1.txt", "../log-2.txt", "../log-3.txt"],
+    ),
+    ("for i in $(seq 3); do echo > f$i; done", "i", None, [None]),
+    ('for i in "$@"; do echo > f$i; done', "i", None, [None]),
+    ("for i in *.md; do echo > f$i; done", "i", None, [None]),
+    ("for i in {1..3}; do echo > f$i; done", "i", None, [None]),
+    ("for i; do echo > f$i; done", "i", None, [None]),
+]
+FOR_LOOP_FORMS = 7
+
+
+class ForLoops(unittest.TestCase):
+    """A `for` loop over literal words binds its variable to each in turn."""
+
+    def test_literal_lists(self) -> None:
+        """A static list expands a target once per word; a computed one is unknown."""
+        assert len(FOR_LOOPS) == FOR_LOOP_FORMS
+        for text, name, values, targets in FOR_LOOPS:
+            with self.subTest(text):
+                head = shell_cmd.scan(text.partition(";")[0])[0]
+                header = [w for w in head if isinstance(w, shell_cmd.Word)]
+                loop = shell_cmd.for_list(header)
+                assert loop is not None
+                got = None if loop[1] is None else [w.text for w in loop[1]]
+                assert (loop[0], got) == (name, values)
+                each = {name: values} if values is not None else {}
+                target = shell_cmd.redirects(text)[0][0]
+                assert target.expand_each({}, each) == targets
+
+    def test_not_a_loop(self) -> None:
+        """Words that do not open a `for` loop are no loop."""
+        for text in ("echo for b in x", "for", "for 1x in a"):
+            with self.subTest(text):
+                head = shell_cmd.scan(text)[0]
+                header = [w for w in head if isinstance(w, shell_cmd.Word)]
+                assert shell_cmd.for_list(header) is None
+
+
 if __name__ == "__main__":
     _ = unittest.main()

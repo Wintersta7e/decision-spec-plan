@@ -341,6 +341,24 @@ CLONE_INTO_REPO = (
     "git clone $OPTS file://{r} {out}",
 )
 CLONE_INTO_REPO_FORMS = 10
+# `for` loops a hunter runs in {t}, outside the hunted repository {r}: a literal list
+# writes one target per word; a computed list, a variable set again in the body, a
+# target after the loop or on its `done` the hook cannot read
+LOOP_WRITES = (
+    ("for b in a b c; do printf x > dir/$b; done", "silent"),
+    ("for i in 1 2 3; do cargo test > ../log-$i.txt 2>&1; done", "silent"),
+    ("for b in a b; do for c in x y; do echo > $b$c; done; done", "silent"),
+    ("while false; do for c in x; do echo > $c; done; done", "silent"),
+    ("for b in a b c; do printf x > {r}/x$b; done", "deny:find-only"),
+    ("for b in {t}/a {r}/b; do echo > $b; done", "deny:find-only"),
+    ("for i in $(seq 3); do echo > f$i; done", "deny:find-only"),
+    ("for i in *; do echo > f$i; done", "deny:find-only"),
+    ("b={t}; for b in $(ls); do echo > $b/f; done", "deny:find-only"),
+    ("for b in {t}; do b={r}; echo > $b/f; done", "deny:find-only"),
+    ("for b in {t}; do :; done; echo > $b/f", "deny:find-only"),
+    ("for b in {t}/a; do :; done > $b/f", "deny:find-only"),
+)
+LOOP_WRITE_FORMS = 12
 
 
 class HuntAgent(Route):
@@ -453,6 +471,14 @@ class HuntAgent(Route):
             f"git diff | tee {t}/d.txt",
         ):
             _ = self.hook("silent", self.call("h1", bash, {"command": command}, str(r)))
+
+    def test_for_loops(self) -> None:
+        """A loop over literal words writes each target; a computed one is held."""
+        bash, r, t = "Bash", self.R, self.T
+        self.ok("loop forms", len(LOOP_WRITES) == LOOP_WRITE_FORMS)
+        for form, want in LOOP_WRITES:
+            command = form.format(r=r, t=t)
+            _ = self.hook(want, self.call("h1", bash, {"command": command}, str(t)))
 
     def test_repo_aliases(self) -> None:
         """An alias the repository defines is judged by the command it runs."""

@@ -17,11 +17,12 @@ or `eval` of a computed string. An Opaque's script is the word naming a script f
 which read_script() reads for the caller to check in turn.
 """
 
+import itertools
 import os
 import pathlib
 import re
 import sys
-from collections.abc import Generator, Iterable, Iterator, Mapping
+from collections.abc import Generator, Iterable, Iterator, Mapping, Sequence
 from typing import Literal, NamedTuple, Self
 
 OPS = sorted(
@@ -163,6 +164,10 @@ WRAPPER_STOPS = {"command": {"-v", "-V"}}
 SHELLS = {"bash", "sh", "zsh", "dash", "ksh"}
 ASSIGN = re.compile(r"[A-Za-z_][A-Za-z0-9_]*=")
 TEMP = "\0temp"  # a `$(mktemp …)` value: a fresh directory, in no repository
+VAR = re.compile(r"\$(?:([A-Za-z_]\w*)|\{([A-Za-z_]\w*)\})")  # `$NAME`, `${NAME}`
+# Unquoted characters bash globs or brace-expands a word on: a `for` list holding one
+# is computed.
+EXPANDS = re.compile(r"[*?\[{]")
 # A run of characters with no meaning to the scanner, read at once: one at a time was
 # quadratic.
 LITERAL = re.compile(r"[^ \t\r\n\\'\"$`;&|()<>]+|.", re.DOTALL)
@@ -224,7 +229,7 @@ class Word:
                 if re.match(r"(\$\(|`)\s*mktemp\b", s):
                     out.append(TEMP)
                     continue
-                m = re.fullmatch(r"\$(?:([A-Za-z_]\w*)|\{([A-Za-z_]\w*)\})", s)
+                m = VAR.fullmatch(s)
                 value = env.get(m[1] or m[2]) if m else None
                 if value is None:
                     return None
@@ -238,6 +243,23 @@ class Word:
                 out.append(s)
         return "".join(out)
 
+    def expand_each(
+        self, env: Mapping[str, str | None], each: Mapping[str, Sequence[str]]
+    ) -> list[str | None]:
+        """Return the word's values, one per combination of the names in each it reads.
+
+        A name in each takes each of its values in turn, as a `for` loop over literal
+        words binds its variable; the rest are read as expand reads them.
+        """
+        refs = {
+            m[1] or m[2] for k, s in self.parts if k == "exp" if (m := VAR.fullmatch(s))
+        }
+        names = sorted(refs & each.keys())
+        return [
+            self.expand({**env, **dict(zip(names, values, strict=True))})
+            for values in itertools.product(*(each[n] for n in names))
+        ]
+
 
 Token = Word | str
 Assign = tuple[str, Word]
@@ -248,6 +270,28 @@ def literal(text: str) -> Word:
     w = Word()
     w.add("q", text)
     return w
+
+
+def for_list(words: Sequence[Word]) -> tuple[str, list[Word] | None] | None:
+    """Return (NAME, the words it takes in turn) when words open a `for` or `select`.
+
+    The words are None where bash computes them: an expansion in one (`$(seq 3)`,
+    `"$@"`), an unquoted glob or brace (`*`, `{1..3}`), no `in` (`for x; do` runs over
+    `"$@"`), or a `select`, whose value is the user's pick. None for words that open
+    neither.
+    """
+    head = [w.text if w.static else "" for w in words[:3]]
+    if head[:1] not in (["for"], ["select"]) or len(head) < 2:  # noqa: PLR2004
+        return None
+    if not re.fullmatch(r"[A-Za-z_]\w*", head[1]):
+        return None
+    rest = words[3:]
+    literal = head[0] == "for" and head[2:] == ["in"]
+    literal = literal and all(
+        w.static and not any(k == "lit" and EXPANDS.search(s) for k, s in w.parts)
+        for w in rest
+    )
+    return head[1], list(rest) if literal else None
 
 
 class Cmd:

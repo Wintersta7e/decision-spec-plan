@@ -638,39 +638,87 @@ class _Writes:
 
     Each is read in the directory in effect where it is written — a `cd` before it
     moves it, a subshell's ends at its `)` — with the command's own assignments, HOME
-    and PWD set; a `$( )` and a `bash -c` or `eval` string are read where they run.
+    and PWD set; a `$( )` and a `bash -c` or `eval` string are read where they run. In
+    the body of a `for` loop over literal words its variable takes each word in turn;
+    over a computed list, and after its `done`, it is unknown.
     """
 
     def __init__(self) -> None:
         """Start with no file and HOME known."""
         self.out: list[pathlib.Path | None] = []
         self.env: dict[str, str | None] = {"HOME": str(pathlib.Path.home())}
+        # each loop open where the words are read: its variable, None for a `while`
+        self.loops: list[str | None] = []
+        # the variables of the open `for` loops over literal words, with their words
+        self.each: dict[str, list[str]] = {}
 
     def place(self, w: shell_cmd.Word, here: str | None) -> None:
-        """Record the file w names, read in here: None when it cannot be computed."""
+        """Record the files w names, read in here: None when one cannot be computed."""
         self.env["PWD"] = here
-        text = w.expand(self.env)
-        if text is not None and shell_cmd.TEMP in text:
-            return  # a `$(mktemp)` directory, in no repository
-        if text is None or (here is None and not pathlib.Path(text).is_absolute()):
-            self.out.append(None)
+        for text in w.expand_each(self.env, self.each):
+            if text is not None and shell_cmd.TEMP in text:
+                continue  # a `$(mktemp)` directory, in no repository
+            if text is None or (here is None and not pathlib.Path(text).is_absolute()):
+                self.out.append(None)
+            else:
+                self.out.append((pathlib.Path(here or "/") / text).resolve())
+
+    def open_loop(self, words: list[shell_cmd.Word]) -> None:
+        """Open the `for` or `select` loop words open and bind its variable."""
+        loop = shell_cmd.for_list(words)
+        self.loops.append(loop[0] if loop else None)  # `for ((…))` has none
+        if loop is None:
+            return
+        name, listed = loop
+        values = [w.expand(self.env) for w in listed or ()]
+        known = [v for v in values if v is not None]
+        if listed is not None and len(known) == len(values):
+            self.each[name] = known
         else:
-            self.out.append((pathlib.Path(here or "/") / text).resolve())
+            _ = self.each.pop(name, None)
+            self.env[name] = None
+
+    def close_loop(self) -> None:
+        """Leave the innermost loop at its `done`: its variable is unknown after it."""
+        if self.loops and (name := self.loops.pop()):
+            _ = self.each.pop(name, None)
+            self.env[name] = None
 
     def end(self, words: list[shell_cmd.Word], here: str | None) -> str | None:
         """Record a command's assignments and tee files; return the directory after."""
         while words and words[0].static and words[0].text in shell_cmd.KEYWORDS:
+            if words[0].text in ("while", "until"):
+                self.loops.append(None)
             words = words[1:]
+        if words and words[0].static and words[0].text in ("for", "select"):
+            self.open_loop(words)
         if words and all(shell_cmd.ASSIGN.match(w.text) for w in words):
             for w in words:
                 value = w.expand(self.env)
-                self.env[w.text.partition("=")[0]] = value and value.partition("=")[2]
+                name = w.text.partition("=")[0]
+                _ = self.each.pop(name, None)
+                self.env[name] = value and value.partition("=")[2]
         names = [_basename(w.text) for w in words]
         if "tee" in names and (names[0] == "tee" or names[0] in RUNS_NEXT):
             for w in words[names.index("tee") + 1 :]:
                 if not w.text.startswith("-"):
                     self.place(w, here)
         return _dir_after(shell_cmd.Cmd([], words), here)
+
+    def add_word(
+        self, t: shell_cmd.Word, words: list[shell_cmd.Word], here: str | None
+    ) -> None:
+        """Add t to a command's words, reading a `bash -c` or `eval` string in it.
+
+        A `done` closes its loop first: bash opens a redirect on the loop before the
+        loop sets its variable.
+        """
+        if t.static and t.text == "done" and not words:
+            self.close_loop()
+        nested = words and (words[-1].text == "-c" or words[0].text == "eval")
+        if nested and t.static and shell_cmd.SYNTAX.search(t.text):
+            self.walk(shell_cmd.scan(t.text)[0], here)
+        words.append(t)
 
     def walk(self, tokens: list[shell_cmd.Token], here: str | None) -> None:
         """Record the files tokens write, run from here."""
@@ -692,10 +740,7 @@ class _Writes:
             if op in shell_cmd.OUTPUTS:
                 self.place(t, here)
             elif op is None:
-                nested = words and (words[-1].text == "-c" or words[0].text == "eval")
-                if nested and t.static and shell_cmd.SYNTAX.search(t.text):
-                    self.walk(shell_cmd.scan(t.text)[0], here)
-                words.append(t)
+                self.add_word(t, words, here)
             op = None
         _ = self.end(words, here)
 
