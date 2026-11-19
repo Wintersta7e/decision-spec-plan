@@ -78,7 +78,7 @@ exhaustive = true
 layers = [
   "hook",
   "next_groups",
-  "activate | agent | asks | budget | gate_log | handed | holds | inject | jobs | lead_edits | outward",
+  "activate | agent | asks | budget | fingerprint | gate_log | handed | holds | inject | jobs | lead_edits | outward",
   "commands | record | report | switch | transcript",
   "common",
 ]
@@ -98,7 +98,7 @@ known_first_party = [
 # up front made the no-route hook call 70% slower). TID253 keeps them lazy; PLC0415 accepts them.
 banned-module-level-imports = [
   "dsp_route.activate", "dsp_route.agent", "dsp_route.asks", "dsp_route.budget", "dsp_route.gate_log",
-  "dsp_route.handed", "dsp_route.next_groups",
+  "dsp_route.fingerprint", "dsp_route.handed", "dsp_route.next_groups",
   "dsp_route.holds", "dsp_route.hook", "dsp_route.inject", "dsp_route.jobs",
   "dsp_route.lead_edits", "dsp_route.outward", "dsp_route.record", "dsp_route.report",
   "dsp_route.switch", "decision_check", "plan_lint", "push_guard", "usage_report",
