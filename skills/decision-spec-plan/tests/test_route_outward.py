@@ -335,5 +335,52 @@ class ReviewPosts(support.Route):
         _ = self.hook("silent", tool("mcp__gitlab__create_note"))
 
 
+# A computed word after a publisher's static subcommand is its argument, not a verb:
+# a live hunt's test runs were held as publishes.
+ARGUMENTS = (
+    "cargo test --workspace --all-features --locked $1 -- --nocapture --exact $1",
+    "cargo test --workspace --all-features --locked $t -- --nocapture --exact $t",
+    "npm test $1",
+)
+ARGUMENT_FORMS = 3
+# ...and still outward: a computed subcommand, the verb itself, a tool whose every word
+# may be a task or goal, a subcommand that opens a publish (`yarn npm publish`,
+# `dotnet nuget push`, `docker image push`, `docker build --push`), and a computed word
+# after a word that may be an option's value or a toolchain
+STILL_OUTWARD = (
+    "cargo $X",
+    "npm $V",
+    "cargo publish",
+    "npm publish $1",
+    "docker push $IMG",
+    "gradle build $T",
+    "mvn clean $GOAL",
+    "yarn npm $V",
+    "dotnet nuget $V",
+    "docker image $V",
+    "docker build $F .",
+    "pnpm --filter x $V",
+    "cargo +nightly $X",
+)
+STILL_OUTWARD_FORMS = 13
+
+
+class ComputedArguments(unittest.TestCase):
+    """A publisher's computed word: an argument after its subcommand, else a verb."""
+
+    def test_computed_arguments(self) -> None:
+        """Each argument form acts on nothing; each still-outward form is outward."""
+        from dsp_route.outward import outward_in  # the hook imports it lazily (TID253)
+
+        assert len(ARGUMENTS) == ARGUMENT_FORMS
+        assert len(STILL_OUTWARD) == STILL_OUTWARD_FORMS
+        for command in ARGUMENTS:
+            with self.subTest(command):
+                assert outward_in(command) is None
+        for command in STILL_OUTWARD:
+            with self.subTest(command):
+                assert outward_in(command) is not None
+
+
 if __name__ == "__main__":
     _ = unittest.main()
