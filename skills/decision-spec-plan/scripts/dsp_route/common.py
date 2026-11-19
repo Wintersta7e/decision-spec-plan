@@ -32,6 +32,10 @@ RETURNS = ("<agent-message", "<teammate-message", "<task-notification")
 # Stage 5 agents are named `exec-<plan-id>-<group>` (execution.md); an agent's id is
 # `a<name>-<hash>`.
 EXEC = "exec-"
+# A bug hunt's agents are named `hunt-<seat>` (briefs/hunt-brief.md): find-only (F109).
+HUNT = "hunt-"
+# The tools that edit a file.
+EDITS = ("Edit", "Write", "MultiEdit", "NotebookEdit")
 SLACK = 1.25
 # the decision_check version a phase is bound under; 2 added the decisions table's
 # Serves column

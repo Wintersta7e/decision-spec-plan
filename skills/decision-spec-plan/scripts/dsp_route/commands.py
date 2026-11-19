@@ -17,6 +17,22 @@ import shell_cmd
 # Git commands that make a commit: one made before the agent re-reads a ruling skips it
 # (F59).
 COMMITTING = {"commit", "merge", "cherry-pick", "revert", "am", "pull", "rebase"}
+# `git config`'s read actions, the options that only shape a read (those in
+# CONFIG_VALUED take a value), and the subcommands that write (_config_writes).
+CONFIG_READS = {"--get", "--get-all", "--get-regexp", "--list", "-l"}
+CONFIG_MODIFIERS = {
+    "--show-origin",
+    "--show-scope",
+    "--name-only",
+    "-z",
+    "--null",
+    "--global",
+    "--local",
+    "--system",
+    "--worktree",
+}
+CONFIG_VALUED = {"-f", "--file", "--type", "--default"}
+CONFIG_WRITE_SUBCOMMANDS = {"set", "unset", "rename-section", "remove-section", "edit"}
 # Tools that publish to a package registry or an image registry, with the verbs that do:
 # what they send cannot be taken back, and one lead published five immutable packages on
 # a bare "go" (F81). A verb counts anywhere in the command's words, and so does `--push`
@@ -313,3 +329,64 @@ def makes_commit(command: str, cwd: str | None = None) -> bool:
         and not (g[1] == "merge" and _ff_only(g[2]))
         for c in cmds
     )
+
+
+def _config_writes(args: Sequence[shell_cmd.Word]) -> bool:
+    """Return whether `git config` with these arguments writes.
+
+    A read is a read action (CONFIG_READS, or the `get` and `list` subcommands) or
+    exactly one key and no value, either beside the modifiers that only shape a read
+    (CONFIG_MODIFIERS, CONFIG_VALUED). Every other `git config` with arguments writes:
+    a hunter's hooks-path change once passed every hold (F109).
+    """
+    rest: list[str] = []
+    words = iter(args)
+    for w in words:
+        if w.text in CONFIG_VALUED:
+            _ = next(words, None)
+        elif w.text not in CONFIG_MODIFIERS and w.text.partition("=")[0] not in (
+            CONFIG_VALUED  # `--file=<f>`
+        ):
+            rest.append(w.text)
+    if not args or rest[:1] in (["get"], ["list"]):
+        return False
+    if rest[:1] and rest[0] in CONFIG_WRITE_SUBCOMMANDS:
+        return True
+    if flags := [t for t in rest if t.startswith("-")]:
+        return not set(flags) <= CONFIG_READS
+    return len(rest) != 1
+
+
+def _inline_alias(opts: shell_cmd.GitOptions) -> bool:
+    """Return whether git's own options set an alias (`-c alias.sv=commit`).
+
+    The alias hides the subcommand it runs: `git -c alias.sv=commit sv` commits while
+    makes_commit reads `sv`.
+    """
+    for opt, value in opts:
+        if opt in ("-c", "--config-env") and value is not None:
+            key = value.text
+        elif opt.startswith("--config-env="):
+            key = opt.removeprefix("--config-env=")
+        else:
+            continue
+        if key.lower().startswith("alias."):
+            return True
+    return False
+
+
+def writes_git_config(command: str, cwd: str | None = None) -> bool:
+    """Return whether the command writes git's config or runs git with an inline alias.
+
+    Read as makes_commit reads it; any other `-c k=v` is judged by its subcommand.
+    """
+    cmds = bash_commands(command, cwd)
+    if cmds is None:
+        cmds = text_commands(command)
+    for c in cmds:
+        if (g := shell_cmd.git_args(c)) is None:
+            continue
+        opts, sub, args = g
+        if _inline_alias(opts) or (sub == "config" and _config_writes(args)):
+            return True
+    return False

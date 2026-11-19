@@ -1,8 +1,9 @@
 # SPDX-License-Identifier: MIT
 """The hook inside a route's agents.
 
-An exec- agent's context stop (F75) and its commit held for an unread ruling (F59), and
-an agent sent back to wait on its own background job (F92).
+An exec- agent's context stop (F75) and its commit held for an unread ruling (F59), a
+hunt- agent held find-only (F109), and an agent sent back to wait on its own background
+job (F92).
 """
 
 import json
@@ -230,6 +231,87 @@ class ExecAgent(Route):
             "deny:re-read .*p1-03-wide-rulings.md",
             self.inagent("z1", "git commit -m x"),
         )
+
+
+# every writing `git config` form a hunter is refused, one per form the spec names
+CONFIG_WRITES = (
+    "git config --add a.b c",
+    "git config --replace-all a.b c",
+    "git config --unset a.b",
+    "git config --unset-all a.b",
+    "git config --rename-section a b",
+    "git config --remove-section a",
+    "git config -e",
+    "git config --edit",
+    "git config user.name x",
+    "git config set user.name x",
+    "git config unset user.name",
+    "git config rename-section a b",
+    "git config remove-section a",
+    "git config edit",
+)
+CONFIG_WRITE_FORMS = 14
+
+
+class HuntAgent(Route):
+    """A hunt- agent is find-only: no commit, git config write, alias or repo edit."""
+
+    def call(self, agent: str, tool: str, tool_input: dict[str, str]) -> str:
+        """A PreToolUse call of tool with tool_input by agent in the lead's session."""
+        extra = (
+            f'"agent_id":"{agent}","tool_name":"{tool}",'
+            f'"tool_input":{json.dumps(tool_input)},"transcript_path":"{self.LEAD}"'
+        )
+        return ev("PreToolUse", "s1", extra)
+
+    @override
+    def setUp(self) -> None:
+        """Agent h1 is `hunt-env`, agent e1 an exec- agent with no rulings file."""
+        super().setUp()
+        for agent, name in (("h1", "hunt-env"), ("e1", "exec-p9-01-a")):
+            meta = f'{{"name":"{name}","agentType":"dsp-deep"}}\n'
+            _ = self.write(self.SUB / f"agent-{agent}.meta.json", meta)
+            _ = self.write(self.SUB / f"agent-{agent}.jsonl", human(-60) + "\n")
+
+    def test_commit_and_config(self) -> None:
+        """A commit, a git config write and an inline alias are refused; reads pass."""
+        bash = "Bash"
+        _ = self.hook(
+            "deny:find-only", self.call("h1", bash, {"command": "git commit -m x"})
+        )
+        _ = self.hook(
+            "silent", self.call("e1", bash, {"command": "git commit -m x"})
+        )  # an exec- agent's commit is judged by its rulings alone
+        self.ok("writing forms", len(CONFIG_WRITES) == CONFIG_WRITE_FORMS)
+        writes = (
+            *CONFIG_WRITES,
+            "git config --global core.hooksPath h",
+            "git -c alias.sv=commit sv -m x",
+            "git --config-env alias.sv=X sv",
+        )
+        for command in writes:
+            _ = self.hook("deny:find-only", self.call("h1", bash, {"command": command}))
+        for command in (
+            "git config --get user.name",
+            "git config --list",
+            "git config --show-origin --get user.name",
+            "git config user.name",
+            "git -c core.pager=cat log",
+            "git config get user.name",
+            "git status",
+        ):
+            _ = self.hook("silent", self.call("h1", bash, {"command": command}))
+
+    def test_edits(self) -> None:
+        """An edit in the repository outside the planning dir is refused."""
+        inside = str(self.R / "src.py")
+        _ = self.hook("deny:find-only", self.call("h1", "Write", {"file_path": inside}))
+        _ = self.hook("deny:find-only", self.call("h1", "Edit", {"file_path": inside}))
+        for allowed in (self.P / "hunt/findings/env.md", self.T / "clone/src.py"):
+            for tool in ("Write", "Edit"):
+                _ = self.hook(
+                    "silent", self.call("h1", tool, {"file_path": str(allowed)})
+                )
 
 
 class WaitsOnItsJob(Route):
