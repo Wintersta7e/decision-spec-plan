@@ -396,8 +396,22 @@ LOOP_WRITES = (
     ("b={r}; true | b={t}; echo x > $b/f", "deny:find-only"),
     ("b={t}/x; b+=/../repo; echo x > $b/f", "deny:find-only"),
     ("b={t}; echo x > $b/f", "silent"),
+    # read as text: any word naming the variable but a plain `$b` may set it, and so
+    # may a command that may set any variable
+    ("for b in a; do b[0]=repo; echo x > $b/f; done", "deny:find-only"),
+    ("for b in a; do declare -n r=b; r=repo; echo x > $b/f; done", "deny:find-only"),
+    ("for b in a; do declare -n r=$N; r=repo; echo x > $b/f; done", "deny:find-only"),
+    ("for b in a; do unset b; echo x > repo$b/f; done", "deny:find-only"),
+    ("for b in a; do builtin read b; echo x > $b/f; done", "deny:find-only"),
+    ("for b in a; do command read b; echo x > $b/f; done", "deny:find-only"),
+    ("for b in a; do X=1 . ./env; echo x > dir/$b; done", "deny:find-only"),
+    ('for b in a; do $SET "$X"; echo x > dir/$b; done', "deny:find-only"),
+    ("for b in a; do bash -c :; echo x > dir/$b; done", "deny:find-only"),
+    ("b=a; unset b; echo x > repo$b/f", "deny:find-only"),
+    ("for b in x y; do echo 1 > dir/$b; cp dir/$b dir/$b.bak; done", "silent"),
+    ("for b in x y; do echo 1 > dir/${{b}}; git add .; done", "silent"),
 )
-LOOP_WRITE_FORMS = 33
+LOOP_WRITE_FORMS = 45
 
 
 class HuntAgent(Route):
