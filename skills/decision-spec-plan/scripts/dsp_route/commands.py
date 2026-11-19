@@ -17,11 +17,10 @@ import shell_cmd
 # Git commands that make a commit: one made before the agent re-reads a ruling skips it
 # (F59).
 COMMITTING = {"commit", "merge", "cherry-pick", "revert", "am", "pull", "rebase"}
-# Plumbing that makes a commit or points a ref at one, and `git stash`'s subcommands
-# that save one (a bare `stash` or one opening with an option pushes): held for a
-# hunter alone, beside COMMITTING.
+# Plumbing that makes a commit or points a ref at one: held for a hunter alone, beside
+# COMMITTING. A saving `git stash` is held only inside the hunted repository, where
+# _reads_only passes `stash list` and `show` alone: in its own clone a hunter stashes.
 PLUMBING = {"commit-tree", "update-ref"}
-STASH_SAVES = {"push", "save", "store", "create"}
 # The config keys that pull in more config (`include.path`, `includeIf.<cond>.path`)
 # or define an alias, and the variables that pass git config through the environment.
 CONFIG_INDIRECT = ("alias.", "include.", "includeif.")
@@ -478,13 +477,10 @@ def writes_git_config(command: str, cwd: str | None = None) -> bool:
 
 
 def _hunter_writes(sub: str, args: Sequence[shell_cmd.Word]) -> str | None:
-    """Return what `git <sub> <args>` writes that a hunter may not, else None."""
+    """Return what `git <sub> <args>` writes that a hunter may not, anywhere."""
     if sub in COMMITTING and not (sub == "merge" and _ff_only(args)):
         return "a commit"
-    first = args[0].text if args else ""
-    if sub in PLUMBING or (
-        sub == "stash" and (not first or first.startswith("-") or first in STASH_SAVES)
-    ):
+    if sub in PLUMBING:
         return f"a commit by `git {sub}`"
     if sub == "config" and _config_writes(args):
         return "a git config write"
@@ -587,13 +583,13 @@ def _clone_out(
 def hunter_git(command: str, cwd: str | None, repo: str) -> str | None:
     """Return what the command's git does that a hunter may not, past makes_commit.
 
-    Anywhere: a subcommand the hook cannot read (`git $x`), commit plumbing or a saving
-    stash (PLUMBING, STASH_SAVES), and an alias read as push_guard.unalias reads it in
-    the command's directory, its command judged in turn; an alias it cannot read is
-    held. Inside repo — the directory in effect for each command, after a `cd` and
-    `-C`; one the hook cannot compute counts as inside — only what _reads_only passes:
-    a denylist of writing forms never ends (notes, replace, symbolic-ref, reset, …) —
-    and a `git clone` writing only outside repo (_clone_out), the brief's first step.
+    Anywhere: a subcommand the hook cannot read (`git $x`), commit plumbing (PLUMBING),
+    and an alias read as push_guard.unalias reads it in the command's directory, its
+    command judged in turn; an alias it cannot read is held. Inside repo — the
+    directory in effect for each command, after a `cd` and `-C`; one the hook cannot
+    compute counts as inside — only what _reads_only passes: a denylist of writing
+    forms never ends (notes, replace, symbolic-ref, reset, a saving stash, …) — and a
+    `git clone` writing only outside repo (_clone_out), the brief's first step.
     None when nothing is held. For a hunter alone: other agents' commits are judged by
     COMMITTING.
     """

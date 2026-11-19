@@ -252,18 +252,12 @@ CONFIG_WRITES = (
 )
 CONFIG_WRITE_FORMS = 14
 # a hunter's git forms past a plain commit and config write: a subcommand the hook
-# cannot read, plumbing that commits, a saving stash, config indirection
+# cannot read, plumbing that commits, config indirection
 HUNTER_GIT = (
     "git $x status",
     'git "$(echo commit)" -m x',
     "git commit-tree HEAD^{tree} -m x",
     "git update-ref refs/heads/x HEAD",
-    "git stash",
-    "git stash push",
-    "git stash save x",
-    "git stash store abc",
-    "git stash create",
-    "git stash -m x",
     "git -c include.path=/x log",
     "git -c includeIf.onbranch:main.path=/x log",
     "git -c INCLUDE.path=/x log",
@@ -273,7 +267,7 @@ HUNTER_GIT = (
     "env GIT_CONFIG_KEY_0=core.hooksPath git status",
     "export GIT_CONFIG_COUNT=1; git status",
 )
-HUNTER_GIT_FORMS = 18
+HUNTER_GIT_FORMS = 12
 # the git a hunter may run inside the hunted repository: one per allowlist entry
 READ_ONLY_GIT = (
     "git status",
@@ -308,7 +302,8 @@ READ_ONLY_GIT = (
     "git stash show",
 )
 READ_ONLY_FORMS = 30
-# git the hunted repository refuses a hunter and its own clone allows
+# git the hunted repository refuses a hunter and its own clone allows: a saving stash
+# among them
 REPO_WRITES = (
     "git reset --hard",
     "git notes add -m x",
@@ -316,8 +311,14 @@ REPO_WRITES = (
     "git branch -f x",
     "git checkout -b x",
     "git tag v1",
+    "git stash",
+    "git stash push",
+    "git stash save x",
+    "git stash store abc",
+    "git stash create",
+    "git stash -m x",
 )
-REPO_WRITE_FORMS = 6
+REPO_WRITE_FORMS = 12
 # aliases the hunter's repository defines, each running a held command
 HELD_ALIASES = {
     "sv": "commit",
@@ -434,7 +435,7 @@ class HuntAgent(Route):
             )
 
     def test_plumbing_and_indirection(self) -> None:
-        """Plumbing commits, saving stashes, config indirection; unreadable fails."""
+        """Plumbing commits and config indirection are held; unreadable fails."""
         bash = "Bash"
         self.ok("hunter git forms", len(HUNTER_GIT) == HUNTER_GIT_FORMS)
         for command in HUNTER_GIT:
