@@ -9,7 +9,7 @@ import collections
 import os
 import pathlib
 import re
-from collections.abc import Sequence
+from collections.abc import Callable, Sequence
 from typing import NamedTuple
 
 import shell_cmd
@@ -30,6 +30,36 @@ CONFIG_VARS = re.compile(r"(?<![\w$])GIT_CONFIG_(?:PARAMETERS|COUNT|KEY_\d+)=")
 # git runs; and a subcommand word git can run (a computed one read as text is not).
 CONFIG_HOMES = re.compile(r"(?<![\w$])(?:HOME|XDG_CONFIG_HOME|GIT_\w+)=")
 GIT_WORD = re.compile(r"[A-Za-z0-9][\w.-]*")
+# The git a hunter may run inside the hunted repository: these subcommands, and the
+# read forms _reads_only judges (config, branch, tag, worktree, remote, stash).
+READ_ONLY_GIT = {
+    "",  # `git --version`
+    "status",
+    "log",
+    "show",
+    "diff",
+    "blame",
+    "grep",
+    "ls-files",
+    "ls-tree",
+    "ls-remote",
+    "cat-file",
+    "rev-parse",
+    "rev-list",
+    "describe",
+    "shortlog",
+    "name-rev",
+    "merge-base",
+    "for-each-ref",
+    "show-ref",
+}
+# `git tag`'s options that only list (push_guard.BRANCH_LISTS is `git branch`'s).
+TAG_LISTS = re.compile(
+    r"-[ln]\d*|-i|--(list|ignore-case|column|no-column|color)"
+    r"|--(sort|format|contains|no-contains|merged|no-merged|points-at)(=.*)?"
+)
+# Words that run the next word as a command (`sudo tee f`).
+RUNS_NEXT = {"sudo", "doas", "env", "command", "exec", "nohup", "nice", "stdbuf"}
 # `git config`'s read actions, the options that only shape a read (those in
 # CONFIG_VALUED take a value), and the subcommands that write (_config_writes).
 CONFIG_READS = {"--get", "--get-all", "--get-regexp", "--list", "-l"}
@@ -217,18 +247,30 @@ def _dir_after(c: shell_cmd.Cmd, here: str | None) -> str | None:
     return os.path.normpath(pathlib.Path(here or "", path))
 
 
-def _tools(c: shell_cmd.Cmd) -> list[shell_cmd.Cmd] | None:
+class Placed(shell_cmd.Cmd):
+    """A command bash_commands read, with here, the directory it runs in.
+
+    here is None where the reader cannot compute it (a `cd` to a computed path).
+    """
+
+    def __init__(self, words: list[shell_cmd.Word], here: str | None) -> None:
+        """Hold the command's words and its directory."""
+        super().__init__([], words)
+        self.here: str | None = here
+
+
+def _tools(c: shell_cmd.Cmd, here: str | None) -> list[shell_cmd.Cmd] | None:
     """Return each `git` command in c and its first host tool or publisher, from there.
 
     None when a git subcommand is computed. Every `git` word counts (`sudo -u git git
     push`); only the first `gh`, `glab` or publisher, whose check reads all the words
-    after it (each later one took the line to quadratic time).
+    after it (each later one took the line to quadratic time). Each is Placed in here.
     """
     out: list[shell_cmd.Cmd] = []
     names = [_basename(w) for w in c.argv]
     for i, name in enumerate(names):
         if name == "git" or (name in (*HOSTS, *PUBLISHERS) and name not in names[:i]):
-            cmd = shell_cmd.Cmd([], c.words[i:])
+            cmd = Placed(c.words[i:], here)
             if (g := shell_cmd.git_args(cmd)) and g[1] is None:
                 return None
             out.append(cmd)
@@ -279,7 +321,7 @@ def bash_commands(
         script, text = _script(event if c is None else c, here, depth)
         if c is not None and text is None:
             dirs[-1] = _dir_after(c, here)
-            more = _tools(c)
+            more = _tools(c, here)
         else:
             more = _nested(read, script, text, here)
         if more is None:
@@ -426,18 +468,71 @@ def _hunter_writes(sub: str, args: Sequence[shell_cmd.Word]) -> str | None:
     return None
 
 
-def hunter_git(command: str, cwd: str | None = None) -> str | None:
+def _reads_only(sub: str, args: Sequence[shell_cmd.Word]) -> bool:
+    """Return whether `git <sub> <args>` only reads: READ_ONLY_GIT, or a read form.
+
+    `config` reads, `branch` and `tag` in list forms, `worktree list`, `remote` bare,
+    `-v`, `show` or `get-url`, `stash list` and `show`.
+    """
+    import push_guard  # loaded by hunter_git, its one caller
+
+    texts = [w.text for w in args]
+    first = texts[0] if texts else ""
+    flags = [t for t in texts if t.startswith("-")]
+    listed = len(flags) == len(texts) or bool({"-l", "--list"} & set(texts))
+    forms: dict[str, Callable[[], bool]] = {
+        "config": lambda: not _config_writes(args),
+        "branch": lambda: (
+            listed and all(push_guard.BRANCH_LISTS.fullmatch(t) for t in flags)
+        ),
+        "tag": lambda: listed and all(TAG_LISTS.fullmatch(t) for t in flags),
+        "worktree": lambda: first == "list",
+        "remote": lambda: (
+            set(texts) <= {"-v", "--verbose"} or first in ("show", "get-url")
+        ),
+        "stash": lambda: first in ("list", "show"),
+    }
+    form = forms.get(sub)
+    return form() if form else sub in READ_ONLY_GIT
+
+
+def _git_dir(here: str | None, opts: shell_cmd.GitOptions) -> str | None:
+    """Return the directory git runs in from here after its `-C` options.
+
+    None when here or a `-C` is one the hook cannot compute.
+    """
+    for opt, value in opts:
+        if opt != "-C":
+            continue
+        to = _home(value.text) if value and value.static else None
+        if to is None or (here is None and not pathlib.Path(to).is_absolute()):
+            return None
+        here = str(pathlib.Path(here or "/") / to)
+    return here
+
+
+def hunter_git(command: str, cwd: str | None, repo: str) -> str | None:
     """Return what the command's git does that a hunter may not, past makes_commit.
 
-    A subcommand the hook cannot read (computed: `git $x`), commit plumbing or a saving
-    stash (PLUMBING, STASH_SAVES), and an alias read as push_guard.unalias reads it, its
-    command judged in turn; an alias it cannot read is held. None when nothing is held.
-    For a hunter alone: other agents' commits are judged by COMMITTING.
+    Anywhere: a subcommand the hook cannot read (`git $x`), commit plumbing or a saving
+    stash (PLUMBING, STASH_SAVES), and an alias read as push_guard.unalias reads it in
+    the command's directory, its command judged in turn; an alias it cannot read is
+    held. Inside repo — the directory in effect for each command, after a `cd` and
+    `-C`; one the hook cannot compute counts as inside — only what _reads_only passes:
+    a denylist of writing forms never ends (notes, replace, symbolic-ref, reset, …).
+    None when nothing is held. For a hunter alone: other agents' commits are judged by
+    COMMITTING.
     """
     import push_guard  # only a hunter's git command needs it
 
     config_env = bool(CONFIG_HOMES.search(command))
-    for c in _git_commands(command, cwd):
+    cmds = bash_commands(command, cwd)
+    # text the reader cannot follow: its directory is cwd unless it may change it
+    moved = re.search(r"(?<![\w-])(?:cd|pushd|popd)(?![\w-])", command)
+    if cmds is None:
+        cmds = text_commands(command)
+    root = pathlib.Path(repo).resolve()
+    for c in cmds:
         if (g := shell_cmd.git_args(c)) is None:
             continue
         opts, sub, args = g
@@ -445,38 +540,101 @@ def hunter_git(command: str, cwd: str | None = None) -> str | None:
             return "a git subcommand the hook cannot read"
         if held := _hunter_writes(sub, args):
             return held
-        repo, unknown = cwd, False
-        for opt, value in opts:
-            if opt == "-C":  # a computed one: the alias's config cannot be read
-                unknown |= not (value and value.static)
-                repo = str(pathlib.Path(repo or ".") / value.text) if value else repo
+        here = c.here if isinstance(c, Placed) else (None if moved else cwd)
+        here = _git_dir(here, opts)
         resolved, texts, form = push_guard.unalias(
-            repo, sub, [w.text for w in args], opts, config_env=config_env or unknown
+            here, sub, [w.text for w in args], opts, config_env=config_env or not here
         )
         if form or resolved is None:
             return form or "a git alias the hook cannot read"
-        if resolved != sub and (
-            held := _hunter_writes(resolved, [shell_cmd.literal(t) for t in texts])
-        ):
+        words = args if resolved == sub else [shell_cmd.literal(t) for t in texts]
+        if resolved != sub and (held := _hunter_writes(resolved, words)):
             return f"{held} through the alias `git {sub}`"
+        inside = here is None or pathlib.Path(here).resolve().is_relative_to(root)
+        if inside and not _reads_only(resolved, words):
+            return (
+                f"`git {resolved}` in the hunted repository, where a hunter only reads"
+            )
     return None
 
 
-def written_paths(command: str) -> list[shell_cmd.Word]:
-    """Return the files the command writes by an output redirect or a `tee`.
+class _Writes:
+    """The files a command writes by an output redirect or `tee`, read as bash runs it.
 
-    `tee`'s words after it that are not options, wherever it runs (`sudo tee`). Empty
-    when the reader cannot follow the text.
+    Each is read in the directory in effect where it is written — a `cd` before it
+    moves it, a subshell's ends at its `)` — with the command's own assignments, HOME
+    and PWD set; a `$( )` and a `bash -c` or `eval` string are read where they run.
     """
+
+    def __init__(self) -> None:
+        """Start with no file and HOME known."""
+        self.out: list[pathlib.Path | None] = []
+        self.env: dict[str, str | None] = {"HOME": str(pathlib.Path.home())}
+
+    def place(self, w: shell_cmd.Word, here: str | None) -> None:
+        """Record the file w names, read in here: None when it cannot be computed."""
+        self.env["PWD"] = here
+        text = w.expand(self.env)
+        if text is not None and shell_cmd.TEMP in text:
+            return  # a `$(mktemp)` directory, in no repository
+        if text is None or (here is None and not pathlib.Path(text).is_absolute()):
+            self.out.append(None)
+        else:
+            self.out.append((pathlib.Path(here or "/") / text).resolve())
+
+    def end(self, words: list[shell_cmd.Word], here: str | None) -> str | None:
+        """Record a command's assignments and tee files; return the directory after."""
+        while words and words[0].static and words[0].text in shell_cmd.KEYWORDS:
+            words = words[1:]
+        if words and all(shell_cmd.ASSIGN.match(w.text) for w in words):
+            for w in words:
+                value = w.expand(self.env)
+                self.env[w.text.partition("=")[0]] = value and value.partition("=")[2]
+        names = [_basename(w.text) for w in words]
+        if "tee" in names and (names[0] == "tee" or names[0] in RUNS_NEXT):
+            for w in words[names.index("tee") + 1 :]:
+                if not w.text.startswith("-"):
+                    self.place(w, here)
+        return _dir_after(shell_cmd.Cmd([], words), here)
+
+    def walk(self, tokens: list[shell_cmd.Token], here: str | None) -> None:
+        """Record the files tokens write, run from here."""
+        stack: list[str | None] = []
+        words: list[shell_cmd.Word] = []
+        op: str | None = None
+        for t in tokens:
+            if isinstance(t, str):
+                op = t if t in shell_cmd.REDIRECTS else None
+                if op is None:
+                    here, words = self.end(words, here), []
+                    if t == "(":
+                        stack.append(here)
+                    elif t == ")" and stack:
+                        here = stack.pop()
+                continue
+            for sub in t.subs:
+                self.walk(sub, here)
+            if op in shell_cmd.OUTPUTS:
+                self.place(t, here)
+            elif op is None:
+                nested = words and (words[-1].text == "-c" or words[0].text == "eval")
+                if nested and t.static and shell_cmd.SYNTAX.search(t.text):
+                    self.walk(shell_cmd.scan(t.text)[0], here)
+                words.append(t)
+            op = None
+        _ = self.end(words, here)
+
+
+def written_paths(command: str, cwd: str | None) -> list[pathlib.Path | None] | None:
+    """Return each file the command writes by an output redirect or `tee`, resolved.
+
+    Read as _Writes reads them, from cwd. None in place of one the hook cannot compute
+    (a name it cannot expand, a relative one in a directory it cannot compute), and
+    for the whole when the reader fails.
+    """
+    writes = _Writes()
     try:
-        out = [t for t, _ in shell_cmd.redirects(command)]
-        found = shell_cmd.events(command)
-    except Exception:  # noqa: BLE001 — unreadable text writes no file the hook can name
-        return []
-    for _, c in found:
-        if isinstance(c, shell_cmd.Cmd) and "tee" in (
-            names := [_basename(t) for t in c.argv]
-        ):
-            i = names.index("tee")
-            out += [w for w in c.words[i + 1 :] if not w.text.startswith("-")]
-    return out
+        writes.walk(shell_cmd.scan(command)[0], cwd)
+    except Exception:  # noqa: BLE001 — text the reader fails on writes what it cannot see
+        return None
+    return writes.out

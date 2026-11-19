@@ -274,6 +274,50 @@ HUNTER_GIT = (
     "export GIT_CONFIG_COUNT=1; git status",
 )
 HUNTER_GIT_FORMS = 18
+# the git a hunter may run inside the hunted repository: one per allowlist entry
+READ_ONLY_GIT = (
+    "git status",
+    "git log --oneline",
+    "git show HEAD",
+    "git diff HEAD~1",
+    "git blame README",
+    "git grep x",
+    "git ls-files",
+    "git ls-tree HEAD",
+    "git ls-remote .",
+    "git cat-file -t HEAD",
+    "git rev-parse HEAD",
+    "git rev-list HEAD",
+    "git describe --always",
+    "git shortlog -s HEAD",
+    "git name-rev HEAD",
+    "git merge-base HEAD main",
+    "git for-each-ref",
+    "git show-ref",
+    "git config --get user.name",
+    "git branch",
+    "git branch -a --list",
+    "git tag",
+    "git tag -l 'v*'",
+    "git worktree list",
+    "git remote",
+    "git remote -v",
+    "git remote show origin",
+    "git remote get-url origin",
+    "git stash list",
+    "git stash show",
+)
+READ_ONLY_FORMS = 30
+# git the hunted repository refuses a hunter and its own clone allows
+REPO_WRITES = (
+    "git reset --hard",
+    "git notes add -m x",
+    "git symbolic-ref HEAD refs/heads/x",
+    "git branch -f x",
+    "git checkout -b x",
+    "git tag v1",
+)
+REPO_WRITE_FORMS = 6
 # aliases the hunter's repository defines, each running a held command
 HELD_ALIASES = {
     "sv": "commit",
@@ -413,6 +457,43 @@ class HuntAgent(Route):
         _ = self.hook(
             "silent", self.call("h1", "Bash", {"command": "git st"}, str(repo))
         )
+
+    def test_read_only_inside_the_repo(self) -> None:
+        """Inside the hunted repository a hunter's git reads; its own clone is free."""
+        bash, r = "Bash", str(self.R)
+        clone = str(self.init_repo(self.T / "hunter-clone"))
+        self.ok("read-only forms", len(READ_ONLY_GIT) == READ_ONLY_FORMS)
+        self.ok("repo write forms", len(REPO_WRITES) == REPO_WRITE_FORMS)
+        for command in READ_ONLY_GIT:
+            _ = self.hook("silent", self.call("h1", bash, {"command": command}, r))
+        for command in REPO_WRITES:
+            _ = self.hook(
+                "deny:find-only", self.call("h1", bash, {"command": command}, r)
+            )
+            _ = self.hook("silent", self.call("h1", bash, {"command": command}, clone))
+        planning = str(self.P)  # git there still runs on the repository
+        _ = self.hook(
+            "deny:find-only",
+            self.call("h1", bash, {"command": "git reset --hard"}, planning),
+        )
+        for command, want in (
+            (f"cd {r} && git reset --hard", "deny:find-only"),
+            (f"git -C {r} reset --hard", "deny:find-only"),
+            ('cd "$X" && git status', "silent"),
+            ('cd "$X" && git reset --hard', "deny:find-only"),
+            ("pushd /x && git reset --hard", "deny:find-only"),
+            ('echo x > "$UNKNOWN"/f', "deny:find-only"),
+            (f"cd {r} && echo x > f", "deny:find-only"),
+            ("X=/dev; echo x > $X/null", "silent"),
+            ("echo x > $PWD/f", "silent"),
+        ):
+            _ = self.hook(want, self.call("h1", bash, {"command": command}, clone))
+        for command, want in (
+            (f"cd {clone} && git reset --hard && echo x > f", "silent"),
+            (f"cd {clone} && git diff | tee d.txt", "silent"),
+            ("(cd /x) && echo x > f", "deny:find-only"),
+        ):
+            _ = self.hook(want, self.call("h1", bash, {"command": command}, r))
 
 
 class WaitsOnItsJob(Route):

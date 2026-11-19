@@ -500,10 +500,10 @@ def hook() -> int:
     and PreCompact tells the summary to keep the unlisted ones verbatim (F105). The
     lead's Stop is also sent back once when a command its last message hands the user
     fails when pasted (F107). Inside a `hunt-` agent PreToolUse refuses a commit, a
-    `git config` write, an inline alias and an edit in the route's repository outside
-    the planning dir, and it holds the lead's `hunt-` dispatch to the budget as an
-    `exec-` one, with no ETA: a backstop against a slip, not a sandbox, that checks
-    spend at the dispatch and reserves nothing (F109).
+    `git config` write, an inline alias, any git but a read in the route's repository
+    and a write there outside the planning dir, and it holds the lead's `hunt-`
+    dispatch to the budget as an `exec-` one, with no ETA: a backstop against a slip,
+    not a sandbox, that checks spend at the dispatch and reserves nothing (F109).
 
     Returns:
         The hook's exit code: 2 sends an agent back to its running job, else 0.
