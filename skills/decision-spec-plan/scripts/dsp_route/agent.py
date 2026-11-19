@@ -97,7 +97,8 @@ def hunt_hold(event: Mapping[str, object], entry: RegistryEntry) -> str | None:
 
     A commit, a git config write or an inline alias (writes_git_config); commit
     plumbing, an alias that runs one, a git subcommand the hook cannot read, and
-    inside the route's repository any git but a read (hunter_git); a file written by
+    inside the route's repository any git but a read or a clone out of it
+    (hunter_git); a file written by
     an edit tool, a redirect or `tee` that _held_path holds, or one the hook cannot
     read. None for any other call. Hunters under a find-only brief committed, changed
     the hooks path and wrote outside their clone (F109). A backstop against a slip,
