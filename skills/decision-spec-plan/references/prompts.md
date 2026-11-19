@@ -14,6 +14,7 @@ model keeps its own configuration.
 | Decision agents | the session's model and effort | only a narrow docs or convention decision that cites no code fact and places no other decision's output: a Sonnet placement ruling (which commit holds what) drew a seam blocker and was rewritten (F88) |
 | Spec and design harvesters; supersede markers; the register folder | the session's model and effort | allowed with a reason, and you check the output against its inputs: live runs did as well as deep peers (F88), one replay dropped items (F45) |
 | Code harvester, spec authors, reconcilers, plan authors, Stage 5 task groups, integrators | the session's model and effort | never measured on Sonnet |
+| A bug hunt's `hunt-` seats: hunters (§8), the fix-regression check (§8b), the suspects check (§8c) | the session's model and effort | never: unmeasured |
 
 **Effort.** By default omit `effort`: the dispatch takes the session's `/effort` and follows it when
 the user changes it mid-run (measured: a task group went from `xhigh` to `high` with its lead).
@@ -293,3 +294,51 @@ It commits merges and runs gates, so it does not end with the closing lines. Its
 
 Seven at once, each `name`d `<sin>-<review name>`; the prompt is in `sins/lead.md` §2. It does not end with
 the closing lines — `sins/protocol.md` carries the skeleton, the one reply and where probes go.
+
+---
+
+## §8 — A hunter (a bug hunt; `tasks.md`)
+
+All seats in one message, each `subagent_type: "decision-spec-plan:dsp-deep"`, `name`d
+`hunt-<seat>`: the route's hook holds a `hunt-` agent find-only and its dispatch to the recorded
+budget (`failure-modes` F109). Record the whole hunt's price — its hunters and the suspects check
+(`costs.md`) — with `route_state.py --budget` before the hunters go out: the gate checks the spend at
+each dispatch and reserves nothing.
+
+> You are the <seat> hunter of <project>'s bug hunt, run <run>. Read
+> `<planning-dir>/HUNT-BRIEF-p<P>.md` FIRST and follow it exactly. YOUR SEAT: **<seat>** — <its
+> area; or the environment or variant seat as the brief defines it>. Target <repo> at <sha>; your
+> clone `<scratch>/hunt/<run>/<seat>`, which takes the place of `<scratchpad>/<your-id>/` below: the
+> tests you run there are probes, not a gate; your skeleton is the findings file the brief names. <closing lines> Reply with the
+> findings file's path and its line 1, and the suspects file's path and its count.
+
+## §8b — The fix-regression check (after a hunt fix round's last group, before its push)
+
+One `dsp-deep` agent, `name`d `hunt-fixreg-<round>`, so the hunters' hold covers it. Each finding
+it proves goes to a task group like any other finding; the lead fixes nothing (F68). **Why:** fix
+rounds added defects four times, each caught only by luck (F110).
+
+> You check <project>'s hunt fix round <round> for the defects its fixes add. Repo <repo>; the
+> round's merged commits are `<base>..<head>`, and each commit claims these findings: <sha → finding
+> ids, from the commit bodies>. Read only that range's diffs (`git diff <base>..<head>`, `git show
+> <sha>`) and those findings in `<planning-dir>/hunt/<run>/findings/`. For each diff, hunt a defect
+> it adds; for each claim, whether its fix fixes the finding — one probe per claim, in a clone of
+> your own at `<head>` (`cd <scratchpad>/<your-id> && git clone -q file://<repo> clone`, then check
+> out `<head>` there: a `hunt-` seat changes nothing in the repository), its path and exit code
+> recorded. Write `<planning-dir>/hunt/<round>/fixreg.md`: a line per claim `FIXED | NOT FIXED —
+> <finding id> — <probe path, exit>`, then each defect a diff adds in the hunt brief's report table.
+> <closing lines> Reply with the path, the count per verdict and the count of added defects.
+
+## §8c — The suspects check (one per hunt run, after every hunter returns)
+
+One `dsp-deep` agent, `name`d `hunt-check-<run>`. Never on a *measured* finding: its probe already
+failed, and the benchmark's measured findings held a precision of 1.00 (F108).
+
+> You check the suspects of <project>'s bug hunt, run <run>. Its findings dir:
+> `<planning-dir>/hunt/<run>/findings/`. Read only its `suspects-*.md` files and the findings its
+> reports mark *by reading*, and refute by default: an item stands only on a probe that fails as it
+> claims. One probe per item, in a clone of your own at the hunt's SHA (`cd <scratchpad>/<your-id>
+> && git clone -q file://<repo> clone`, then check out `<sha>` there).
+> Write `<planning-dir>/hunt/<run>/findings/check-<run>.md`, one line per item `UPHELD | REFUTED |
+> NO-PROBE — <id> — <probe path, exit>`. <closing lines> Reply with the path and the count per
+> verdict.
