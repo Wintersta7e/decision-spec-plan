@@ -18,6 +18,7 @@ from collections.abc import Mapping
 from typing import cast
 
 from .common import (
+    EDITS,
     EXEC,
     LAST_DECISION,
     REGISTRY,
@@ -39,7 +40,6 @@ from .common import (
 THROTTLE_S = 20
 # The agent types only the route dispatches (agents/dsp-*.md), bare or plugin-qualified.
 ROUTE_AGENTS = ("dsp-deep", "dsp-mechanical")
-EDITS = ("Edit", "Write", "MultiEdit", "NotebookEdit")
 # The events hooks.json registers for the monitor alone, each guarded by its switch:
 # recorded, never checked or reported on.
 RECORD_ONLY = frozenset(
