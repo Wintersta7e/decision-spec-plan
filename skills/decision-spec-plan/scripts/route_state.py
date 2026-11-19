@@ -100,7 +100,11 @@ holds an `exec-` dispatch, and sends the lead's Stop back once, until each has a
 in `<planning-dir>/asks.md`; PreCompact keeps the unlisted ones in the summary (F105).
 Its Stop also goes back once when a fenced block in the lead's last message would fail
 pasted: a WSL stop among other lines, a prompt program followed by its input, a `cd` or
-`git -C` to a missing directory (F107).
+`git -C` to a missing directory (F107). Inside a `hunt-` agent it refuses a commit, a
+`git config` write, an inline alias and an edit in the route's repository outside the
+planning dir, and it holds the lead's `hunt-` dispatch to the budget as an `exec-` one,
+with no ETA: a backstop against a slip, not a sandbox, that checks spend at the
+dispatch and reserves nothing (F109).
 
 Registration: the plugin's `hooks/hooks.json` runs `route_state.py --hook` under
 SessionStart matcher `compact|resume`, PostToolUse matcher `*`, UserPromptSubmit,

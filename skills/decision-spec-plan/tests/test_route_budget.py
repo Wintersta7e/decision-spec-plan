@@ -176,6 +176,8 @@ class Budget(support.Route):
         """No budget holds an exec- dispatch; rung S refuses a harvester (F87)."""
         _ = self.write(self.LEAD, human(-3600) + "\n")
         _ = self.hook("deny:phase 1 has no budget", self.dispatch("exec-p1-01-a", "t1"))
+        # a hunt is held to the route's budget as a task group is
+        _ = self.hook("deny:phase 1 has no budget", self.dispatch("hunt-env", "t1"))
         _ = self.hook("silent", self.dispatch("plan-p1-01", "t1"))
         _ = self.hook(
             "silent",
@@ -201,6 +203,9 @@ class Budget(support.Route):
         _ = self.hook(
             "deny:has no budget",
             self.harvester("exec-p1-01-a", "Fix harvest-date parsing in crop importer"),
+        )
+        _ = self.hook(
+            "deny:has no budget", self.harvester("hunt-env", "Hunt the harvest code")
         )
         _ = self.hook(
             "silent",
@@ -301,6 +306,8 @@ class Budget(support.Route):
         for i in range(1, 7):
             self.append(lead, sent(2, f"t{i}", f"exec-p1-0{i}-a"))
         _ = self.hook("/^ETA exec-p1-07-a/", self.dispatch("exec-p1-07-a", "t7"))
+        # a hunt within the budget goes out with no ETA: that is task-group arithmetic
+        _ = self.hook("silent", self.dispatch("hunt-env", "t7"))
         _ = self.budget("w2", "--estimate", "0.01", "--groups", "9")
         self.append(lead, human(1))
         self.append(lead, used(2, "u1", 11000))
@@ -310,6 +317,9 @@ class Budget(support.Route):
             "deny:budget .w2. .*0.0M spent since — more than 25% over",
             self.dispatch("exec-p1-06-a", "t6"),
         )  # the spend
+        _ = self.hook(
+            "deny:budget .w2. .*more than 25% over", self.dispatch("hunt-env", "t8")
+        )
         # a lead's prompt rewritten after it sat idle past the cache's life is the
         # wait's cost, not the wave's (F93)
         idle = self.T / "idle"
