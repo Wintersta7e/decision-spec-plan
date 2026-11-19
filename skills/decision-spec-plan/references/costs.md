@@ -25,6 +25,9 @@ the conversion from older figures: Sources, below.
 | Lead, Stage 5 | 0.2–0.4M per task group dispatched | $0.80–1.60 | F, 2026-10-14 |
 | Lead, one rung M or L run | 5–35M; ≈0.5M per agent dispatched, 32% of all cost | $20–140 | B; J |
 | Claim-only verifier (`prompts.md` §1f) | ~0.6M as a `dsp-deep` agent; 0 on the second model | ~$2.40 | unmeasured: the S review agent's figure |
+| Hunter (`prompts.md` §8) · a hunt of 5 hunters | ≈0.8M in 17–21 min · ≈4.0M | ≈$3.20 · ≈$16.00 | P11 benchmark, 2026-11-12 |
+| The suspects check (`prompts.md` §8c), one per hunt | ≈1.1M, +11–16 min after the hunters | ≈$4.40 | P11 benchmark, 2026-11-12 |
+| The fix-regression check (`prompts.md` §8b), one per fix round | ~0.6M | ~$2.40 | unmeasured: the claim-only verifier's figure |
 | Rung S review of a merge request, no harvester | ≈2.6M (0.9–5.8M) | ≈$10.40 | J |
 | Rung S review, all | 4.2M (1.6–10.8M); with a harvester 4.9–8.0M (`failure-modes` F87) | $16.80 | I, 2026-10-07..20 |
 | **Rung S build, with execution** | **5.0M in 72 min** — lead 1.8M, 7 agents 3.1M | **$20.32** | **r5 clean room, 2026-11-02** |

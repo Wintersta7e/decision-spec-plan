@@ -260,6 +260,27 @@ class PluginFiles(support.Sandbox):
         rows = [ln for ln in prompts.splitlines() if ln.startswith("|")]
         self.ok("the role table names hunt-", any("hunt-" in ln for ln in rows))
 
+    def test_hunt_routing_costs_and_evidence(self) -> None:
+        """The hunt's routing row, its cost rows and its failure-mode rows exist."""
+        refs = PLUGIN / "references"
+        tasks = (refs / "tasks.md").read_text().splitlines()
+        row = next((ln for ln in tasks if ln.startswith("| **A bug hunt**")), "")
+        for name in ("hunt-brief.md", "§8b", "§8c"):
+            self.ok(f"tasks.md's bug-hunt row names {name}", name in row, row)
+        modes = (refs / "failure-modes.md").read_text()
+        for n in ("F108", "F109", "F110"):
+            self.ok(f"failure-modes.md has row {n}", f"\n| {n} |" in modes)
+        costs = (refs / "costs.md").read_text().splitlines()
+        self.ok(
+            "costs.md prices the fix-regression check, unmeasured",
+            any(
+                ln.startswith("|")
+                and "fix-regression check" in ln
+                and "unmeasured" in ln
+                for ln in costs
+            ),
+        )
+
     def test_help_is_the_whole_interface(self) -> None:
         """Every script's --help prints its whole docstring."""
         # shown only its docstring's first line, a lead read ~20k characters of the
