@@ -29,6 +29,11 @@ CONFIG_VARS = re.compile(r"(?<![\w$])GIT_CONFIG_(?:PARAMETERS|COUNT|KEY_\d+)=")
 # git runs; and a subcommand word git can run (a computed one read as text is not).
 CONFIG_HOMES = re.compile(r"(?<![\w$])(?:HOME|XDG_CONFIG_HOME|GIT_\w+)=")
 GIT_WORD = re.compile(r"[A-Za-z0-9][\w.-]*")
+# Git's options and variables that point it at a repository whatever its directory:
+# for a hunter such a git runs inside the hunted repository (read in the text, so
+# `export` and `env` set a variable alike).
+POINTING = ("--git-dir", "--work-tree")
+POINTING_VARS = re.compile(r"(?<![\w$])GIT_(?:DIR|WORK_TREE|COMMON_DIR|INDEX_FILE)=")
 # The git a hunter may run inside the hunted repository: these subcommands, and the
 # read forms _reads_only judges (config, branch, tag, worktree, remote, stash).
 READ_ONLY_GIT = {
@@ -598,7 +603,8 @@ def hunter_git(command: str, cwd: str | None, repo: str) -> str | None:
     and an alias read as push_guard.unalias reads it in the command's directory, its
     command judged in turn; an alias it cannot read is held. Inside repo — the
     directory in effect for each command, after a `cd` and `-C`; one the hook cannot
-    compute counts as inside — only what _reads_only passes: a denylist of writing
+    compute, and git pointed at a repository by POINTING or POINTING_VARS, count as
+    inside — only what _reads_only passes: a denylist of writing
     forms never ends (notes, replace, symbolic-ref, reset, a saving stash, …) — and a
     `git clone` writing only outside repo (_clone_out), the brief's first step.
     None when nothing is held. For a hunter alone: other agents' commits are judged by
@@ -607,6 +613,7 @@ def hunter_git(command: str, cwd: str | None, repo: str) -> str | None:
     import push_guard  # only a hunter's git command needs it
 
     config_env = bool(CONFIG_HOMES.search(command))
+    pointing = bool(POINTING_VARS.search(command))
     cmds = bash_commands(command, cwd)
     # text the reader cannot follow: its directory is cwd unless it may change it
     moved = re.search(r"(?<![\w-])(?:cd|pushd|popd)(?![\w-])", command)
@@ -631,7 +638,9 @@ def hunter_git(command: str, cwd: str | None, repo: str) -> str | None:
         words = args if resolved == sub else [shell_cmd.literal(t) for t in texts]
         if resolved != sub and (held := _hunter_writes(resolved, words)):
             return f"{held} through the alias `git {sub}`"
-        inside = here is None or pathlib.Path(here).resolve().is_relative_to(root)
+        pointed = pointing or any(o.partition("=")[0] in POINTING for o, _ in opts)
+        inside = pointed or here is None
+        inside = inside or pathlib.Path(here or "/").resolve().is_relative_to(root)
         clones_out = resolved == "clone" and _clone_out(here, words, root)
         if inside and not (_reads_only(resolved, words) or clones_out):
             return (

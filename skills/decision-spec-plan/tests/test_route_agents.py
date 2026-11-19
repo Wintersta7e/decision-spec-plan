@@ -327,6 +327,21 @@ HELD_ALIASES = {
     "sh": "!git commit",
 }
 HELD_ALIAS_FORMS = 4
+# git a hunter runs in its own clone but points at the hunted repository {r}: by an
+# option or a variable, either form; a read passes
+POINTED_GIT = (
+    ("git --git-dir={r}/.git stash", "deny:find-only"),
+    ("git --git-dir {r}/.git reset --hard", "deny:find-only"),
+    ("GIT_DIR={r}/.git git stash push", "deny:find-only"),
+    ("git --work-tree {r} reset --hard", "deny:find-only"),
+    ("git --work-tree={r} checkout -- .", "deny:find-only"),
+    ("env GIT_WORK_TREE={r} git checkout -- .", "deny:find-only"),
+    ("export GIT_COMMON_DIR={r}/.git; git stash", "deny:find-only"),
+    ("GIT_INDEX_FILE={r}/.git/index git add -A", "deny:find-only"),
+    ("git --git-dir={r}/.git log", "silent"),
+    ("git stash", "silent"),
+)
+POINTED_GIT_FORMS = 10
 # clones of the hunted repository {r} run inside it that write into it, or where the
 # hook cannot tell: {out} is outside it, a word that only looks like the destination
 CLONE_INTO_REPO = (
@@ -561,6 +576,14 @@ class HuntAgent(Route):
             (f"true | cd {clone}; echo x > f", "deny:find-only"),
         ):
             _ = self.hook(want, self.call("h1", bash, {"command": command}, r))
+
+    def test_git_pointed_at_the_repo(self) -> None:
+        """Git pointed at the hunted repository from a hunter's clone only reads."""
+        clone = str(self.init_repo(self.T / "pointed-clone"))
+        self.ok("pointed forms", len(POINTED_GIT) == POINTED_GIT_FORMS)
+        for form, want in POINTED_GIT:
+            command = form.format(r=self.R)
+            _ = self.hook(want, self.call("h1", "Bash", {"command": command}, clone))
 
     def test_clone_out_of_the_repo(self) -> None:
         """The brief's clone runs from the repository; a clone into it is held."""
