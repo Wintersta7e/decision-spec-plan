@@ -73,6 +73,35 @@ Every server you start binds port 0 (read the port it got from its output) or a 
 proved free and hold for the probe's whole life. Stop every process you started: `ps` before you
 finish shows none of them. **Why:** two hunters' servers collided on one port for ~25 s (F108).
 
+## Attack the boundaries
+
+Before you read your area line by line, list its trust boundaries under a "Boundaries" heading in
+your findings file: every place data enters from outside the code's control — what it reads from
+disk, from other programs, from the network, from the user and from its environment. Attack each
+one with hostile input: injection, traversal, empty, huge, truncated or malformed data, the same
+call twice at once, a failure between two steps that must happen together. Each boundary ends in a
+finding, a suspect, or a "Checked, no defect" line naming the inputs you tried. Hunt hardest where
+the damage is worst: data loss, a leak of local data, code or a command run from data, a crash.
+
+## Build the harness
+
+"It cannot run here" is a suspect's last resort, not its first. Before you park a suspect, try to
+build its probe from what is already installed: a stand-in for the external dependency (a fake
+program earlier on `PATH`, a test double or mock), the module compiled and run on its own, a
+fixture in a temp directory, a fake clock. A probe may patch your clone to open a seam (a
+constant, a build flag, a concrete type in place of a handle): label it *measured (seam: what you
+changed)*. In the suspect, name what you tried and why it did not run.
+
+## No early stop
+
+Your report is done only when every file of your area appears in a finding or under "Checked, no
+defect" (one line each, naming what you tried), and you have made a second pass over the paths
+your first pass rated riskiest: the boundaries, the error and retry paths, and every place where
+two things run at once. A handful of findings is not a reason to stop. **Why:** a hunt run with
+these three sections found 26 defects to 23 at the same SHA, the only high among them, at the same
+cost per defect; the two runs shared 11, so each found under half of the ≈54 the overlap
+estimates (F111).
+
 ## Prove it or drop it
 
 Each finding is *measured* — a failing probe or test in your clone: its path and the failing
