@@ -49,13 +49,47 @@ REVIEW_SHAPE_MUTATION = re.compile(
 )
 
 
-def publish_word(tool: str, w: shell_cmd.Word) -> bool:
+# Publishers whose every positional word is a task or goal, so a computed one may
+# publish (`gradle build $T`, `mvn clean $GOAL`).
+TASK_RUNNERS = {"gradle", "gradlew", "mvn"}
+# Subcommands that open a publish with a later word (`yarn npm publish`, `dotnet nuget
+# push`, `docker image push`, `docker build --push`): a computed word after one may be
+# that word.
+PUBLISH_OPENERS = {
+    "yarn": {"npm"},
+    "dotnet": {"nuget"},
+    "docker": {"image", "manifest", "build", "buildx", "compose"},
+    "podman": {"image", "manifest", "build", "buildx", "compose"},
+}
+SUBCOMMAND = re.compile(r"[A-Za-z][\w-]*")
+
+
+def _argued(tool: str, words: Sequence[shell_cmd.Word]) -> bool:
+    """Return whether the words after a PUBLISHERS command's first are its arguments.
+
+    So when that first word is a static subcommand (`cargo test`, `npm test`) that is
+    neither the verb nor one opening a publish (PUBLISH_OPENERS), and the tool is no
+    TASK_RUNNERS one. A word before it that may be an option's value or a toolchain
+    (`pnpm --filter x $V`, `cargo +nightly $X`) leaves every computed word a verb.
+    """
+    first = words[0] if words else None
+    return bool(
+        first
+        and first.static
+        and SUBCOMMAND.fullmatch(first.text)
+        and tool not in TASK_RUNNERS
+        and first.text not in PUBLISHERS[tool] | PUBLISH_OPENERS.get(tool, set())
+    )
+
+
+def publish_word(tool: str, w: shell_cmd.Word, *, argument: bool = False) -> bool:
     """Return whether word w of a PUBLISHERS command may publish.
 
     It may be its verb, a push flag or output (`--push=true`, `-o type=registry`), a
     gradle task that abbreviates `publish…` (`pTML`), or a computed word that may be the
     verb (`npm $V`). A computed word with a path or an `=` outside its expansions is a
-    value (`-v $PWD:/app`, `-e K=$V`); a false match only asks.
+    value (`-v $PWD:/app`, `-e K=$V`), and so is an argument, one after the command's
+    subcommand (_argued: `cargo test $1`); a false match only asks.
     """
     t = w.text
     if t in PUBLISHERS[tool] or t.startswith("--push"):
@@ -67,7 +101,7 @@ def publish_word(tool: str, w: shell_cmd.Word) -> bool:
     if tool in ("gradle", "gradlew") and re.match(r"(?i)p", t.rpartition(":")[2]):
         return True
     bare = re.sub(r"\$\{[^}]*\}|\$\([^)]*\)|`[^`]*`", "", t)
-    return not (w.static or re.search(r"[/=]", bare))
+    return not (w.static or argument or re.search(r"[/=]", bare))
 
 
 def _api_call(rest: Sequence[str]) -> tuple[str | None, list[str]]:
@@ -136,7 +170,12 @@ def _gh_outward(cmd: shell_cmd.Cmd) -> bool:
 def outward_cmd(cmd: shell_cmd.Cmd) -> bool:
     """Return whether cmd, from a `gh`, `git` or publisher's word on, acts outward."""
     if cmd.name in PUBLISHERS:
-        return any(publish_word(cmd.name, w) for w in cmd.words[1:])
+        rest = cmd.words[1:]
+        argued = _argued(cmd.name, rest)
+        return any(
+            publish_word(cmd.name, w, argument=argued and i > 0)
+            for i, w in enumerate(rest)
+        )
     if cmd.name == "gh":
         return _gh_outward(cmd)
     # remote refs deleted by `git push`: --delete, -d (alone or grouped), --prune,
