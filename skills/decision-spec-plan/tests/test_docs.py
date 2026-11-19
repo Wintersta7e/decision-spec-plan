@@ -233,6 +233,33 @@ class PluginFiles(support.Sandbox):
             " ".join(gone),
         )
 
+    def test_hunt_brief_and_prompts(self) -> None:
+        """The hunt brief holds its rules; prompts.md has the hunt's three roles."""
+        # the hunt benchmark's winning arm: two seats, suspects to a file, file-first
+        # returns, function names beside lines, port 0 (failure-modes F108)
+        brief = (PLUGIN / "references/briefs/hunt-brief.md").read_text()
+        for rule in (
+            r"(?i)environment seat",
+            r"variant seat",
+            r"suspects-",
+            r"findings: in progress",
+            r"port 0",
+            r"`file:line` \*\*and\*\* the enclosing function",
+            r"find-only",
+            r"backstop",
+            chr(0x2039) + "ADAPT",  # the slot every brief marks
+        ):
+            self.ok(f"hunt-brief.md holds {rule!r}", re.search(rule, brief))
+        prompts = (PLUGIN / "references/prompts.md").read_text()
+        for heading in ("§8 ", "§8b ", "§8c "):
+            self.ok(f"prompts.md has ## {heading}", f"\n## {heading}" in prompts)
+        b = prompts.split("\n## §8b ", 1)[-1]
+        fixreg, check = b.split("\n## §8c ", 1) if "\n## §8c " in b else (b, "")
+        self.ok("§8b names hunt-fixreg-", "hunt-fixreg-" in fixreg)
+        self.ok("§8c names hunt-check-", "hunt-check-" in check)
+        rows = [ln for ln in prompts.splitlines() if ln.startswith("|")]
+        self.ok("the role table names hunt-", any("hunt-" in ln for ln in rows))
+
     def test_help_is_the_whole_interface(self) -> None:
         """Every script's --help prints its whole docstring."""
         # shown only its docstring's first line, a lead read ~20k characters of the
