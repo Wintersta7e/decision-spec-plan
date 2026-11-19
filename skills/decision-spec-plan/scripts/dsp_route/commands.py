@@ -82,6 +82,17 @@ CLONE_VALUED = (
 CLONE_SHORT = "objuc"
 # Words that run the next word as a command (`sudo tee f`).
 RUNS_NEXT = {"sudo", "doas", "env", "command", "exec", "nohup", "nice", "stdbuf"}
+# What sets a variable past `NAME=value`, for _Writes: an assignment or a setter's
+# argument (`b=1`, `b+=1`, `read b`), arithmetic (`b=1`, `b+=1`, `b++`, `--b`), a
+# default (`${b:=x}`, `${b=x}`), and the builtins that may set any (`eval`, `source`).
+SETS = re.compile(r"([A-Za-z_]\w*)(\+?)=")
+SET_NAME = re.compile(r"[A-Za-z_]\w*(?=\+?=|$)")
+ARITH_SETS = re.compile(
+    r"(?<!\w)([A-Za-z_]\w*)\s*(?:\+\+|--|(?:[-+*/%&|^]|<<|>>)?=(?!=))"
+    r"|(?:\+\+|--)\s*([A-Za-z_]\w*)"
+)
+DEFAULT_SETS = re.compile(r"\$\{([A-Za-z_]\w*):?=")
+SETS_ANY = {"eval", "source", "."}
 # `git config`'s read actions, the options that only shape a read (those in
 # CONFIG_VALUED take a value), and the subcommands that write (_config_writes).
 CONFIG_READS = {"--get", "--get-all", "--get-regexp", "--list", "-l"}
@@ -636,7 +647,10 @@ class _Writes:
     moves it, a subshell's ends at its `)` — with the command's own assignments, HOME
     and PWD set; a `$( )` and a `bash -c` or `eval` string are read where they run. In
     the body of a `for` loop over literal words its variable takes each word in turn;
-    over a computed list, and after its `done`, it is unknown.
+    over a computed list, in a body no `do` opens, once the body sets it again, and
+    after its `done`, it is unknown. A subshell — a `( )`, a `$( )`, a `bash -c` or
+    `eval` string, a pipeline stage — leaves each variable it sets unknown, and the
+    variable of each loop it leaves open: never more readable than bash leaves it.
     """
 
     def __init__(self) -> None:
@@ -647,6 +661,8 @@ class _Writes:
         self.loops: list[str | None] = []
         # the variables of the open `for` loops over literal words, with their words
         self.each: dict[str, list[str]] = {}
+        # the `for` header just read, its body not yet: its variable and its words
+        self.header: tuple[str, list[str] | None] | None = None
 
     def place(self, w: shell_cmd.Word, here: str | None) -> None:
         """Record the files w names, read in here: None when one cannot be computed."""
@@ -659,8 +675,19 @@ class _Writes:
             else:
                 self.out.append((pathlib.Path(here or "/") / text).resolve())
 
+    def unbind(self, name: str) -> None:
+        """Make name unknown: set to a value the reader does not compute."""
+        _ = self.each.pop(name, None)
+        self.env[name] = None
+
+    def forget(self, before: dict[str, str | None]) -> None:
+        """Make unknown each variable set since before: a subshell's ends with it."""
+        for name, value in list(self.env.items()):
+            if before.get(name) != value:
+                self.env[name] = None
+
     def open_loop(self, words: list[shell_cmd.Word]) -> None:
-        """Open the `for` or `select` loop words open and bind its variable."""
+        """Open the `for` or `select` loop words open; its variable binds at `do`."""
         loop = shell_cmd.for_list(words)
         self.loops.append(loop[0] if loop else None)  # `for ((…))` has none
         if loop is None:
@@ -668,17 +695,84 @@ class _Writes:
         name, listed = loop
         values = [w.expand(self.env) for w in listed or ()]
         known = [v for v in values if v is not None]
-        if listed is not None and len(known) == len(values):
-            self.each[name] = known
-        else:
-            _ = self.each.pop(name, None)
-            self.env[name] = None
+        self.unbind(name)
+        literal = listed is not None and len(known) == len(values)
+        self.header = (name, known if literal else None)
+
+    def open_body(self, t: shell_cmd.Word) -> None:
+        """Bind the variable of the header just read when t, its body's first, is `do`.
+
+        Another body (`{ …; }`) no `done` closes: its loop is left, its variable
+        unknown.
+        """
+        if self.header is None:
+            return
+        name, values = self.header
+        self.header = None
+        if not (t.static and t.text == "do"):
+            _ = self.loops.pop()
+        elif values is not None:
+            self.each[name] = values
 
     def close_loop(self) -> None:
         """Leave the innermost loop at its `done`: its variable is unknown after it."""
+        self.header = None
         if self.loops and (name := self.loops.pop()):
-            _ = self.each.pop(name, None)
-            self.env[name] = None
+            self.unbind(name)
+
+    def close_loops(self, depth: int) -> None:
+        """Leave each loop past the first depth, as a subshell that opened it ends."""
+        while len(self.loops) > depth:
+            self.close_loop()
+
+    def sets(self, words: list[shell_cmd.Word]) -> None:
+        """Record the variables a command sets.
+
+        An assignment's value is computed; an append's, one to a bound loop variable,
+        a SETTERS argument, `printf -v`'s and `let`'s are unknown, and every variable
+        after a SETS_ANY builtin.
+        """
+        import push_guard  # loaded by hunter_git as well
+
+        assigns = [(w, m) for w in words if (m := SETS.match(w.text))]
+        if words and len(assigns) == len(words):
+            for w, m in assigns:
+                if m[2] or m[1] in self.each:
+                    self.unbind(m[1])
+                else:
+                    value = w.expand(self.env)
+                    self.env[m[1]] = value and value.partition("=")[2]
+            return
+        i = next(
+            (i for i, w in enumerate(words) if not shell_cmd.ASSIGN.match(w.text)),
+            len(words),
+        )
+        name = _basename(words[i].text) if i < len(words) else ""
+        texts = [w.text for w in words[i + 1 :]]
+        names: list[str] = []
+        if name in SETS_ANY:
+            names = [*self.env, *self.each]
+        elif name in push_guard.SETTERS:
+            names = [m[0] for t in texts if (m := SET_NAME.match(t))]
+        elif name == "printf":
+            pairs = zip(texts, [*texts[1:], ""], strict=True)
+            names = [t[2:] or after for t, after in pairs if t.startswith("-v")]
+        elif name == "let":
+            names = [m[1] or m[2] for t in texts for m in ARITH_SETS.finditer(t)]
+        for n in names:
+            self.unbind(n)
+
+    def word_sets(self, w: shell_cmd.Word, *, arith: bool) -> None:
+        """Make unknown each variable w sets: a default, a `$((…))` sum, or w's own.
+
+        With arith w is a word of a `((…))`, arithmetic.
+        """
+        exps = [s for k, s in w.parts if k == "exp"]
+        sums = [w.text] if arith else [s for s in exps if s.startswith("$((")]
+        names = [m[1] for s in exps for m in DEFAULT_SETS.finditer(s)]
+        names += [m[1] or m[2] for s in sums for m in ARITH_SETS.finditer(s)]
+        for name in names:
+            self.unbind(name)
 
     def end(self, words: list[shell_cmd.Word], here: str | None) -> str | None:
         """Record a command's assignments and tee files; return the directory after."""
@@ -688,12 +782,7 @@ class _Writes:
             words = words[1:]
         if words and words[0].static and words[0].text in ("for", "select"):
             self.open_loop(words)
-        if words and all(shell_cmd.ASSIGN.match(w.text) for w in words):
-            for w in words:
-                value = w.expand(self.env)
-                name = w.text.partition("=")[0]
-                _ = self.each.pop(name, None)
-                self.env[name] = value and value.partition("=")[2]
+        self.sets(words)
         names = [_basename(w.text) for w in words]
         if "tee" in names and (names[0] == "tee" or names[0] in RUNS_NEXT):
             for w in words[names.index("tee") + 1 :]:
@@ -709,6 +798,8 @@ class _Writes:
         A `done` closes its loop first: bash opens a redirect on the loop before the
         loop sets its variable.
         """
+        if not words:
+            self.open_body(t)
         if t.static and t.text == "done" and not words:
             self.close_loop()
         nested = words and (words[-1].text == "-c" or words[0].text == "eval")
@@ -717,28 +808,55 @@ class _Writes:
         words.append(t)
 
     def walk(self, tokens: list[shell_cmd.Token], here: str | None) -> None:
-        """Record the files tokens write, run from here."""
-        stack: list[str | None] = []
+        """Record the files tokens write, run from here.
+
+        Read as a subshell: the loops open outside are set aside and each variable set
+        in tokens is unknown at their end; each `( )` and pipeline stage in them alike.
+        A `cd` in a pipeline stage leaves the directory unknown (bash's `lastpipe`).
+        """
+        outer, header, before = self.loops, self.header, dict(self.env)
+        self.loops, self.header = [], None
+        stack: list[tuple[str | None, int, dict[str, str | None]]] = []
         words: list[shell_cmd.Word] = []
         op: str | None = None
+        last: shell_cmd.Token | None = None
+        arith: int | None = None  # the depth of the open `((`, whose words are sums
+        piped = False  # the command being read follows a `|` or `&`
         for t in tokens:
             if isinstance(t, str):
                 op = t if t in shell_cmd.REDIRECTS else None
                 if op is None:
-                    here, words = self.end(words, here), []
+                    stage = piped or t in shell_cmd.ASYNC
+                    env = dict(self.env)
+                    after = self.end(words, here)
+                    if stage:
+                        self.forget(env)
+                    here = None if stage and after != here else after
+                    piped, words = t in shell_cmd.ASYNC, []
                     if t == "(":
-                        stack.append(here)
+                        arith = len(stack) if arith is None and last == "(" else arith
+                        stack.append((here, len(self.loops), dict(self.env)))
                     elif t == ")" and stack:
-                        here = stack.pop()
+                        here, depth, env = stack.pop()
+                        self.close_loops(depth)
+                        self.forget(env)
+                        arith = (
+                            None if arith is not None and len(stack) < arith else arith
+                        )
+                last = t
                 continue
             for sub in t.subs:
                 self.walk(sub, here)
+            self.word_sets(t, arith=arith is not None)
             if op in shell_cmd.OUTPUTS:
                 self.place(t, here)
             elif op is None:
                 self.add_word(t, words, here)
-            op = None
+            op, last = None, t
         _ = self.end(words, here)
+        self.close_loops(0)
+        self.forget(before)
+        self.loops, self.header = outer, header
 
 
 def written_paths(command: str, cwd: str | None) -> list[pathlib.Path | None] | None:

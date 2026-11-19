@@ -358,8 +358,31 @@ LOOP_WRITES = (
     ("for b in {t}; do b={r}; echo > $b/f; done", "deny:find-only"),
     ("for b in {t}; do :; done; echo > $b/f", "deny:find-only"),
     ("for b in {t}/a; do :; done > $b/f", "deny:find-only"),
+    # a loop a subshell leaves open, a body no `done` closes, the variable set again
+    ("bash -c 'for b in a; do :; done'; echo x > {r}/$b", "deny:find-only"),
+    ("bash -c 'for b in a; do :'; echo x > dir/$b", "deny:find-only"),
+    ("echo $(for b in a; do :); echo x > dir/$b", "deny:find-only"),
+    ("(for b in a; do :); echo x > dir/$b", "deny:find-only"),
+    ("for b in a; {{ echo x > dir/$b; }}", "deny:find-only"),
+    ("for b in a; do b+=/../../repo; echo x > dir/$b; done", "deny:find-only"),
+    ("for b in a; do read b; echo x > dir/$b; done", "deny:find-only"),
+    ("for b in a; do IFS= read -r b; echo x > dir/$b; done", "deny:find-only"),
+    ("for b in a; do printf -v b %s ../repo; echo x > $b/f; done", "deny:find-only"),
+    ("for b in a; do export b=../repo; echo x > $b/f; done", "deny:find-only"),
+    ("for b in a; do ((b++)); echo x > dir/$b; done", "deny:find-only"),
+    ("for b in a; do : $((b+=1)); echo x > dir/$b; done", "deny:find-only"),
+    ("for b in a; do : ${{b:=x}}; echo x > dir/$b; done", "deny:find-only"),
+    ('for b in a; do eval "$X"; echo x > dir/$b; done', "deny:find-only"),
+    ("for b in a; do echo | b=x; echo x > dir/$b; done", "deny:find-only"),
+    ("for b in a; do read c; echo x > dir/$b; done", "silent"),
+    # a variable a subshell or a pipeline stage sets is unknown after it
+    ("b={r}; bash -c 'b={t}'; echo x > $b/f", "deny:find-only"),
+    ("b={r}; (b={t}); echo x > $b/f", "deny:find-only"),
+    ("b={r}; true | b={t}; echo x > $b/f", "deny:find-only"),
+    ("b={t}/x; b+=/../repo; echo x > $b/f", "deny:find-only"),
+    ("b={t}; echo x > $b/f", "silent"),
 )
-LOOP_WRITE_FORMS = 12
+LOOP_WRITE_FORMS = 33
 
 
 class HuntAgent(Route):
@@ -534,6 +557,8 @@ class HuntAgent(Route):
             (f"cd {clone} && git reset --hard && echo x > f", "silent"),
             (f"cd {clone} && git diff | tee d.txt", "silent"),
             ("(cd /x) && echo x > f", "deny:find-only"),
+            (f"cd {clone} & echo x > f", "deny:find-only"),  # cd runs in a subshell
+            (f"true | cd {clone}; echo x > f", "deny:find-only"),
         ):
             _ = self.hook(want, self.call("h1", bash, {"command": command}, r))
 
