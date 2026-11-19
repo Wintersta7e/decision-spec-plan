@@ -88,11 +88,27 @@ CLONE_VALUED = (
 CLONE_SHORT = "objuc"
 # Words that run the next word as a command (`sudo tee f`).
 RUNS_NEXT = {"sudo", "doas", "env", "command", "exec", "nohup", "nice", "stdbuf"}
-# For _may_set: the builtins that may set any variable, the words that may stand
-# before a command's own (`builtin read b`), and the builtins that make a nameref.
-ANY_SETTERS = {"eval", "source", "."}
-PRECOMMANDS = shell_cmd.KEYWORDS | {"builtin", "command"}
+# For _sets_any: the words that may set any variable wherever they stand (`eval`,
+# `source`, `trap`, a `function` definition); bash's builtins that set the variable an
+# argument names, so a computed one may name any (`printf` and `wait` with `-v` and
+# `-p` alone); those that make a nameref; the words before a command's own.
+SETS_ANY = {"eval", "source", "trap", "function"}
+SETTING_BUILTINS = {
+    "read",
+    "mapfile",
+    "readarray",
+    "declare",
+    "typeset",
+    "local",
+    "export",
+    "readonly",
+    "unset",
+    "getopts",
+    "let",
+}
+SETTING_FLAGS = {"printf": "-v", "wait": "-p"}
 NAMEREFS = {"declare", "typeset", "local"}
+PRECOMMANDS = shell_cmd.KEYWORDS | {"builtin", "command"}
 # `git config`'s read actions, the options that only shape a read (those in
 # CONFIG_VALUED take a value), and the subcommands that write (_config_writes).
 CONFIG_READS = {"--get", "--get-all", "--get-regexp", "--list", "-l"}
@@ -647,22 +663,49 @@ def hunter_git(command: str, cwd: str | None, repo: str) -> str | None:
 def _may_set(name: str, tokens: Sequence[shell_cmd.Token]) -> bool:
     """Return whether the commands tokens hold may set the variable name, read as text.
 
-    Any occurrence of name but a plain `$name` or `${name}` may: a bare word, one
-    before an `=`, `+=` or `[`, a `${name…}` with an operator, a `$((…))`, quoted text
-    (`read b`, `b[0]=x`, `unset b`, `printf -v b`). So may a command that may set any
-    variable: ANY_SETTERS or a computed command word, a nameref (`declare -n`), a
-    nested shell's `-c` string. Fail closed: no list of setters is ever complete.
+    So any occurrence of name but a plain `$name` or `${name}`: a bare word, one before
+    an `=`, `+=` or `[`, a `${name…}` with an operator, a `$((…))`, quoted text
+    (`read b`, `b[0]=x`, `unset b`, `printf -v b`). Fail closed: no list of setters is
+    ever complete. What may set any variable is _sets_any's.
     """
     found = re.compile(rf"(?<!\w){re.escape(name)}(?!\w)")
     plain = {f"${name}", f"${{{name}}}"}
+    return any(
+        found.search(s)
+        for t in tokens
+        if isinstance(t, shell_cmd.Word)
+        for k, s in t.parts
+        if not (k == "exp" and s in plain)
+    )
+
+
+def _named(w: shell_cmd.Word) -> bool:
+    """Return whether w names its variable in static text (`x=$1`), not computed."""
+    exp = next((i for i, (k, _) in enumerate(w.parts) if k == "exp"), len(w.parts))
+    head = "".join(s for _, s in w.parts[:exp])
+    return bool(re.match(r"[A-Za-z_]\w*\+?=", head))
+
+
+def _sets_any(tokens: Sequence[shell_cmd.Token]) -> bool:
+    """Return whether the commands tokens hold may set any variable, read as text.
+
+    A function definition, SETS_ANY anywhere, a `.` as a command or a computed command
+    word; a nameref (`declare -n`) or a nested shell's `-c` string; a computed argument
+    to SETTING_BUILTINS or SETTING_FLAGS (`read "$v"`). Then _Writes binds none.
+    """
     command: list[str | None] = []  # the command's words so far, None for computed
     target = False  # the word is a redirect's target, not the command's
+    last: shell_cmd.Token | None = None
     for t in tokens:
         if isinstance(t, str):
+            if t == ")" and last == "(":
+                return True  # `f() { …; }`
             target = t in shell_cmd.REDIRECTS
             command = command if target else []
+            last = t
             continue
-        if any(found.search(s) for k, s in t.parts if not (k == "exp" and s in plain)):
+        last = t
+        if any(_sets_any(sub) for sub in t.subs):
             return True
         if target:
             target = False
@@ -671,9 +714,12 @@ def _may_set(name: str, tokens: Sequence[shell_cmd.Token]) -> bool:
         lead = all(
             c and (c in PRECOMMANDS or shell_cmd.ASSIGN.match(c)) for c in command
         )
-        if lead and (text is None or text in ANY_SETTERS):
+        if text in SETS_ANY or (lead and (text is None or text == ".")):
             return True
         runs = {_basename(c) for c in command if c}
+        flagged = {n for n, f in SETTING_FLAGS.items() if f in command}
+        if text is None and not _named(t) and runs & (SETTING_BUILTINS | flagged):
+            return True
         flags = text[1:] if text and re.fullmatch(r"-[A-Za-z]+", text) else ""
         if ("n" in flags and runs & NAMEREFS) or (
             "c" in flags and runs & shell_cmd.SHELLS
@@ -697,10 +743,13 @@ class _Writes:
     variable of each loop it leaves open: never more readable than bash leaves it.
     """
 
-    def __init__(self) -> None:
-        """Start with no file and HOME known."""
+    def __init__(self, *, bind: bool) -> None:
+        """Start with no file; with bind, HOME known, else no variable ever is."""
         self.out: list[pathlib.Path | None] = []
-        self.env: dict[str, str | None] = {"HOME": str(pathlib.Path.home())}
+        self.bind: bool = bind
+        self.env: dict[str, str | None] = {
+            "HOME": str(pathlib.Path.home()) if bind else None
+        }
         # each loop open where the words are read: its variable, None for a `while`
         self.loops: list[str | None] = []
         # the variables of the open `for` loops over literal words, with their words
@@ -755,7 +804,7 @@ class _Writes:
         self.header = None
         if not (t.static and t.text == "do"):
             _ = self.loops.pop()
-        elif values is not None and not _may_set(name, rest):
+        elif values is not None and self.bind and not _may_set(name, rest):
             self.each[name] = values
 
     def close_loop(self) -> None:
@@ -790,7 +839,7 @@ class _Writes:
                 value = w.expand(self.env)
                 name = w.text.partition("=")[0]
                 self.unbind(name)
-                if not _may_set(name, rest):
+                if self.bind and not _may_set(name, rest):
                     self.env[name] = value and value.partition("=")[2]
         names = [_basename(w.text) for w in words]
         if "tee" in names and (names[0] == "tee" or names[0] in RUNS_NEXT):
@@ -867,13 +916,15 @@ class _Writes:
 def written_paths(command: str, cwd: str | None) -> list[pathlib.Path | None] | None:
     """Return each file the command writes by an output redirect or `tee`, resolved.
 
-    Read as _Writes reads them, from cwd. None in place of one the hook cannot compute
+    Read as _Writes reads them, from cwd; it binds no variable when the command may set
+    any (_sets_any). None in place of one the hook cannot compute
     (a name it cannot expand, a relative one in a directory it cannot compute), and
     for the whole when the reader fails.
     """
-    writes = _Writes()
     try:
-        writes.walk(shell_cmd.scan(command)[0], cwd)
+        tokens = shell_cmd.scan(command)[0]
+        writes = _Writes(bind=not _sets_any(tokens))
+        writes.walk(tokens, cwd)
     except Exception:  # noqa: BLE001 — text the reader fails on writes what it cannot see
         return None
     return writes.out
