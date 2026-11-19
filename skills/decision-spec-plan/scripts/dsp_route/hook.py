@@ -122,8 +122,20 @@ def _lead_dispatch(
     ):
         return deny(held)
     # a hunt is held to the budget as a task group is; the ledger and asks are not its
-    if agent_name.startswith((EXEC, HUNT)):
+    if agent_name.startswith(EXEC):
         return checked(gate_dispatch, event, entry) or 0
+    if agent_name.startswith(HUNT):
+        from .agent import bwrap
+
+        _ = checked(gate_dispatch, event, entry)
+        if LAST_DECISION.get() is None and not checked(bwrap):
+            emit(
+                "PreToolUse",
+                "route_state.py (hook): no bubblewrap here: find-only rests on the "
+                "brief and the fingerprint — run `route_state.py --fingerprint "
+                "<repo>` before this hunt's first dispatch and after its last return "
+                "(prompts.md §8, F109).",
+            )
     return 0
 
 
@@ -500,10 +512,12 @@ def hook() -> int:
     and PreCompact tells the summary to keep the unlisted ones verbatim (F105). The
     lead's Stop is also sent back once when a command its last message hands the user
     fails when pasted (F107). Inside a `hunt-` agent PreToolUse refuses a commit, a
-    `git config` write, an inline alias, any git but a read in the route's repository
-    and a write there outside the planning dir, and it holds the lead's `hunt-`
-    dispatch to the budget as an `exec-` one, with no ETA: a backstop against a slip,
-    not a sandbox, that checks spend at the dispatch and reserves nothing (F109).
+    `git config` write, an inline alias and an edit-tool write into the route's
+    repository outside the planning dir, and runs every other Bash call under bubblewrap
+    with that repository read-only (agent.hunter_pre); it holds the lead's `hunt-`
+    dispatch to the budget as an `exec-` one, with no ETA, and says when bubblewrap
+    cannot run: a backstop against a slip, not a sandbox, that checks spend at the
+    dispatch and reserves nothing (F109).
 
     Returns:
         The hook's exit code: 2 sends an agent back to its running job, else 0.

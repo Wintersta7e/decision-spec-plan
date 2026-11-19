@@ -524,6 +524,18 @@ class Sandbox(unittest.TestCase):
         cls.chmod_x(shim)
         return {"PATH": f"{root}{os.pathsep}{cls.env['PATH']}"}, log
 
+    @classmethod
+    def bwrap_shim(cls, root: Path, code: int) -> dict[str, str]:
+        """A `bwrap` at root that exits code: the env that puts it first on PATH.
+
+        0 passes the hook's probe (`bwrap --dev-bind / / true`) and runs nothing, so a
+        test reads the command the hook builds on any host; 1 is a host where bubblewrap
+        cannot create a namespace.
+        """
+        shim = cls.write(root / "bwrap", f"#!/bin/sh\nexit {code}\n")
+        cls.chmod_x(shim)
+        return {"PATH": f"{root}{os.pathsep}{cls.env['PATH']}"}
+
     @staticmethod
     def chmod_x(*paths: StrPath) -> None:
         """The execute bits added to each path's mode."""
@@ -603,9 +615,15 @@ class Sandbox(unittest.TestCase):
 
     last: str = ""
 
-    def hook(self, want: str, event: str, rs: str | Path = RS) -> str:
-        """`route_state.py --hook` on event meets want (see hook_matches)."""
-        out = self.py(rs, "--hook", input=event + "\n", merge=True).out
+    def hook(
+        self,
+        want: str,
+        event: str,
+        rs: str | Path = RS,
+        env: Mapping[str, str] | None = None,
+    ) -> str:
+        """`route_state.py --hook` on event meets want (see hook_matches), env added."""
+        out = self.py(rs, "--hook", input=event + "\n", merge=True, env=env).out
         self.last = out
         self.ok(f"hook  {want}  {event}", hook_matches(want, out), out[:1500])
         return out

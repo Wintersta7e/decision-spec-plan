@@ -3,14 +3,17 @@
 
 Inside an `exec-` agent the context stop (F75), and a commit held while its own lane's
 rulings file changed after it last read it (F59); inside a `hunt-` agent the find-only
-hold (F109).
+hold and its shell run with the route's repository read-only (F109).
 """
 
+import json
 import os
 import pathlib
+import shlex
+import subprocess
 from collections.abc import Mapping
 
-from .commands import hunter_git, makes_commit, writes_git_config, written_paths
+from .commands import makes_commit, writes_git_config
 from .common import (
     EDITS,
     EXEC,
@@ -30,6 +33,8 @@ from .transcript import agent_name, agent_transcript, context, dispatch_text, la
 CONTEXT_STOP = 200_000
 # The tools whose input naming a rulings file counts as the agent reading it.
 READS = ("Read", "Bash", "Grep")
+# How long bubblewrap's probe may take before the hook counts it as unable to run.
+PROBE_S = 10
 
 
 def own_rulings(planning: pathlib.Path, name: str, dispatch: str) -> list[pathlib.Path]:
@@ -75,6 +80,13 @@ def _route_repo(entry: RegistryEntry) -> pathlib.Path:
     return pathlib.Path(repo).resolve()
 
 
+def _git_configs() -> tuple[pathlib.Path, pathlib.Path]:
+    """Return the global git config file and git's XDG config dir, resolved."""
+    home = pathlib.Path.home()
+    xdg = pathlib.Path(os.environ.get("XDG_CONFIG_HOME") or home / ".config")
+    return (home / ".gitconfig").resolve(), (xdg / "git").resolve()
+
+
 def _held_path(path: pathlib.Path, entry: RegistryEntry) -> bool:
     """Return whether a hunter may not write path.
 
@@ -82,11 +94,8 @@ def _held_path(path: pathlib.Path, entry: RegistryEntry) -> bool:
     config (`~/.gitconfig`, `$XDG_CONFIG_HOME/git/`), where a hooks path or an alias
     reaches every repository.
     """
-    home = pathlib.Path.home()
-    xdg = pathlib.Path(os.environ.get("XDG_CONFIG_HOME") or home / ".config")
-    if path == (home / ".gitconfig").resolve() or path.is_relative_to(
-        (xdg / "git").resolve()
-    ):
+    gitconfig, xdg_git = _git_configs()
+    if path == gitconfig or path.is_relative_to(xdg_git):
         return True
     planning = pathlib.Path(entry["planning_dir"]).resolve()
     return path.is_relative_to(_route_repo(entry)) and not path.is_relative_to(planning)
@@ -95,14 +104,12 @@ def _held_path(path: pathlib.Path, entry: RegistryEntry) -> bool:
 def hunt_hold(event: Mapping[str, object], entry: RegistryEntry) -> str | None:
     """Return what a `hunt-` agent's call does that its find-only brief rules out.
 
-    A commit, a git config write or an inline alias (writes_git_config); commit
-    plumbing, an alias that runs one, a git subcommand the hook cannot read, and
-    inside the route's repository any git but a read or a clone out of it
-    (hunter_git); a file written by
-    an edit tool, a redirect or `tee` that _held_path holds, or one the hook cannot
-    read. None for any other call. Hunters under a find-only brief committed, changed
-    the hooks path and wrote outside their clone (F109). A backstop against a slip,
-    not a sandbox: `sed -i`, `cp`/`mv` and a script's own writes pass.
+    A commit, a git config write or an inline alias (writes_git_config) in a Bash call;
+    a file an edit tool writes that _held_path holds: an edit runs in the harness, out
+    of bubblewrap's reach. None for any other call: the rest of a hunter's shell runs
+    with the route's repository read-only (bounded). Hunters under a find-only brief
+    committed, changed the hooks path and wrote outside their clone (F109); a refusal
+    names the rule, where a read-only file system only fails.
     """
     tool_input = as_dict(event.get("tool_input")) or {}
     cwd = event.get("cwd")
@@ -110,34 +117,110 @@ def hunt_hold(event: Mapping[str, object], entry: RegistryEntry) -> str | None:
     tool = event.get("tool_name")
     if tool == "Bash":
         command = str(tool_input.get("command") or "")
-        held = (
-            "a commit"
-            if makes_commit(command, here)
-            else "a git config write or an inline alias"
-            if writes_git_config(command, here)
-            else hunter_git(command, here, str(_route_repo(entry)))
-        )
-        if held:
-            return held
-        paths = written_paths(command, here)
-        if paths is None or None in paths:
-            return "a write the hook cannot read"
-    elif tool in EDITS:
-        raw = str(tool_input.get("file_path") or tool_input.get("notebook_path") or "")
-        paths = [(pathlib.Path(here or ".") / raw).resolve()] if raw else []
-    else:
+        if makes_commit(command, here):
+            return "a commit"
+        if writes_git_config(command, here):
+            return "a git config write or an inline alias"
         return None
-    for path in paths:
-        if path is not None and _held_path(path, entry):
-            return f"a write of {path}"
+    if tool not in EDITS:
+        return None
+    raw = str(tool_input.get("file_path") or tool_input.get("notebook_path") or "")
+    path = (pathlib.Path(here or ".") / raw).resolve() if raw else None
+    if path is not None and _held_path(path, entry):
+        return f"a write of {path}"
     return None
+
+
+def bwrap() -> str | None:
+    """Return bubblewrap's path where it can create a namespace here, else None.
+
+    Probed with `bwrap --dev-bind / / true` once per hook process (one event): a host
+    without unprivileged user namespaces has the binary and cannot run it.
+    """
+    from shutil import which  # shutil loads bz2, lzma and zlib: the hunter path alone
+
+    path = which("bwrap")
+    if path is None:
+        return None
+    try:
+        probe = subprocess.run(
+            [path, "--dev-bind", "/", "/", "true"],
+            capture_output=True,
+            timeout=PROBE_S,
+            check=False,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return None
+    return path if probe.returncode == 0 else None
+
+
+def bounded(command: str, entry: RegistryEntry, path: str) -> str:
+    """Return command run by bubblewrap at path with the route's repository read-only.
+
+    The whole file system is bound as it is, then the repository and its git common dir
+    (where the marker sits, apart from the repository for a linked worktree) read-only,
+    the planning dir inside it writable again, and the global git config read-only: a
+    hooks path or an alias set there reaches every repository. The command runs as
+    `bash -c` in the directory the call runs in; its output and exit status are its own.
+    """
+    repo = _route_repo(entry)
+    common = pathlib.Path(entry["marker"]).resolve().parent
+    planning = pathlib.Path(entry["planning_dir"]).resolve()
+    args = [path, "--dev-bind", "/", "/", "--ro-bind", str(repo), str(repo)]
+    if not common.is_relative_to(repo):
+        args += ["--ro-bind", str(common), str(common)]
+    if planning.is_relative_to(repo):
+        args += ["--bind", str(planning), str(planning)]
+    for config in _git_configs():
+        args += ["--ro-bind-try", str(config), str(config)]
+    return shlex.join([*args, "--", "bash", "-c", command])
+
+
+def hunter_pre(event: Mapping[str, object], entry: RegistryEntry) -> int:
+    """Run the checks inside a `hunt-` agent: hunt_hold, then its shell bounded.
+
+    A Bash call hunt_hold passes is answered with `updatedInput`, the command bounded
+    and every other input key kept, where bubblewrap runs (bwrap); where it does not,
+    the call passes and the lead's `hunt-` dispatch was told so. Fail closed: a hold or
+    a rewrite that raises refuses the call, unlike the hook's other checks.
+
+    Returns:
+        The hook's exit code, always 0.
+    """
+    find_only = (
+        "a hunter is find-only (references/briefs/hunt-brief.md, F109), and its fix "
+        "goes to a task group after the user's triage."
+    )
+    try:
+        if act := hunt_hold(event, entry):
+            return deny(f"{act} is refused: {find_only}")
+        if event.get("tool_name") != "Bash" or (path := bwrap()) is None:
+            return 0
+        tool_input = dict(as_dict(event.get("tool_input")) or {})
+        tool_input["command"] = bounded(
+            str(tool_input.get("command") or ""), entry, path
+        )
+    # an unreadable marker's arguments exit in argparse: SystemExit refuses it too
+    except (Exception, SystemExit):  # noqa: BLE001 — refused, never let through
+        return deny(f"the read-only boundary could not be set up: {find_only}")
+    print(
+        json.dumps(
+            {
+                "hookSpecificOutput": {
+                    "hookEventName": "PreToolUse",
+                    "updatedInput": tool_input,
+                }
+            }
+        )
+    )
+    return 0
 
 
 def agent_pre(event: Mapping[str, object], session: str, entry: RegistryEntry) -> int:
     """Run the checks inside a route's agent.
 
     Inside an `exec-` agent the context stop (F75) and a commit held for a ruling
-    (F59); inside a `hunt-` agent the find-only hold (hunt_hold) alone.
+    (F59); inside a `hunt-` agent hunter_pre alone.
 
     Returns:
         The hook's exit code, always 0.
@@ -149,12 +232,8 @@ def agent_pre(event: Mapping[str, object], session: str, entry: RegistryEntry) -
     name = agent_name(transcript)
     # An agent's id is `a<name>-<hash>` when the meta file lacks the name.
     name = str(name or id_name(agent))
-    if name.startswith(HUNT) and (act := hunt_hold(event, entry)):
-        return deny(
-            f"{act} is refused: a hunter is find-only (references/briefs/"
-            "hunt-brief.md, F109), and its fix goes to a task group after the "
-            "user's triage."
-        )
+    if name.startswith(HUNT):
+        return hunter_pre(event, entry)
     if not name.startswith(EXEC):
         return 0
     command = str((as_dict(event.get("tool_input")) or {}).get("command") or "")
