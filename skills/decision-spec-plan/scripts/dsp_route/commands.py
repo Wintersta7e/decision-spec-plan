@@ -58,6 +58,29 @@ TAG_LISTS = re.compile(
     r"-[ln]\d*|-i|--(list|ignore-case|column|no-column|color)"
     r"|--(sort|format|contains|no-contains|merged|no-merged|points-at)(=.*)?"
 )
+# `git clone`'s options that take a value — a long one, or any abbreviation of it,
+# from the next word unless after an `=`; a short letter from the rest of its word,
+# else the next.
+CLONE_VALUED = (
+    "template",
+    "server-option",
+    "filter",
+    "origin",
+    "branch",
+    "revision",
+    "upload-pack",
+    "reference",
+    "reference-if-able",
+    "depth",
+    "shallow-since",
+    "shallow-exclude",
+    "separate-git-dir",
+    "ref-format",
+    "jobs",
+    "config",
+    "bundle-uri",
+)
+CLONE_SHORT = "objuc"
 # Words that run the next word as a command (`sudo tee f`).
 RUNS_NEXT = {"sudo", "doas", "env", "command", "exec", "nohup", "nice", "stdbuf"}
 # `git config`'s read actions, the options that only shape a read (those in
@@ -511,6 +534,56 @@ def _git_dir(here: str | None, opts: shell_cmd.GitOptions) -> str | None:
     return here
 
 
+def _clone_targets(args: Sequence[shell_cmd.Word]) -> list[shell_cmd.Word] | None:
+    """Return the words naming where `git clone <args>` writes, else None.
+
+    Its destination, the last word that is neither an option nor an option's value
+    (CLONE_VALUED, CLONE_SHORT), and each `--separate-git-dir`. None when git names the
+    destination itself (after the source, in the current directory) or a computed word
+    may be an option.
+    """
+    targets: list[shell_cmd.Word] = []
+    plain: list[shell_cmd.Word] = []
+    words = iter(args)
+    for w in words:
+        t = w.text
+        if not w.static:
+            return None
+        if t == "--":
+            plain += words
+        elif t.startswith("--"):
+            name, eq, value = t[2:].partition("=")
+            full = name if name in CLONE_VALUED else None
+            full = full or next((o for o in CLONE_VALUED if o.startswith(name)), None)
+            to = shell_cmd.literal(value) if eq else next(words, None) if full else None
+            if full == "separate-git-dir":
+                targets.append(to or shell_cmd.literal(""))
+        elif t.startswith("-") and t != "-":
+            short = [i for i, ch in enumerate(t) if ch in CLONE_SHORT]
+            if short and short[0] == len(t) - 1:
+                _ = next(words, None)
+        else:
+            plain.append(w)
+    return [*targets, plain[-1]] if len(plain) > 1 else None
+
+
+def _clone_out(
+    here: str | None, args: Sequence[shell_cmd.Word], root: pathlib.Path
+) -> bool:
+    """Return whether every place `git clone <args>` run in here writes is out of root.
+
+    False when one is a word the hook cannot compute, or relative to an unknown here.
+    """
+    targets = _clone_targets(args)
+    for w in targets or ():
+        to = pathlib.Path(_home(w.text)) if w.static and w.text else None
+        if to is None or not (here or to.is_absolute()):
+            return False
+        if pathlib.Path(here or "/", to).resolve().is_relative_to(root):
+            return False
+    return targets is not None
+
+
 def hunter_git(command: str, cwd: str | None, repo: str) -> str | None:
     """Return what the command's git does that a hunter may not, past makes_commit.
 
@@ -519,7 +592,8 @@ def hunter_git(command: str, cwd: str | None, repo: str) -> str | None:
     the command's directory, its command judged in turn; an alias it cannot read is
     held. Inside repo — the directory in effect for each command, after a `cd` and
     `-C`; one the hook cannot compute counts as inside — only what _reads_only passes:
-    a denylist of writing forms never ends (notes, replace, symbolic-ref, reset, …).
+    a denylist of writing forms never ends (notes, replace, symbolic-ref, reset, …) —
+    and a `git clone` writing only outside repo (_clone_out), the brief's first step.
     None when nothing is held. For a hunter alone: other agents' commits are judged by
     COMMITTING.
     """
@@ -551,7 +625,8 @@ def hunter_git(command: str, cwd: str | None, repo: str) -> str | None:
         if resolved != sub and (held := _hunter_writes(resolved, words)):
             return f"{held} through the alias `git {sub}`"
         inside = here is None or pathlib.Path(here).resolve().is_relative_to(root)
-        if inside and not _reads_only(resolved, words):
+        clones_out = resolved == "clone" and _clone_out(here, words, root)
+        if inside and not (_reads_only(resolved, words) or clones_out):
             return (
                 f"`git {resolved}` in the hunted repository, where a hunter only reads"
             )

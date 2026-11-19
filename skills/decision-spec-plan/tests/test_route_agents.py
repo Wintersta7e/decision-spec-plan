@@ -326,6 +326,21 @@ HELD_ALIASES = {
     "sh": "!git commit",
 }
 HELD_ALIAS_FORMS = 4
+# clones of the hunted repository {r} run inside it that write into it, or where the
+# hook cannot tell: {out} is outside it, a word that only looks like the destination
+CLONE_INTO_REPO = (
+    "git clone -q file://{r} {r}/x",
+    "git clone -q file://{r}",  # git names the destination after the source, here
+    "git clone file://{r} x",
+    'git clone file://{r} "$D"',
+    "git clone file://{r} -b {out}",
+    "git clone file://{r} --br {out}",
+    "git clone file://{r} -qb {out}",
+    "git clone --separate-git-dir={r}/g file://{r} {out}",
+    "git clone --separate-git-dir {r}/g file://{r} {out}",
+    "git clone $OPTS file://{r} {out}",
+)
+CLONE_INTO_REPO_FORMS = 10
 
 
 class HuntAgent(Route):
@@ -494,6 +509,19 @@ class HuntAgent(Route):
             ("(cd /x) && echo x > f", "deny:find-only"),
         ):
             _ = self.hook(want, self.call("h1", bash, {"command": command}, r))
+
+    def test_clone_out_of_the_repo(self) -> None:
+        """The brief's clone runs from the repository; a clone into it is held."""
+        bash, r, out = "Bash", self.R, self.T / "hunt/env"
+        clone = f"git clone -q file://{r} {out}"
+        for cwd in (r, self.P, self.T):
+            _ = self.hook("silent", self.call("h1", bash, {"command": clone}, str(cwd)))
+        self.ok("clone forms", len(CLONE_INTO_REPO) == CLONE_INTO_REPO_FORMS)
+        for form in CLONE_INTO_REPO:
+            command = form.format(r=r, out=out)
+            _ = self.hook(
+                "deny:find-only", self.call("h1", bash, {"command": command}, str(r))
+            )
 
 
 class WaitsOnItsJob(Route):
