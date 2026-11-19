@@ -417,8 +417,19 @@ LOOP_WRITES = (
     ("b=a; unset b; echo x > repo$b/f", "deny:find-only"),
     ("for b in x y; do echo 1 > dir/$b; cp dir/$b dir/$b.bak; done", "silent"),
     ("for b in x y; do echo 1 > dir/${{b}}; git add .; done", "silent"),
+    # anywhere in the text, what may set any variable leaves every one unknown: a
+    # nameref, a function, a trap, a computed argument to a builtin that sets one
+    ("declare -n r=b; for b in a; do r=repo; echo x > $b/f; done", "deny:find-only"),
+    ("f(){{ b=repo; }}; for b in a; do f; echo x > $b/f; done", "deny:find-only"),
+    ("function f {{ :; }}; for b in a; do f; echo x > $b/f; done", "deny:find-only"),
+    ("trap 'b=repo' DEBUG; for b in a; do echo x > $b/f; done", "deny:find-only"),
+    ('for b in a; do read "$v"; echo x > $b/f; done', "deny:find-only"),
+    ('for b in a; do printf -v "$v" x; echo x > $b/f; done', "deny:find-only"),
+    ("f(){{ X=repo; }}; X=a; f; echo x > $X/f", "deny:find-only"),
+    ('export PATH="$PATH:/x"; for b in a; do echo x > dir/$b; done', "silent"),
+    ('for b in a; do printf %s "$x" > dir/$b; done', "silent"),
 )
-LOOP_WRITE_FORMS = 45
+LOOP_WRITE_FORMS = 54
 
 
 class HuntAgent(Route):
