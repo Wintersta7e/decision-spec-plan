@@ -6,10 +6,11 @@ rulings file changed after it last read it (F59); inside a `hunt-` agent the fin
 hold (F109).
 """
 
+import os
 import pathlib
 from collections.abc import Mapping
 
-from .commands import makes_commit, writes_git_config
+from .commands import hunter_git, makes_commit, writes_git_config, written_paths
 from .common import (
     EDITS,
     EXEC,
@@ -63,13 +64,40 @@ def unread_rulings(
     return [(f, f in last) for f in files if last.get(f, 0) < f.stat().st_mtime]
 
 
+def _held_path(path: pathlib.Path, entry: RegistryEntry) -> bool:
+    """Return whether a hunter may not write path.
+
+    One inside the route's repository and outside its planning dir, or a global git
+    config (`~/.gitconfig`, `$XDG_CONFIG_HOME/git/`), where a hooks path or an alias
+    reaches every repository.
+    """
+    home = pathlib.Path.home()
+    xdg = pathlib.Path(os.environ.get("XDG_CONFIG_HOME") or home / ".config")
+    if path == (home / ".gitconfig").resolve() or path.is_relative_to(
+        (xdg / "git").resolve()
+    ):
+        return True
+    marker_file = pathlib.Path(entry["marker"])
+    marker = load_json(marker_file)
+    # the marker sits in the repository's git common dir
+    repo = (route_args(marker).repo if "args" in marker else None) or (
+        marker_file.parent.parent
+    )
+    planning = pathlib.Path(entry["planning_dir"]).resolve()
+    return path.is_relative_to(pathlib.Path(repo).resolve()) and not (
+        path.is_relative_to(planning)
+    )
+
+
 def hunt_hold(event: Mapping[str, object], entry: RegistryEntry) -> str | None:
     """Return what a `hunt-` agent's call does that its find-only brief rules out.
 
-    A commit, a git config write or an inline alias (writes_git_config), or an edit
-    inside the route's repository and outside its planning dir; None for any other
-    call. Hunters under a find-only brief committed, changed the hooks path and wrote
-    outside their clone (F109). A backstop against a slip, not a sandbox.
+    A commit, a git config write or an inline alias (writes_git_config), commit
+    plumbing, a repository's alias or a git subcommand the hook cannot read
+    (hunter_git), and a file written by an edit tool, a redirect or `tee` that
+    _held_path holds; None for any other call. Hunters under a find-only brief
+    committed, changed the hooks path and wrote outside their clone (F109). A backstop
+    against a slip, not a sandbox: `sed -i`, `cp`/`mv` and git's path arguments pass.
     """
     tool_input = as_dict(event.get("tool_input")) or {}
     cwd = event.get("cwd")
@@ -81,22 +109,20 @@ def hunt_hold(event: Mapping[str, object], entry: RegistryEntry) -> str | None:
             return "a commit"
         if writes_git_config(command, here):
             return "a git config write or an inline alias"
+        if held := hunter_git(command, here):
+            return held
+        home = {"HOME": str(pathlib.Path.home())}
+        raws = [w.expand(home) for w in written_paths(command)]
+    elif tool in EDITS:
+        raws = [
+            str(tool_input.get("file_path") or tool_input.get("notebook_path") or "")
+        ]
+    else:
         return None
-    raw = str(tool_input.get("file_path") or tool_input.get("notebook_path") or "")
-    if tool not in EDITS or not raw:
-        return None
-    path = (pathlib.Path(here or ".") / raw).resolve()
-    marker_file = pathlib.Path(entry["marker"])
-    marker = load_json(marker_file)
-    # the marker sits in the repository's git common dir
-    repo = (route_args(marker).repo if "args" in marker else None) or (
-        marker_file.parent.parent
-    )
-    planning = pathlib.Path(entry["planning_dir"]).resolve()
-    if path.is_relative_to(pathlib.Path(repo).resolve()) and not path.is_relative_to(
-        planning
-    ):
-        return f"an edit of {path}"
+    for raw in filter(None, raws):
+        path = (pathlib.Path(here or ".") / raw).resolve()
+        if _held_path(path, entry):
+            return f"a write of {path}"
     return None
 
 

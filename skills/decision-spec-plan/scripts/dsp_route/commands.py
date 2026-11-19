@@ -17,6 +17,19 @@ import shell_cmd
 # Git commands that make a commit: one made before the agent re-reads a ruling skips it
 # (F59).
 COMMITTING = {"commit", "merge", "cherry-pick", "revert", "am", "pull", "rebase"}
+# Plumbing that makes a commit or points a ref at one, and `git stash`'s subcommands
+# that save one (a bare `stash` or one opening with an option pushes): held for a
+# hunter alone, beside COMMITTING.
+PLUMBING = {"commit-tree", "update-ref"}
+STASH_SAVES = {"push", "save", "store", "create"}
+# The config keys that pull in more config (`include.path`, `includeIf.<cond>.path`)
+# or define an alias, and the variables that pass git config through the environment.
+CONFIG_INDIRECT = ("alias.", "include.", "includeif.")
+CONFIG_VARS = re.compile(r"(?<![\w$])GIT_CONFIG_(?:PARAMETERS|COUNT|KEY_\d+)=")
+# Variables that point git at another config, so an alias read now may not be the one
+# git runs; and a subcommand word git can run (a computed one read as text is not).
+CONFIG_HOMES = re.compile(r"(?<![\w$])(?:HOME|XDG_CONFIG_HOME|GIT_\w+)=")
+GIT_WORD = re.compile(r"[A-Za-z0-9][\w.-]*")
 # `git config`'s read actions, the options that only shape a read (those in
 # CONFIG_VALUED take a value), and the subcommands that write (_config_writes).
 CONFIG_READS = {"--get", "--get-all", "--get-regexp", "--list", "-l"}
@@ -358,10 +371,10 @@ def _config_writes(args: Sequence[shell_cmd.Word]) -> bool:
 
 
 def _inline_alias(opts: shell_cmd.GitOptions) -> bool:
-    """Return whether git's own options set an alias (`-c alias.sv=commit`).
+    """Return whether git's options set an alias or include config (CONFIG_INDIRECT).
 
     The alias hides the subcommand it runs: `git -c alias.sv=commit sv` commits while
-    makes_commit reads `sv`.
+    makes_commit reads `sv`; `-c include.path=<file>` may define one.
     """
     for opt, value in opts:
         if opt in ("-c", "--config-env") and value is not None:
@@ -370,23 +383,100 @@ def _inline_alias(opts: shell_cmd.GitOptions) -> bool:
             key = opt.removeprefix("--config-env=")
         else:
             continue
-        if key.lower().startswith("alias."):
+        if key.lower().startswith(CONFIG_INDIRECT):
             return True
     return False
+
+
+def _git_commands(command: str, cwd: str | None) -> list[shell_cmd.Cmd]:
+    """Return the commands makes_commit reads: bash_commands, else text_commands."""
+    cmds = bash_commands(command, cwd)
+    return text_commands(command) if cmds is None else cmds
 
 
 def writes_git_config(command: str, cwd: str | None = None) -> bool:
     """Return whether the command writes git's config or runs git with an inline alias.
 
-    Read as makes_commit reads it; any other `-c k=v` is judged by its subcommand.
+    Read as makes_commit reads it; any other `-c k=v` is judged by its subcommand. A
+    git command beside a GIT_CONFIG_* assignment (CONFIG_VARS) counts as an inline
+    alias: read in the text, so `export` and `env` set it alike.
     """
-    cmds = bash_commands(command, cwd)
-    if cmds is None:
-        cmds = text_commands(command)
-    for c in cmds:
+    found = False
+    for c in _git_commands(command, cwd):
         if (g := shell_cmd.git_args(c)) is None:
             continue
+        found = True
         opts, sub, args = g
         if _inline_alias(opts) or (sub == "config" and _config_writes(args)):
             return True
-    return False
+    return found and bool(CONFIG_VARS.search(command))
+
+
+def _hunter_writes(sub: str, args: Sequence[shell_cmd.Word]) -> str | None:
+    """Return what `git <sub> <args>` writes that a hunter may not, else None."""
+    if sub in COMMITTING and not (sub == "merge" and _ff_only(args)):
+        return "a commit"
+    first = args[0].text if args else ""
+    if sub in PLUMBING or (
+        sub == "stash" and (not first or first.startswith("-") or first in STASH_SAVES)
+    ):
+        return f"a commit by `git {sub}`"
+    if sub == "config" and _config_writes(args):
+        return "a git config write"
+    return None
+
+
+def hunter_git(command: str, cwd: str | None = None) -> str | None:
+    """Return what the command's git does that a hunter may not, past makes_commit.
+
+    A subcommand the hook cannot read (computed: `git $x`), commit plumbing or a saving
+    stash (PLUMBING, STASH_SAVES), and an alias read as push_guard.unalias reads it, its
+    command judged in turn; an alias it cannot read is held. None when nothing is held.
+    For a hunter alone: other agents' commits are judged by COMMITTING.
+    """
+    import push_guard  # only a hunter's git command needs it
+
+    config_env = bool(CONFIG_HOMES.search(command))
+    for c in _git_commands(command, cwd):
+        if (g := shell_cmd.git_args(c)) is None:
+            continue
+        opts, sub, args = g
+        if sub is None or (c.loose and sub and not GIT_WORD.fullmatch(sub)):
+            return "a git subcommand the hook cannot read"
+        if held := _hunter_writes(sub, args):
+            return held
+        repo, unknown = cwd, False
+        for opt, value in opts:
+            if opt == "-C":  # a computed one: the alias's config cannot be read
+                unknown |= not (value and value.static)
+                repo = str(pathlib.Path(repo or ".") / value.text) if value else repo
+        resolved, texts, form = push_guard.unalias(
+            repo, sub, [w.text for w in args], opts, config_env=config_env or unknown
+        )
+        if form or resolved is None:
+            return form or "a git alias the hook cannot read"
+        if resolved != sub and (
+            held := _hunter_writes(resolved, [shell_cmd.literal(t) for t in texts])
+        ):
+            return f"{held} through the alias `git {sub}`"
+    return None
+
+
+def written_paths(command: str) -> list[shell_cmd.Word]:
+    """Return the files the command writes by an output redirect or a `tee`.
+
+    `tee`'s words after it that are not options, wherever it runs (`sudo tee`). Empty
+    when the reader cannot follow the text.
+    """
+    try:
+        out = [t for t, _ in shell_cmd.redirects(command)]
+        found = shell_cmd.events(command)
+    except Exception:  # noqa: BLE001 — unreadable text writes no file the hook can name
+        return []
+    for _, c in found:
+        if isinstance(c, shell_cmd.Cmd) and "tee" in (
+            names := [_basename(t) for t in c.argv]
+        ):
+            i = names.index("tee")
+            out += [w for w in c.words[i + 1 :] if not w.text.startswith("-")]
+    return out
