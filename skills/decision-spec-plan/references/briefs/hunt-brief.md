@@ -51,10 +51,11 @@ the product in your clone for a probe.
 - Read only inside your clone, the findings dir and ‹ADAPT: the caches the build needs›: no
   `find ~`, no listing or search of the home directory or the filesystem outside them.
 - No network beyond what the cached dependencies need.
-- The route's hook refuses a hunter's commit (plumbing and a saving `git stash` included), git
-  config write, inline alias or config include, a repository alias that runs one of those, any git
-  inside the route's repository but a read or a clone out of it, and a write into that repository
-  outside its planning dir by an edit tool, a redirect or `tee`; your clone's own git stays free.
+- The route's hook refuses a hunter's commit (plumbing included), git config write, inline alias
+  or config include, a repository alias that runs one of those, any git inside the route's
+  repository but a read or a clone out of it (a saving `git stash` there included), and a write
+  into that repository outside its planning dir by an edit tool, a redirect or `tee`; your clone's
+  own git, `git stash` included, stays free.
   It is a backstop against a slip, not a sandbox: it cannot tell `sed -i` or `cp` in your clone
   from the same in the repository, so this rule binds where the hook cannot see. **Why:** hunters
   under a find-only brief committed, changed the hooks path and wrote outside their tree (F109).
