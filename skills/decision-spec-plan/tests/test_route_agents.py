@@ -161,7 +161,11 @@ class ExecAgent(Route):
         _ = self.hook("silent", self.inagent("x1", "git log --grep 'commit'"))
         _ = self.hook(held, self.inagent("x1", "sudo git commit -m x"))
         _ = self.hook(held, self.inagent("x1", "git $'commit' -m x"))
-        _ = self.hook(held, self.inagent("x1", "X='git commit -m x'; bash -c $X"))
+        # a computed `-c` body may be any command: denied as an outward action first
+        _ = self.hook(
+            "deny:bash. running a computed string",
+            self.inagent("x1", "X='git commit -m x'; bash -c $X"),
+        )
         _ = self.hook(held, self.inagent("x1", r"bash <<EOF\ngit commit -m x\nEOF"))
         _ = self.hook(held, self.inagent("x1", "git merge --ff-only --no-ff lane"))
         _ = self.hook("silent", self.inagent("x1", "git merge --no-ff --ff-only lane"))

@@ -4,6 +4,12 @@
 The lead asks the user before each outward action, and a route agent never runs one
 (F81). A review comment or note posted to GitHub or GitLab is held while the review's
 decision document fails its check (F104).
+
+Shapes held past the inert forms (F81):
+- a `uv run` tool given by path (`./x/pytest`) may be any program: only a bare name;
+- `coverage run` runs any script, so coverage is off the uv list;
+- a computed `eval` or shell `-c` body (`eval $Z`, `sudo bash -c "$C"`) may run any;
+- in text the reader cannot follow, every computed word may be a publisher's verb.
 """
 
 import functools
@@ -13,7 +19,7 @@ from collections.abc import Mapping, Sequence
 
 import shell_cmd
 
-from .commands import HOSTS, PUBLISHERS, bash_commands, text_commands
+from .commands import HOSTS, PUBLISHERS, Body, bash_commands, text_commands
 from .common import as_dict
 
 # Outward actions on the hosted repository: the lead asks the user each time and a route
@@ -74,6 +80,7 @@ INERT = {
 # The only tools after which a `uv run`'s computed word is an argument: each runs no
 # command it is given. Any other may (a shell, an interpreter, `doas`, `uv` itself), and
 # a list of those failed open for each one it missed; `python -m pytest` stays a verb.
+# A path to one may be any program, and `coverage run` runs any script.
 UV_TOOLS = {
     "pytest",
     "ruff",
@@ -82,7 +89,6 @@ UV_TOOLS = {
     "pyright",
     "black",
     "isort",
-    "coverage",
     "deptry",
     "vulture",
     "lint-imports",
@@ -95,9 +101,9 @@ def _pair(tool: str, sub: str, second: shell_cmd.Word) -> bool:
     An npm or pnpm package script (`npm run test:unit`) not named for git, a host
     tool or a publisher, the tool's own name too (`npm run npm $V`: bash_commands
     reads no second word of the same name as a command of its own), a UV_TOOLS tool
-    under uv, or a compose read (`docker compose ps`). `yarn run` and `bun run` run
-    any installed bin, so neither has one. An option before the script or tool may
-    take the next word as its value, so it leaves the form off.
+    under uv by its bare name, or a compose read (`docker compose ps`). `yarn run` and
+    `bun run` run any installed bin, so neither has one. An option before the script
+    or tool may take the next word as its value, so it leaves the form off.
     """
     t = second.text
     if not second.static or t.startswith("-"):
@@ -106,7 +112,7 @@ def _pair(tool: str, sub: str, second: shell_cmd.Word) -> bool:
     if sub == "run" and tool in ("npm", "pnpm"):
         return name not in ("git", *HOSTS, *PUBLISHERS)
     if sub == "run" and tool == "uv":
-        return name in UV_TOOLS
+        return t in UV_TOOLS
     return tool == "docker" and sub == "compose" and t in ("ps", "logs")
 
 
@@ -126,14 +132,18 @@ def _argued(tool: str, words: Sequence[shell_cmd.Word]) -> int | None:
     return 2 if len(words) > 1 and _pair(tool, first.text, words[1]) else None
 
 
-def publish_word(tool: str, w: shell_cmd.Word, *, argument: bool = False) -> bool:
+def publish_word(
+    tool: str, w: shell_cmd.Word, *, argument: bool = False, loose: bool = False
+) -> bool:
     """Return whether word w of a PUBLISHERS command may publish.
 
     It may be its verb, a push flag or output (`--push=true`, `-o type=registry`), a
     gradle task that abbreviates `publish…` (`pTML`), or a computed word that may be the
     verb (`npm $V`). A computed word with a path or an `=` outside its expansions is a
     value (`-v $PWD:/app`, `-e K=$V`), and so is an argument, one after the command's
-    inert subcommand (_argued: `cargo test $1`); a false match only asks.
+    inert subcommand (_argued: `cargo test $1`); a false match only asks. Loose (read
+    from text the reader cannot follow), a computed word with a path or `=` may be the
+    verb too.
     """
     t = w.text
     if t in PUBLISHERS[tool] or t.startswith("--push"):
@@ -145,7 +155,7 @@ def publish_word(tool: str, w: shell_cmd.Word, *, argument: bool = False) -> boo
     if tool in ("gradle", "gradlew") and re.match(r"(?i)p", t.rpartition(":")[2]):
         return True
     bare = re.sub(r"\$\{[^}]*\}|\$\([^)]*\)|`[^`]*`", "", t)
-    return not (w.static or argument or re.search(r"[/=]", bare))
+    return not (w.static or argument or (not loose and re.search(r"[/=]", bare)))
 
 
 def _api_call(rest: Sequence[str]) -> tuple[str | None, list[str]]:
@@ -212,12 +222,23 @@ def _gh_outward(cmd: shell_cmd.Cmd) -> bool:
 
 
 def outward_cmd(cmd: shell_cmd.Cmd) -> bool:
-    """Return whether cmd, from a `gh`, `git` or publisher's word on, acts outward."""
+    """Return whether cmd, from a `gh`, `git` or publisher's word on, acts outward.
+
+    A computed body (Body) may be any command. Loose, a publisher's words have no inert
+    subcommand: every computed word may be the verb.
+    """
+    if isinstance(cmd, Body):
+        return True
     if cmd.name in PUBLISHERS:
         rest = cmd.words[1:]
-        start = _argued(cmd.name, rest)
+        start = None if cmd.loose else _argued(cmd.name, rest)
         return any(
-            publish_word(cmd.name, w, argument=start is not None and i >= start)
+            publish_word(
+                cmd.name,
+                w,
+                argument=start is not None and i >= start,
+                loose=cmd.loose,
+            )
             for i, w in enumerate(rest)
         )
     if cmd.name == "gh":

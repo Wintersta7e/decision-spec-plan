@@ -161,6 +161,8 @@ POSITIONAL = {"timeout": 1, "taskset": 1}
 # Options after which a wrapper's rest is a lookup, not a command: `command -v git`.
 WRAPPER_STOPS = {"command": {"-v", "-V"}}
 SHELLS = {"bash", "sh", "zsh", "dash", "ksh"}
+# A shell's options that take the next word as their value.
+SHELL_VALUED = {"-o", "+o", "-O", "+O", "--rcfile", "--init-file"}
 ASSIGN = re.compile(r"[A-Za-z_][A-Za-z0-9_]*=")
 TEMP = "\0temp"  # a `$(mktemp …)` value: a fresh directory, in no repository
 # A run of characters with no meaning to the scanner, read at once: one at a time was
@@ -823,7 +825,7 @@ def _shell(name: str, words: list[Word], assigns: list[Assign]) -> Iterator[Even
     while i < len(words) and words[i].text[:1] in "-+" and words[i].text != "--":
         t = words[i].text
         shell_c |= not t.startswith("--") and "c" in t
-        i += 2 if t in ("-o", "+o", "-O", "+O", "--rcfile", "--init-file") else 1
+        i += 2 if t in SHELL_VALUED else 1
     if shell_c and i < len(words) and words[i].static:
         yield "open", None
         yield from _prefixed(assigns, _parse(scan(words[i].text)[0]))
