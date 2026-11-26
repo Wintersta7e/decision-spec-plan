@@ -73,6 +73,15 @@ SCRIPT_DEPTH = 3
 HOSTS = ("gh", "glab")
 # How many words after a `git`, `gh`, `glab` or publisher's word text_commands reads.
 TEXT_WORDS = 40
+# Commands that run the command after their options (`sudo -u x bash -c '…'`), with the
+# options that take the next word as their value; find runs one after each FIND_RUNS
+# word. The reader unwraps none of them, so a shell or `eval` they run is read here.
+RUNNERS = {
+    "sudo": {"-u", "-g", "-C", "-D", "-h", "-p", "-r", "-t", "-U", "-T", "-R"},
+    "doas": {"-u", "-C"},
+    "xargs": {"-I", "-n", "-L", "-P", "-s", "-d", "-E", "-a"},
+}
+FIND_RUNS = {"-exec", "-execdir", "-ok", "-okdir"}
 
 
 class Body(shell_cmd.Cmd):
@@ -221,23 +230,151 @@ def _dir_after(c: shell_cmd.Cmd, here: str | None) -> str | None:
 def _tools(c: shell_cmd.Cmd) -> list[shell_cmd.Cmd] | None:
     """Return each `git` command in c and its first host tool or publisher, from there.
 
-    None when a git subcommand is computed, or for an `eval` or shell `-c` word the
-    reader did not unwrap (`sudo bash -c '…'`): its body is then read as text. Every
-    `git` word counts (`sudo -u git git push`); only the first `gh`, `glab` or
-    publisher, whose check reads all the words after it (each later one took the line
-    to quadratic time).
+    None when a git subcommand is computed. Every `git` word counts (`sudo -u git git
+    push`); only the first `gh`, `glab` or publisher, whose check reads all the words
+    after it (each later one took the line to quadratic time).
     """
     out: list[shell_cmd.Cmd] = []
     names = [_basename(w) for w in c.argv]
     for i, name in enumerate(names):
-        if name == "eval" or _shell_body(c.words, i) is not None:
-            return None
         if name == "git" or (name in (*HOSTS, *PUBLISHERS) and name not in names[:i]):
             cmd = shell_cmd.Cmd([], c.words[i:])
             if (g := shell_cmd.git_args(cmd)) and g[1] is None:
                 return None
             out.append(cmd)
     return out
+
+
+def _positions(words: Sequence[shell_cmd.Word]) -> list[int]:
+    """Return where the words name a command: the first, and each one a RUNNERS runs.
+
+    After a runner's options (`sudo -u x cmd`, `xargs -I{} cmd`), or after each of
+    find's FIND_RUNS words. Only there does an `eval` or shell word run a body:
+    anywhere in the words, `echo eval` dropped the line and the script after it.
+    """
+    out: list[int] = []
+    i = 0
+    while i < len(words):
+        out.append(i)
+        name = _basename(words[i].text)
+        if name == "find":
+            return out + [k + 1 for k, w in enumerate(words) if w.text in FIND_RUNS]
+        if name not in RUNNERS:
+            break
+        j = i + 1
+        while (
+            j < len(words) and words[j].text.startswith("-") and words[j].text != "--"
+        ):
+            j += 2 if words[j].text in RUNNERS[name] else 1
+        i = j + (j < len(words) and words[j].text == "--")
+    return out
+
+
+def _body_of(e: shell_cmd.Opaque, command: str) -> Body | None:
+    """Return a Body for text a shell runs that the reader cannot see, when computed.
+
+    A computed `eval` or `-c` string (`eval $Z`), a shell's computed script path
+    (`bash "$F"`), or a shell reading stdin in a command with an expansion (`echo "$C"
+    | bash`, `bash <<< "$C"`): each may run any command. None for a static one.
+    """
+    if e.script is not None:
+        computed = not (e.sourced or e.script.static)
+        return Body([], [shell_cmd.literal(str(e)), e.script]) if computed else None
+    stdin = not e.words or e.words[0].text == "-"
+    if any(not w.static for w in e.words) or (
+        stdin and not e.sourced and re.search(r"[$`]", command)
+    ):
+        return Body([], [shell_cmd.literal(str(e)), *e.words])
+    return None
+
+
+def _runs(
+    c: shell_cmd.Cmd, read: _Text, here: str | None, env: dict[str, str]
+) -> tuple[list[shell_cmd.Cmd], bool]:
+    """Return the commands of each shell or `eval` c runs, and whether one is unread.
+
+    Only where c's words name a command (_positions): `sudo bash -c '…'`, `xargs sh -c
+    "$C"`, read as bash reads them.
+    """
+    out: list[shell_cmd.Cmd] = []
+    unread = False
+    for i in _positions(c.words):
+        if _basename(c.words[i].text) in ("eval", *shell_cmd.SHELLS):
+            ran, missed = _walk(shell_cmd.command_events(c.words[i:]), read, here, env)
+            out += ran
+            unread |= missed
+    return out, unread
+
+
+def _cmd(
+    event: shell_cmd.Cmd, read: _Text, here: str | None, env: dict[str, str]
+) -> tuple[list[shell_cmd.Cmd], bool, str | None]:
+    """Return a simple command's commands, whether a part is unread, and the dir after.
+
+    A script it runs by path is read in turn (_nested), a shell or `eval` it runs
+    through a runner too (_runs).
+    """
+    c = _resolve(event, env, read.command)
+    if c is None:
+        return [], True, here
+    if isinstance(c, list):
+        return c, False, here
+    script, text = _script(c, here, read.depth)
+    if text is not None:
+        more = _nested(read, script, text, here)
+        return more or [], more is None, here
+    tools = _tools(c)
+    ran, missed = _runs(c, read, here, env)
+    return [*(tools or []), *ran], tools is None or missed, _dir_after(c, here)
+
+
+def _opaque(
+    e: shell_cmd.Opaque, read: _Text, here: str | None
+) -> tuple[list[shell_cmd.Cmd], bool]:
+    """Return the commands of text a shell runs and whether it is unread.
+
+    A script read in turn; one the reader cannot see adds a Body when computed
+    (_body_of).
+    """
+    script, text = _script(e, here, read.depth)
+    if (more := _nested(read, script, text, here)) is not None:
+        return more, False
+    body = _body_of(e, read.command)
+    return [body] if body else [], True
+
+
+def _walk(
+    found: Sequence[shell_cmd.Event],
+    read: _Text,
+    cwd: str | None,
+    env: dict[str, str],
+) -> tuple[list[shell_cmd.Cmd], bool]:
+    """Return the commands of the events found, and whether a part could not be read.
+
+    A part that cannot be read leaves the rest read: dropped whole to the word reader,
+    which reads no script, `echo ls | bash; bash pub.sh` passed its publish.
+    """
+    out: list[shell_cmd.Cmd] = []
+    unread = False
+    # each shell's directory, where a script path is read from: None after a `cd` to a
+    # computed path or a sourced script the reader cannot see
+    dirs = [cwd]
+    for kind, event in found:
+        if kind == "open":
+            dirs.append(dirs[-1])
+            continue
+        if event is None:  # a subshell's close
+            dirs = dirs[:-1] or dirs
+            continue
+        if isinstance(event, shell_cmd.Cmd):
+            ran, missed, dirs[-1] = _cmd(event, read, dirs[-1], env)
+        else:
+            ran, missed = _opaque(event, read, dirs[-1])
+            if missed and event.sourced:
+                dirs[-1] = None
+        out += ran
+        unread |= missed
+    return out, unread
 
 
 def bash_commands(
@@ -248,49 +385,20 @@ def bash_commands(
     Each is read from that word on (`sudo git commit`), as bash reads the command
     (shell_cmd.py): regexes over the text missed wrapped and quoted forms and
     backtracked for 36 s on a long line. A script file it runs is read in turn, three
-    deep. None when a part cannot be read — stdin or an unreadable script fed to a
-    shell, a computed `bash -c` or `eval`, a computed git subcommand — or the reader
-    fails on it (nesting too deep): the caller then reads the words (text_commands). A
-    computed command name the command's own assignments do not fill (`$PY -m pytest`)
-    has only its own words read so: read with the whole text, a commit message naming
-    `gh release create` beside it was held.
+    deep. A part that cannot be read — stdin or an unreadable script fed to a shell, a
+    computed `bash -c` or `eval`, a computed git subcommand — adds the command's words
+    (text_commands), and a computed body a Body (_body_of); None when the reader fails
+    on the command (nesting too deep): the caller then reads the words. A computed
+    command name the command's own assignments do not fill (`$PY -m pytest`) has only
+    its own words read so: read with the whole text, a commit message naming `gh release
+    create` beside it was held.
     """
     if (parsed := _read(command)) is None:
         return None
     found, twice = parsed
-    read = _Text(command, depth, twice)
-    out: list[shell_cmd.Cmd] = []
-    # each shell's directory, where a script path is read from: None after a `cd` to a
-    # computed path
-    dirs = [cwd]
     # the command's own `NAME=value` assignments (`G=gh; $G pr merge 5`)
-    env: dict[str, str] = {}
-    for kind, event in found:
-        if kind == "open":
-            dirs.append(dirs[-1])
-            continue
-        if event is None:  # a subshell's close
-            dirs = dirs[:-1] or dirs
-            continue
-        here = dirs[-1]
-        c = None
-        if isinstance(event, shell_cmd.Cmd):
-            c = _resolve(event, env, command)
-            if c is None:
-                return None
-            if isinstance(c, list):
-                out += c
-                continue
-        script, text = _script(event if c is None else c, here, depth)
-        if c is not None and text is None:
-            dirs[-1] = _dir_after(c, here)
-            more = _tools(c)
-        else:
-            more = _nested(read, script, text, here)
-        if more is None:
-            return None
-        out += more
-    return out
+    out, unread = _walk(found, _Text(command, depth, twice), cwd, {})
+    return out + text_commands(command) if unread else out
 
 
 def text_commands(command: str) -> list[shell_cmd.Cmd]:
@@ -302,7 +410,8 @@ def text_commands(command: str) -> list[shell_cmd.Cmd]:
     ends trimmed, count too: a heredoc's body is text to the reader but commands to a
     shell fed it (`bash <<EOF`), and the reader fails on nesting too deep. Each word
     keeps whether it is computed: read as literal text, `eval $Z; npm $V` passed as no
-    publish. A computed `eval` or shell `-c` body adds a Body (_body).
+    publish. A computed `eval` or shell `-c` body in the blank-split words adds a Body
+    (_body).
     """
     try:
         read = shell_cmd.words(command)
@@ -325,7 +434,7 @@ def text_commands(command: str) -> list[shell_cmd.Cmd]:
             cmd = shell_cmd.Cmd([], [shell_cmd.literal(name), *words[i + 1 : end]])
             cmd.loose = True  # words in no known order: outward_cmd reads them loosely
             out.append(cmd)
-    return out + _body(command, words[len(read) :])
+    return out + _body(words[len(read) :])
 
 
 def _shell_body(words: Sequence[shell_cmd.Word], i: int) -> int | None:
@@ -340,44 +449,29 @@ def _shell_body(words: Sequence[shell_cmd.Word], i: int) -> int | None:
         t = words[j].text
         shell_c |= not t.startswith("--") and "c" in t
         j += 2 if t in shell_cmd.SHELL_VALUED else 1
+    j += j < len(words) and words[j].text == "--"
     return j if shell_c and j < len(words) else None
 
 
-def _computed_at(words: Sequence[shell_cmd.Word], i: int, *, ends: bool) -> bool:
+def _computed_at(words: Sequence[shell_cmd.Word], i: int) -> bool:
     """Return whether words[i] runs a computed body: `eval $Z`, `bash -c "$C"`.
 
-    An `eval` of any computed word in a command whose words end where it does (ends),
-    else of the computed word after it; a shell's computed `-c` string.
+    An `eval` whose next word is computed, or a shell's computed `-c` string.
     """
     if _basename(words[i].text) == "eval":
-        after = words[i + 1 :] if ends else words[i + 1 : i + 2]
-        return any(not w.static for w in after)
+        return any(not w.static for w in words[i + 1 : i + 2])
     j = _shell_body(words, i)
     return j is not None and not words[j].static
 
 
-def _body(command: str, blank: Sequence[shell_cmd.Word]) -> list[shell_cmd.Cmd]:
-    """Return a Body for the first computed `eval` or shell `-c` body in the command.
+def _body(blank: Sequence[shell_cmd.Word]) -> list[shell_cmd.Cmd]:
+    """Return a Body for the first computed `eval` or `-c` body in blank-split words.
 
-    Found in its events — text a shell runs that the reader cannot see, with a computed
-    word (`eval $Z`), or a simple command with one past its first word (`sudo bash -c
-    "$C"`) — else in its blank-split words (blank), a heredoc's body too: the reader
-    hid every such body (F81).
+    Text the reader cannot follow has no command positions: a heredoc's body fed to a
+    shell, a command nested too deep for the reader; there a false match only asks.
     """
-    try:
-        found = shell_cmd.events(command)
-    except Exception:  # noqa: BLE001 — the blank-split words alone
-        found = []
-    for _, e in found:
-        if isinstance(e, shell_cmd.Opaque) and e.script is None:
-            if any(not w.static for w in e.words):
-                return [Body([], [shell_cmd.literal(str(e)), *e.words])]
-        elif isinstance(e, shell_cmd.Cmd):
-            for i in range(len(e.words)):
-                if _computed_at(e.words, i, ends=True):
-                    return [Body([], e.words[i:])]
     for i in range(len(blank)):
-        if _computed_at(blank, i, ends=False):
+        if _computed_at(blank, i):
             return [Body([], list(blank[i : i + TEXT_WORDS + 1]))]
     return []
 

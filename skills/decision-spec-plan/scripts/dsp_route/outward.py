@@ -9,7 +9,10 @@ Shapes held past the inert forms (F81):
 - a `uv run` tool given by path (`./x/pytest`) may be any program: only a bare name;
 - `coverage run` runs any script, so coverage is off the uv list;
 - a computed `eval` or shell `-c` body (`eval $Z`, `sudo bash -c "$C"`) may run any;
-- in text the reader cannot follow, every computed word may be a publisher's verb.
+- in text the reader cannot follow, every computed word may be a publisher's verb;
+- a shell's computed `--` body, script path or stdin may run any command, and an `eval`
+  or shell word counts only where it runs one (`echo eval` is data).
+Not held: a computed command name (`$S`, `$PY -m pytest`) — a backstop, not a sandbox.
 """
 
 import functools

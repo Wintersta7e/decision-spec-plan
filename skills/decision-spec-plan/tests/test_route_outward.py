@@ -483,6 +483,20 @@ STILL_HELD = (
     "git $Y; docker run -v $PWD:/a img",
 )
 STILL_HELD_FORMS = 34
+# Each held beside the script pub.sh, which publishes: an `eval` or shell word that runs
+# nothing leaves the line read, a script past an unreadable part too, a shell under a
+# runner reads its script, and a shell's computed `--` body, stdin or script may run
+# any.
+SCRIPT_HELD = (
+    "echo eval; bash pub.sh",
+    "grep -c eval x; bash pub.sh",
+    "echo ls | bash; bash pub.sh",
+    "sudo bash pub.sh",
+    'bash -c -- "$C"',
+    'bash <<< "$C"',
+    'echo "$C" | bash',
+    'bash "$F"',
+)
 
 
 class ComputedArguments(unittest.TestCase):
@@ -511,6 +525,20 @@ class ComputedArguments(unittest.TestCase):
             _ = (pathlib.Path(d) / "check.sh").write_text("cargo test\n")
             assert outward_in("bash ship.sh", d) is not None
             assert outward_in("bash check.sh", d) is None
+
+    def test_where_bodies_run(self) -> None:
+        """`eval` or a shell's body counts where it runs; the rest is still read."""
+        from dsp_route.outward import outward_in  # the hook imports it lazily (TID253)
+
+        with tempfile.TemporaryDirectory(prefix="dsp-test-") as d:
+            _ = (pathlib.Path(d) / "pub.sh").write_text("npm publish\n")
+            _ = (pathlib.Path(d) / "pub-safe.sh").write_text("cargo test\n")
+            for command in SCRIPT_HELD:
+                with self.subTest(command):
+                    assert outward_in(command, d) is not None
+            for command in ("bash -c 'cargo test'", "bash pub-safe.sh"):
+                with self.subTest(command):
+                    assert outward_in(command, d) is None
 
 
 if __name__ == "__main__":
