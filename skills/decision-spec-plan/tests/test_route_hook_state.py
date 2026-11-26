@@ -126,7 +126,10 @@ class Answers(support.Route):
         )
 
     def test_answer_tally(self) -> None:
-        """Answers are tallied, the tenth tells, and a re-activation keeps them."""
+        """Answers are tallied, the tenth tells, and a re-activation keeps them.
+
+        Only an answer that took the recommendation tells, and a new run starts afresh.
+        """
         out = ""
         for answer in ["Drop it"] + ["Keep it (Recommended)"] * 8:
             out += self.hook_out(askq(answer)).out
@@ -143,7 +146,7 @@ class Answers(support.Route):
         _ = self.hook(
             "silent", askq("Keep it", "Keep it")
         )  # no option recommended: not tallied
-        _ = self.hook("/9 of their last 10/", askq("Drop it"))
+        _ = self.hook("silent", askq("Drop it"))  # 9 of 10, but this one rejected it
         _ = self.hook("silent", askq("Drop it"))
         # the tally spans the route: a phase's re-activation (Stage 5's `--sins on`)
         # keeps it
@@ -154,6 +157,15 @@ class Answers(support.Route):
         asks = self.marker().get("asks", [])
         self.ok(
             "a re-activation keeps the answer tally", len(asks) == n, json.dumps(asks)
+        )
+        run = self.marker().get("run")
+        _ = self.py(RS, self.P, "--phase", "1", "--repo", self.R, "--end")
+        _ = self.activate_route()
+        fresh = self.marker()
+        self.ok(
+            "a new run starts a new tally",
+            fresh.get("run") != run and not fresh.get("asks"),
+            json.dumps(fresh),
         )
 
 
