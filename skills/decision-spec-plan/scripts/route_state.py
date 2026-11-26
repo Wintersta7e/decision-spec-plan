@@ -24,6 +24,7 @@ Usage:
         [--sections 38-48 | 38-] [--spec-dir DIR] [--all]
         [--activate [--rung S|M|L] [--ci-harness LABEL] [--sins on|off]]
     route_state.py <planning-dir> --phase P --repo DIR --next [--group-size N]
+    route_state.py <planning-dir> --phase P --repo DIR --end
     route_state.py --budget LABEL --estimate M [--groups N --tasks T] [--phase P]
         [--repo R] [--base pin|catch-up|merge]
     route_state.py --fingerprint REPO
@@ -44,7 +45,10 @@ reads: after the lead's tool calls (PostToolUse, at most every
 the report into the lead's context, with the skill's files changed since the session
 read them (F78), and after a compaction or a resume (SessionStart) the whole report and
 what to re-read. Re-run with --activate at each phase and in each new lead session;
-delete the marker to end the route. When the session's transcript lacks a record shape
+--end ends the route: it removes the marker and every session's registry entry that
+names it, and prints each. An other route on this account is named with when its lead
+was last active, within 48 h; older ones are counted in one line. When the session's
+transcript lacks a record shape
 the hooks read (Claude Code changed its format), it prints a line naming the checks that
 are off: each lets every call through on a shape it cannot find. `--ci-harness <label>`
 names a suite CI runs that the local full gate does not; push_guard.py then also wants,
@@ -159,21 +163,25 @@ def main() -> int:
         from dsp_route.fingerprint import fingerprint_cli
 
         return fingerprint_cli(argv)
-    from dsp_route.activate import activate
+    from dsp_route.activate import activate, end
     from dsp_route.report import report
 
     ap = parser(__doc__)
     a = ap.parse_args(namespace=RouteArgs())
     flags = {"--rung": a.rung, "--sins": a.sins, "--ci-harness": a.ci_harness}
     if a.next:
-        if a.activate:
-            ap.error("--next takes no --activate")
+        if a.activate or a.end:
+            ap.error("--next takes no --activate or --end")
         from dsp_route.next_groups import next_groups
 
         return next_groups(a)
     if (given := [f for f, v in flags.items() if v]) and not a.activate:
         # dropped in silence, a lead believed the route had them (live)
         ap.error(f"{', '.join(given)} take effect only with --activate")
+    if a.end:
+        if a.activate:
+            ap.error("--end takes no --activate")
+        return end(a)
     code = report(a)
     if code == 0 and a.activate:
         code = activate(a, a.main or (default_branch(a.repo) if a.repo else "main"))
