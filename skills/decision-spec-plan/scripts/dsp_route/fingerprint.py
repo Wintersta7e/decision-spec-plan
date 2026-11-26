@@ -15,6 +15,8 @@ from .common import git
 USAGE = "usage: route_state.py --fingerprint <repo>"
 # A for-each-ref line's tab and the remote-tracking namespace (a refname has no tab).
 REMOTE = "\trefs/remotes/"
+# the reflog subjects of a fetch, which moves a remote-tracking ref with no slip
+FETCHED = (">fetch", ">pull")
 
 
 def _files(root: pathlib.Path) -> list[tuple[str, bytes]]:
@@ -25,11 +27,27 @@ def _files(root: pathlib.Path) -> list[tuple[str, bytes]]:
     return [(p.relative_to(root).as_posix(), p.read_bytes()) for p in files]
 
 
+def _remote_updates(repo: pathlib.Path, refs: str) -> str:
+    """Return each remote-tracking ref in refs moved by other than a fetch,, counted.
+
+    A push of an existing commit leaves its only local trace there (`update by push`);
+    a `>` before each reflog subject keeps an empty one (a bare `update-ref`) a line.
+    """
+    counts: list[str] = []
+    for line in sorted(r for r in refs.splitlines() if REMOTE in r):
+        ref = line.split("\t", 1)[1]
+        _, log = git(repo, "log", "-g", "--format=>%gs", ref, "--")
+        if n := sum(not s.startswith(FETCHED) for s in log.splitlines()):
+            counts.append(f"{ref} {n}")
+    return "\n".join(counts)
+
+
 def fingerprint(repo: pathlib.Path) -> str:
     """Return the sha256 over repo's git state that a hunter's slip would change.
 
     HEAD, every ref (`for-each-ref`) but the remote-tracking ones (a fetch moves
-    them, no hunter's slip), the stash count, `status --porcelain=v1
+    them, no hunter's slip) and how often each of those moved by other than a fetch
+    (a push leaves its trace there), the stash count, `status --porcelain=v1
     --ignored -z`, the repository's own config: the config file in the git common
     dir, `config --local` and `--worktree --includes --list --show-origin` with the
     bytes of every file they name (included ones too), and `config.worktree` even
@@ -64,6 +82,7 @@ def fingerprint(repo: pathlib.Path) -> str:
     ):
         code, out = git(repo, *args)
         if name == "refs":
+            part("remote updates", _remote_updates(repo, out).encode())
             out = "\n".join(r for r in out.splitlines() if REMOTE not in r)
         part(name, f"{code}\n{out}".encode())
         if name.endswith("config") and code == 0:

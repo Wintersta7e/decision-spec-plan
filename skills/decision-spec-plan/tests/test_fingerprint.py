@@ -9,6 +9,7 @@ import support
 
 if TYPE_CHECKING:
     from collections.abc import Callable
+    from pathlib import Path
 
 DIGEST = re.compile(r"[0-9a-f]{64}")
 USAGE_EXIT = 2
@@ -83,15 +84,37 @@ class Fingerprint(support.Sandbox):
             seen.append(self.digest(repo))
             self.ok(f"{what} changes it", seen[-1] not in seen[:-1], seen)
 
-    def test_remote_tracking_refs_ignored(self) -> None:
+    def remote(self, name: str) -> tuple["Path", "Path"]:
+        """A repository with a bare file remote, and a second clone pushing to it."""
+        repo = self.init_repo(self.T / name)
+        bare, other = self.T / f"{name}-remote.git", self.T / f"{name}-other"
+        _ = self.git("init", "-q", "--bare", "-b", "main", bare)
+        _ = self.git("-C", repo, "remote", "add", "origin", bare)
+        _ = self.git("-C", repo, "push", "-q", "origin", "HEAD:refs/heads/main")
+        _ = self.git("clone", "-q", bare, other)
+        return repo, other
+
+    def test_fetch_ignored(self) -> None:
         """A fetch moves only `refs/remotes/`, no hunter's slip: the digest holds."""
-        repo = self.init_repo(self.T / "fp")
-        _ = self.git("-C", repo, "commit", "-q", "--allow-empty", "-m", "a")
+        repo, other = self.remote("fetch")
         before = self.digest(repo)
-        _ = self.git("-C", repo, "update-ref", "refs/remotes/origin/main", "HEAD")
-        self.ok("a remote-tracking ref", self.digest(repo) == before)
+        _ = self.git("-C", other, "commit", "-q", "--allow-empty", "-m", "b")
+        _ = self.git("-C", other, "push", "-q", "origin", "HEAD:refs/heads/main")
+        _ = self.git("-C", other, "push", "-q", "origin", "HEAD:refs/heads/new")
+        _ = self.git("-C", repo, "fetch", "-q", "origin")
+        self.ok("a fetch's move and new ref", self.digest(repo) == before)
         _ = self.git("-C", repo, "update-ref", "refs/x/main", "HEAD")
         self.ok("any other ref still counts", self.digest(repo) != before)
+
+    def test_push_counts(self) -> None:
+        """A pushed existing commit leaves its only trace in a remote-tracking ref."""
+        repo, _ = self.remote("push")
+        before = self.digest(repo)
+        _ = self.git("-C", repo, "push", "-q", "origin", "HEAD:refs/heads/x")
+        pushed = self.digest(repo)
+        self.ok("a push changes it", pushed != before)
+        _ = self.git("-C", repo, "update-ref", "refs/remotes/origin/y", "HEAD")
+        self.ok("a manual update-ref changes it", self.digest(repo) != pushed)
 
     def test_not_a_repository(self) -> None:
         """A directory that is no git repository exits 2."""
