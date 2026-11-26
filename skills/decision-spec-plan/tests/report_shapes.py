@@ -329,7 +329,8 @@ def lane_states(cls: type[Shapes], root: Path) -> list[str]:
 
     p1-01 merged, its branch then one commit on; p1-02 red; p1-03 gating; p1-04 ready;
     p1-05 no gate log; p1-06 a dirty gate; p1-07 no SHA; p1-08 a SHA not in the
-    repository; p1-09 only in the plan index.
+    repository; p1-09 only in the plan index. A verdict routes a finding to a fix
+    that no file names.
     """
     r, plan, _ = cls.base(root)
     lanes = plan / "lanes"
@@ -349,6 +350,7 @@ def lane_states(cls: type[Shapes], root: Path) -> list[str]:
         _ = cls.write(lanes / f"p1-0{n}-a-checkpoint.md", f"Final SHA: {sha}\n")
     _ = cls.write(lanes / "p1-07-a-checkpoint.md", "- [ ] Task 1\n")
     _ = cls.write(lanes / "p1-08-a-checkpoint.md", f"Final SHA: {'deadbeef' * 5}\n")
+    _ = cls.write(plan / "reviews/p1-verdict.md", "## Routed\n- FAB-1 → fix group\n")
     _ = cls.write(
         plan / "plans/p1-00-index.md",
         "# Phase 1 plans\n\n| Plan | Wave | Depends on |\n|---|---|---|\n"
