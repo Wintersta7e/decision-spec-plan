@@ -5,13 +5,20 @@ The lead's `route_state.py --hook` asks the user each time, read as bash reads t
 command (F81).
 """
 
+import contextlib
+import io
+import json
+import os
 import pathlib
 import tempfile
 import unittest
+from unittest import mock
 
 from typing_extensions import override
 
+import shell_cmd
 import support
+from dsp_route import commands
 from support import decision_index, ev, jstr
 
 
@@ -539,6 +546,74 @@ class ComputedArguments(unittest.TestCase):
             for command in ("bash -c 'cargo test'", "bash pub-safe.sh"):
                 with self.subTest(command):
                     assert outward_in(command, d) is None
+
+
+# A shell body past options the runner tables misread: read wherever the shell is
+FAIL_CLOSED_HELD = (
+    'sudo -Eu root bash -c "$C"',
+    'sudo --user root bash -c "$C"',
+    "sudo -Eu root bash -c 'npm publish'",
+    "sudo --user root sh -ec 'cargo publish'",
+)
+FAIL_CLOSED_PASS = ("sudo -E make test", "echo eval", 'bash -c "cargo test"')
+
+
+class FailsClosed(unittest.TestCase):
+    """A body the reader cannot reach, and a reader or check that raises, are held."""
+
+    def test_bodies_anywhere(self) -> None:
+        """A shell's `-c` body is read wherever it is; data still passes."""
+        from dsp_route.outward import outward_in  # the hook imports it lazily (TID253)
+
+        for command in FAIL_CLOSED_HELD:
+            with self.subTest(command):
+                assert outward_in(command) is not None
+        for command in FAIL_CLOSED_PASS:
+            with self.subTest(command):
+                assert outward_in(command) is None
+
+    def test_raising_parser(self) -> None:
+        """A part of the reader that raises sends the line to the word reader."""
+        from dsp_route.outward import outward_in  # the hook imports it lazily (TID253)
+
+        for part in ("_walk", "_runs"):
+            command = f"sudo npm publish --tag {part}"  # each a line not read before
+            with (
+                self.subTest(part),
+                mock.patch.object(commands, part, side_effect=ValueError("unread")),
+            ):
+                assert outward_in(command) is not None
+        with mock.patch.object(
+            shell_cmd, "command_events", side_effect=ValueError("unread")
+        ):
+            assert outward_in("sudo bash -c 'npm publish' # body walk") is not None
+
+    def test_raising_check_asks(self) -> None:
+        """An outward check that raises asks, the lead and an agent alike."""
+        from dsp_route import hook, outward, switch  # imported lazily (TID253)
+
+        with tempfile.TemporaryDirectory(prefix="dsp-test-") as d:
+            registry = pathlib.Path(d)
+            _ = (registry / "s1.json").write_text("{}")
+            for extra in ({}, {"agent_id": "a1"}):
+                event = {
+                    "session_id": "s1",
+                    "hook_event_name": "PreToolUse",
+                    "tool_name": "Bash",
+                    "tool_input": {"command": "cargo test"},
+                    **extra,
+                }
+                out = io.StringIO()
+                with (
+                    self.subTest(extra),
+                    mock.patch.dict(os.environ, {switch.NAME: "0"}),
+                    mock.patch.object(hook, "REGISTRY", registry),
+                    mock.patch.object(outward, "outward", side_effect=KeyError("x")),
+                    mock.patch("sys.stdin", io.StringIO(json.dumps(event))),
+                    contextlib.redirect_stdout(out),
+                ):
+                    _ = hook.hook()
+                assert support.hook_matches("ask:KeyError", out.getvalue()), out
 
 
 if __name__ == "__main__":

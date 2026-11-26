@@ -32,6 +32,7 @@ from .common import (
     checked,
     deny,
     emit,
+    failed_closed,
     is_return,
     load_json,
     parse_json,
@@ -139,6 +140,24 @@ def _lead_dispatch(
     return 0
 
 
+def _outward_hold(event: Mapping[str, object], entry: RegistryEntry) -> int | None:
+    """Return the deny or ask of an outward action, else None (F81).
+
+    A check that raised has read nothing, so the call may be outward: it asks, the lead
+    and an agent alike, where checked's None once let it pass.
+    """
+    from .outward import outward
+
+    act, error = failed_closed(outward, event, entry)
+    if error:
+        return deny(
+            f"the outward-action check failed on this command ({error}), so it may act "
+            "on the hosted repository or a registry: the user approves it here (F81).",
+            "ask",
+        )
+    return _outward(event, act) if act else None
+
+
 def _review(event: Mapping[str, object], entry: RegistryEntry) -> int | None:
     """Return the deny of a review post the route holds, else None (F104)."""
     from .holds import review_hold, unrecorded_review
@@ -159,7 +178,6 @@ def _pre_tool_use(
 ) -> int:
     """Run the PreToolUse checks of a registered session."""
     from .gate_log import gate_log_edit
-    from .outward import outward
 
     if (refused := _review(event, entry)) is not None:
         return refused
@@ -172,8 +190,8 @@ def _pre_tool_use(
             "output in. A gate that cannot pass goes back to the lead and the user: "
             "escalating is a success, an edited log is not (F97)."
         )
-    if act := checked(outward, event, entry):
-        return _outward(event, act)
+    if (held := _outward_hold(event, entry)) is not None:
+        return held
     if event.get("agent_id"):
         from .agent import agent_pre
 
