@@ -588,14 +588,14 @@ class FailsClosed(unittest.TestCase):
         ):
             assert outward_in("sudo bash -c 'npm publish' # body walk") is not None
 
-    def test_raising_check_asks(self) -> None:
-        """An outward check that raises asks, the lead and an agent alike."""
+    def test_raising_check_holds(self) -> None:
+        """An outward check that raises asks the lead and denies an agent."""
         from dsp_route import hook, outward, switch  # imported lazily (TID253)
 
         with tempfile.TemporaryDirectory(prefix="dsp-test-") as d:
             registry = pathlib.Path(d)
             _ = (registry / "s1.json").write_text("{}")
-            for extra in ({}, {"agent_id": "a1"}):
+            for extra, want in (({}, "ask"), ({"agent_id": "a1"}, "deny")):
                 event = {
                     "session_id": "s1",
                     "hook_event_name": "PreToolUse",
@@ -613,7 +613,7 @@ class FailsClosed(unittest.TestCase):
                     contextlib.redirect_stdout(out),
                 ):
                     _ = hook.hook()
-                assert support.hook_matches("ask:KeyError", out.getvalue()), out
+                assert support.hook_matches(f"{want}:KeyError", out.getvalue()), out
 
 
 if __name__ == "__main__":
