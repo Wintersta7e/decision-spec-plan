@@ -30,9 +30,15 @@ from .transcript import skill_loaded
 # answers taking the recommended option: past 9 of the last 10, the asks stopped
 # informing anyone (F89)
 TAKE_WINDOW, TAKE_RATE = 10, 9
-# the route named in a prompt; "DSP" in capitals is signal processing, `dsp-deep` an
-# agent type
-NAMED = re.compile(r"\bdsp\b(?!-)|\bdecision-spec-plan\b")
+# a prompt asking to run the route, not one naming the skill as its subject ("our dsp
+# skill", "decision-spec-plan's hooks", F10); "DSP" in capitals is signal processing,
+# `dsp-deep` an agent type
+RUN_REQUEST = re.compile(
+    r"\b(?i:use|with|via|run|start|through)\s+(?:the\s+)?(?:dsp|decision-spec-plan)\b"
+    r"(?![-'\u2019])|\bdsp\s+(?:this|it)\b"
+)
+# the slash command, read before paths are dropped
+SLASH = re.compile(r"(?:^|\s)/decision-spec-plan\b(?![-/])")
 
 
 def skill_changes(entry_path: pathlib.Path, entry: RegistryEntry) -> list[str]:
@@ -99,12 +105,12 @@ def budget_line(
 
 
 def unloaded(event: Mapping[str, object]) -> str | None:
-    """Return the line for a prompt naming the route where the skill never loaded."""
+    """Return the line for a request to run the route where the skill never loaded."""
     prompt = str(event.get("prompt") or "")
     # an agent's return is not the user; a path (the skill's repository, `src/dsp/`)
     # names no route
-    if prompt.lstrip().startswith(RETURNS) or not NAMED.search(
-        re.sub(r"\S*/\S*", " ", prompt)
+    if prompt.lstrip().startswith(RETURNS) or not (
+        SLASH.search(prompt) or RUN_REQUEST.search(re.sub(r"\S*/\S*", " ", prompt))
     ):
         return None
     if skill_loaded(str(event.get("transcript_path") or "")):
