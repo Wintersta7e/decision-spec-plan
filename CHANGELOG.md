@@ -1,5 +1,34 @@
 # Changelog
 
+## [1.6.0](https://github.com/Wintersta7e/decision-spec-plan/compare/v1.5.0...v1.6.0) (2026-11-26)
+
+
+### Features
+
+* **route-state:** flag verdict findings routed to no fix task ([8645ddc](https://github.com/Wintersta7e/decision-spec-plan/commit/8645ddc6fc100f716d38790d7c843f32ad577ce5))
+* **route-state:** retire route markers with --end ([60e3a13](https://github.com/Wintersta7e/decision-spec-plan/commit/60e3a133a20bcd72a781c5566fc8c45c20db891a))
+
+
+### Bug Fixes
+
+* **agents:** run the mechanical tier at high effort ([5a7900c](https://github.com/Wintersta7e/decision-spec-plan/commit/5a7900c7719b5de2eb44ddb8eb937d0a1ffdadea))
+* **route-state:** check inline and relative handed commands ([f5944dc](https://github.com/Wintersta7e/decision-spec-plan/commit/f5944dcfb7a9c24cf4a83b3f6a76a9670855c0b9))
+* **route-state:** count a route's budget from its first record ([0254251](https://github.com/Wintersta7e/decision-spec-plan/commit/025425131f10da5b885fb7780a6c84172a291439))
+* **route-state:** count recommendation answers in this run only ([95d59e3](https://github.com/Wintersta7e/decision-spec-plan/commit/95d59e35901c9caa9d58622d9ac1478882553973))
+* **route-state:** deny an agent when the outward check fails ([2a3192e](https://github.com/Wintersta7e/decision-spec-plan/commit/2a3192eda3261d687921017ac8fc33d4ea79d8e0))
+* **route-state:** fail closed on unread shell bodies and parse errors ([d42d837](https://github.com/Wintersta7e/decision-spec-plan/commit/d42d8373aa194ee6e4cbac8aef1eaaa72df56093))
+* **route-state:** give a green lane with tasks left its next group ([b767ef4](https://github.com/Wintersta7e/decision-spec-plan/commit/b767ef4035d99a06476027b17eb4d78cd03fd703))
+* **route-state:** hold a publisher run through an inert run form ([8af1edb](https://github.com/Wintersta7e/decision-spec-plan/commit/8af1edb6463c887b0906c7a9394d35fae64155c6))
+* **route-state:** hold computed eval and shell bodies, tighten uv list ([6ef037c](https://github.com/Wintersta7e/decision-spec-plan/commit/6ef037c64cfef5fba062392ac645636bb6df913e))
+* **route-state:** hold the lead's third repo edit everywhere, Bash too ([e4a86eb](https://github.com/Wintersta7e/decision-spec-plan/commit/e4a86eb50266cf212e053baa0f29749e82a4f64d))
+* **route-state:** ignore remote-tracking refs in the fingerprint ([938d051](https://github.com/Wintersta7e/decision-spec-plan/commit/938d0517aca454a89b3d392ee0135bef628f69bd))
+* **route-state:** keep a pushed remote ref in the fingerprint ([dcd8754](https://github.com/Wintersta7e/decision-spec-plan/commit/dcd875411220f90ec017755ba1394bd06860af01))
+* **route-state:** load the route only when the user asks to run it ([dfffa33](https://github.com/Wintersta7e/decision-spec-plan/commit/dfffa335e06f4b37b7648b13647130ab18f3a5f3))
+* **route-state:** number asks per route, skipping peer and limit prompts ([ba9eafd](https://github.com/Wintersta7e/decision-spec-plan/commit/ba9eafd0f9a0d723ec56187fa76377b3865fe98f))
+* **route-state:** pass local cargo, uv, npm-run and docker reads ([3eab76c](https://github.com/Wintersta7e/decision-spec-plan/commit/3eab76cede50e702016305b92f3bac9a03c04482))
+* **route-state:** read eval and shell bodies only where they run ([8131b8b](https://github.com/Wintersta7e/decision-spec-plan/commit/8131b8bc93993746fafee96df9e5b7e9afdd0dd0))
+* **test-check:** pass an edited test the plan names ([8ade64c](https://github.com/Wintersta7e/decision-spec-plan/commit/8ade64c3c00411d53aff256261e6e46f64d5082d))
+
 ## [1.5.0](https://github.com/Wintersta7e/decision-spec-plan/compare/v1.4.0...v1.5.0) (2026-11-19)
 
 
