@@ -9,6 +9,7 @@ import concurrent.futures
 import contextlib
 import json
 import os
+import re
 import stat
 import statistics
 import subprocess
@@ -572,9 +573,9 @@ class Folded(support.Route):
             "answered": at,
         }
         _ = cls.write(cls.P / "route-budget.json", json.dumps({"budgets": [budget]}))
-        # the tests' prompts listed, so no dispatch or Stop waits on the ask list (F105)
-        listed = "".join(f"Msg{n} | not an ask\n" for n in range(1, 31))
-        _ = cls.write(cls.P / "asks.md", listed)
+        # run_hook lists each prompt it numbers, so no dispatch or Stop waits on the
+        # ask list (F105)
+        _ = cls.write(cls.P / "asks.md", "")
 
     @property
     def events_dir(self) -> Path:
@@ -594,14 +595,23 @@ class Folded(support.Route):
     def run_hook(
         self, payload: Mapping[str, object], *, on: bool = True, timeout: float = 30
     ) -> support.Result:
-        """`route_state.py --hook` on payload, the switch on (or unset)."""
-        return self.py(
+        """`route_state.py --hook` on payload, the switch on (or unset).
+
+        A prompt the hook numbers is listed at once: a message's number is one past
+        the highest listed, so none can be listed ahead.
+        """
+        r = self.py(
             support.RS,
             "--hook",
             input=json.dumps(payload) + "\n",
             env=MON if on else {},
             timeout=timeout,
         )
+        if numbered := re.search(r"user message (Msg\d+)\b", r.out):
+            _ = self.write(
+                self.P / "asks.md", f"{numbered[1]} | not an ask\n", mode="a"
+            )
+        return r
 
     def held_calls(self) -> list[tuple[str, dict[str, object], str]]:
         """The three held calls: a name, the payload and the hook's answer."""
