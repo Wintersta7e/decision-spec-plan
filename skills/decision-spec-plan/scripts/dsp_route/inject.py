@@ -142,8 +142,9 @@ def _taken(asked: Mapping[str, object], answers: Mapping[str, object]) -> list[b
 def took(event: Mapping[str, object], entry: RegistryEntry) -> str | None:
     """Tally whether each answer took the recommended option; flag a run of them.
 
-    The tally goes into the marker. Past TAKE_RATE of the last TAKE_WINDOW, returns the
-    line telling the lead its asks stopped informing.
+    The tally goes into the marker, whose run it spans: a new run's marker starts
+    without one. Past TAKE_RATE of the last TAKE_WINDOW, an answer that itself took the
+    recommendation returns the line telling the lead its asks stopped informing (F89).
     """
     asked = as_dict(event.get("tool_input")) or {}
     response = as_dict(event.get("tool_response")) or {}
@@ -153,12 +154,12 @@ def took(event: Mapping[str, object], entry: RegistryEntry) -> str | None:
     tally = as_list(marker.setdefault("asks", [])) if marker is not None else None
     if marker is None or tally is None:
         return None
-    before = len(tally)
-    tally += _taken(asked, answers)
+    added = _taken(asked, answers)
+    tally += added
     write_atomic(path, json.dumps(marker) + "\n")
     last = tally[-TAKE_WINDOW:]
     took_n = sum(bool(t) for t in last)
-    if len(tally) == before or len(last) < TAKE_WINDOW or took_n < TAKE_RATE:
+    if not any(added) or len(last) < TAKE_WINDOW or took_n < TAKE_RATE:
         return None
     return (
         f"The user took your recommendation in {took_n} of their last {TAKE_WINDOW} "
