@@ -217,6 +217,48 @@ class Sections(support.Route):
         )
 
 
+VERDICT = """# Seven-sins verdict — code · repo @ abc1234
+
+## Standing findings
+- FAB-1 high · s2/GLU-2 medium · FAB-7 low
+
+## Routed
+- FAB-1 → fix group 2
+- s2/GLU-2: fix round
+- FAB-7 → a follow-up issue, not this round
+
+## Strengths · Scorecard
+- FAB-9 fix
+"""
+UNROUTED = (
+    "verdict reviews/p1-verdict.md: FAB-1, s2/GLU-2 routed to a fix are in no task "
+    "or plan file"
+)
+
+
+class VerdictRouted(support.Route):
+    """A verdict's findings routed to a fix must be named by a task or plan (D3)."""
+
+    def test_verdict_unrouted(self) -> None:
+        """Each fix-routed id no lane or plan file names is flagged; named, none."""
+        plan = self.P
+        _ = self.write(plan / "reviews/p1-verdict.md", VERDICT)
+        out = self.py(RS, plan, "--phase", "1").out
+        self.ok("the unrouted ids are flagged", grep(out, UNROUTED), out)
+        self.ok("an id routed elsewhere is not", "FAB-7" not in out, out)
+        self.ok("an id outside ## Routed is not", "FAB-9" not in out, out)
+        _ = self.write(plan / "plans/p1-fix-tasks.md", "- Task 1: FAB-1, FAB-12\n")
+        out = self.py(RS, plan, "--phase", "1").out
+        self.ok(
+            "a plan naming FAB-1 clears it, not s2/GLU-2",
+            grep(out, "verdict reviews/p1-verdict.md: s2/GLU-2 routed to a fix"),
+            out,
+        )
+        _ = self.write(plan / "lanes/p1-fix-notes.md", "s2/GLU-2 lands in task 2\n")
+        out = self.py(RS, plan, "--phase", "1").out
+        self.ok("both named: no flag", "routed to a fix" not in out, out)
+
+
 class BaseDrift(support.Sandbox):
     """The base or an assumed branch moved since the decision index named it (F91)."""
 

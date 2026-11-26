@@ -93,6 +93,7 @@ FLAG_KINDS = (
     "rulings-large",
     "gate-no-exit",
     "gate-red",
+    "verdict-unrouted",
 )
 # an open lane's state by its gate
 BY_GATE = {
@@ -104,6 +105,13 @@ BY_GATE = {
 }
 # the decision round's files the `decisions` line says are there or not
 FIXED = ("00-dispatch", "00-framing-review", "00-seams", "00-arbiter", "spec-returns")
+# A finding id in a verdict's `## Routed` section (`FAB-1`, `s2/GLU-2`, `S1-H3`) on a
+# line that routes it to a fix: each must be named by a lane or plan file, or the fix
+# round drops it while the verdict says all landed (D3).
+FINDING_ID = re.compile(
+    r"(?<![\w/])(?:s\d+/)?[A-Z]{2,5}-\d+(?!\d)|(?<!\w)S\d+-H\d+(?!\d)"
+)
+ROUTED_FIX = re.compile(r"\bfix\b", re.IGNORECASE)
 
 
 class FileFact(TypedDict):
@@ -182,6 +190,13 @@ class CheckpointFact(TypedDict):
     final_sha_line: bool
     lines: int
     rulings: RulingsFact | None
+
+
+class VerdictFact(TypedDict):
+    """A review verdict: its path and the ids it routes to a fix that no file names."""
+
+    path: str
+    unrouted: list[str]
 
 
 class GateLogFact(TypedDict):
@@ -323,6 +338,7 @@ class State(TypedDict):
     gate_logs: list[GateLogFact]
     records: dict[str, RecordFact]
     integration_files: list[str]
+    verdicts: list[VerdictFact]
     git: GitFacts | None
     lanes: list[Lane]
     flags: list[Flag]
@@ -1169,6 +1185,41 @@ def _waves(base: pathlib.Path, p: str) -> dict[str, WaveFact]:
     }
 
 
+def _routed_ids(text: str) -> list[str]:
+    """Return the ids a verdict's `## Routed` section routes to a fix, in text order."""
+    section = re.search(
+        r"^## Routed\b[^\n]*\n(.*?)(?=^## |\Z)", text, re.MULTILINE | re.DOTALL
+    )
+    lines = section[1].splitlines() if section else []
+    found = (
+        m[0] for x in lines if ROUTED_FIX.search(x) for m in FINDING_ID.finditer(x)
+    )
+    return list(dict.fromkeys(found))
+
+
+def _verdict_facts(base: pathlib.Path) -> list[VerdictFact]:
+    """Return each `reviews/*-verdict.md` with its fix-routed ids no task file names.
+
+    Named means written in some `lanes/*.md` or `plans/*.md` of the planning dir.
+    """
+    named = "\n".join(
+        f.read_text(errors="replace")
+        for d in ("lanes", "plans")
+        for f in sorted((base / d).glob("*.md"))
+    )
+    return [
+        {
+            "path": _rel(v, base),
+            "unrouted": [
+                i
+                for i in _routed_ids(v.read_text(errors="replace"))
+                if not re.search(rf"(?<!\w){re.escape(i)}(?!\d)", named)
+            ],
+        }
+        for v in sorted((base / "reviews").glob("*-verdict.md"))
+    ]
+
+
 def _file_facts(
     a: RouteArgs, rung: str | None, *, fresh: bool, extra: Iterable[str]
 ) -> tuple[State, str | None]:
@@ -1216,6 +1267,7 @@ def _file_facts(
             for k, (lane, main, file) in _merge_records(lanes).items()
         },
         "integration_files": [_rel(w, base) for w in waves],
+        "verdicts": _verdict_facts(base),
         "git": None,
         "lanes": [],
         "flags": [],
@@ -1390,7 +1442,18 @@ def _flags(state: State, lanes: list[Lane]) -> list[Flag]:
     out += _plan_flags(state, by_path)
     for c, lane in zip(state["checkpoints"], lanes, strict=False):
         out += _file_flags([by_path[c["path"]]]) + _checkpoint_flags(c, lane, g)
-    return out + _gate_flags(state["gate_logs"], g) + _file_flags(of("wave"))
+    out += _gate_flags(state["gate_logs"], g) + _file_flags(of("wave"))
+    # carried every turn until a task or plan file names each id (D3)
+    return out + [
+        _flag(
+            "verdict-unrouted",
+            v["path"],
+            f"verdict {v['path']}: {', '.join(v['unrouted'])} routed to a fix are in "
+            "no task or plan file",
+        )
+        for v in state["verdicts"]
+        if v["unrouted"]
+    ]
 
 
 def _exec_complete(state: State, lanes: Iterable[Lane]) -> bool:
