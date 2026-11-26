@@ -13,7 +13,7 @@ from collections.abc import Mapping, Sequence
 
 import shell_cmd
 
-from .commands import PUBLISHERS, bash_commands, text_commands
+from .commands import HOSTS, PUBLISHERS, bash_commands, text_commands
 from .common import as_dict
 
 # Outward actions on the hosted repository: the lead asks the user each time and a route
@@ -71,30 +71,42 @@ INERT = {
     **{tool: {"test"} for tool in ("npm", "pnpm", "yarn", "bun")},
     **{tool: {"inspect", "ps", "logs", "images"} for tool in ("docker", "podman")},
 }
-# The tools a `uv run` may start that run a computed word as a command: a shell, an
-# interpreter, a wrapper or a package runner (`uv run bash $X`) stays a verb.
-RUNNERS = re.compile(
-    r"(?:sh|bash|zsh|dash|ksh|fish|csh|tcsh|env|xargs|sudo|npx|uvx|bunx|pnpx"
-    r"|python[\d.]*|node|perl|ruby)"
-)
+# The only tools after which a `uv run`'s computed word is an argument: each runs no
+# command it is given. Any other may (a shell, an interpreter, `doas`, `uv` itself), and
+# a list of those failed open for each one it missed; `python -m pytest` stays a verb.
+UV_TOOLS = {
+    "pytest",
+    "ruff",
+    "mypy",
+    "basedpyright",
+    "pyright",
+    "black",
+    "isort",
+    "coverage",
+    "deptry",
+    "vulture",
+    "lint-imports",
+}
 
 
 def _pair(tool: str, sub: str, second: shell_cmd.Word) -> bool:
     """Return whether `tool sub second` is a two-word inert form.
 
-    A package script (`npm run test:unit`), a static tool under uv that runs no
-    computed command (RUNNERS, shell_cmd.WRAPPERS), or a compose read (`docker
-    compose ps`). An option before the script or tool may take the next word as its
-    value, so it leaves the form off.
+    An npm or pnpm package script (`npm run test:unit`) not named for git, a host
+    tool or a publisher, the tool's own name too (`npm run npm $V`: bash_commands
+    reads no second word of the same name as a command of its own), a UV_TOOLS tool
+    under uv, or a compose read (`docker compose ps`). `yarn run` and `bun run` run
+    any installed bin, so neither has one. An option before the script or tool may
+    take the next word as its value, so it leaves the form off.
     """
     t = second.text
     if not second.static or t.startswith("-"):
         return False
-    if sub == "run" and tool in ("npm", "pnpm", "yarn", "bun"):
-        return True
+    name = t.rpartition("/")[2]
+    if sub == "run" and tool in ("npm", "pnpm"):
+        return name not in ("git", *HOSTS, *PUBLISHERS)
     if sub == "run" and tool == "uv":
-        name = t.rpartition("/")[2]
-        return not (RUNNERS.fullmatch(name) or name in shell_cmd.WRAPPERS)
+        return name in UV_TOOLS
     return tool == "docker" and sub == "compose" and t in ("ps", "logs")
 
 

@@ -365,8 +365,6 @@ ARGUMENTS = (
     "uv run ruff check $X",
     "npm run test:unit -- $X",
     "pnpm run lint $X",
-    "yarn run build $X",
-    "bun run dev $X",
     "docker inspect $C",
     "docker ps $X",
     "docker logs -f $C",
@@ -375,6 +373,9 @@ ARGUMENTS = (
     "podman logs $C",
     "docker compose ps $X",
     "docker compose logs $S",
+    # ...and in text the reader cannot follow, past an `eval`
+    "eval $Z; npm test $1",
+    "eval $Z; docker run -v $PWD:/a -e K=$K img",
 )
 ARGUMENT_FORMS = 23
 # ...and still outward: a computed subcommand, the verb itself, a tool whose every word
@@ -418,8 +419,11 @@ STILL_OUTWARD = (
     "docker run img $X",
     "podman exec c $X",
     "docker --context x inspect $C",
+    # yarn and bun run any installed bin, not only a package script
+    "yarn run build $X",
+    "bun run dev $X",
 )
-STILL_OUTWARD_FORMS = 33
+STILL_OUTWARD_FORMS = 35
 # Spec §1.6.2: every real publish and each command whose computed word may still be
 # one, held past the inert forms above; `docker exec`'s later words are a command (R8)
 STILL_HELD = (
@@ -432,8 +436,22 @@ STILL_HELD = (
     "docker build --push -t reg/app .",
     "docker $V",
     "docker exec c $ACTION",
+    # a publisher or host tool run through a run form: its computed word may be the
+    # verb; under uv only a listed tool is inert, and yarn or bun run any bin
+    "uv run uv $X",
+    "npm run npm $V",
+    "uv run git $X",
+    "pnpm run gh $X",
+    "uv run pypy $X",
+    "uv run doas $X",
+    "yarn run uv $X",
+    "bun run npm $V",
+    # a computed verb in text the reader cannot follow: read as literal text, it
+    # passed as no publish
+    "eval $Z; npm $V",
+    "git $Y; npm $V",
 )
-STILL_HELD_FORMS = 9
+STILL_HELD_FORMS = 19
 
 
 class ComputedArguments(unittest.TestCase):

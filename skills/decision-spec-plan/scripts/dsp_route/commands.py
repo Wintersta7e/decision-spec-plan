@@ -282,34 +282,49 @@ def bash_commands(
 def text_commands(command: str) -> list[shell_cmd.Cmd]:
     """Return each `git`, HOSTS and PUBLISHERS command in text the reader cannot follow.
 
-    Read word by word: from that word to the next such word, at most 40 words. A regex
-    over the text for `gh` or `push` held a stub `gh` on PATH, a JS `.push(` and a plain
-    push (2026-10-31). The blank-split words, ends trimmed, count too: a heredoc's body
-    is text to the reader but commands to a shell fed it (`bash <<EOF`), and the reader
-    fails on nesting too deep.
+    Read word by word: from that word to the next such word (a publisher's: to the next
+    HOSTS word), at most 40 words. A regex over the text for `gh` or `push` held a stub
+    `gh` on PATH, a JS `.push(` and a plain push (2026-10-31). The blank-split words,
+    ends trimmed, count too: a heredoc's body is text to the reader but commands to a
+    shell fed it (`bash <<EOF`), and the reader fails on nesting too deep. Each word
+    keeps whether it is computed: read as literal text, `eval $Z; npm $V` passed as no
+    publish.
     """
-    texts = [re.sub(r"^[$(`'\"]+|[)`'\";&|]+$", "", t) for t in command.split()]
     try:
-        read = [w.text for w in shell_cmd.words(command)]
+        read = shell_cmd.words(command)
     except Exception:  # noqa: BLE001 — the blank-split words alone
         read = []
-    texts = read + texts
+    words = [*read, *map(_text_word, command.split())]
     # a NAME=value word is read as its value (`X='gh pr close 5'`)
-    names = [_basename(re.sub(r"^[A-Za-z_]\w*=", "", t)) for t in texts]
+    names = [_basename(re.sub(r"^[A-Za-z_]\w*=", "", w.text)) for w in words]
     out: list[shell_cmd.Cmd] = []
     for i, name in enumerate(names):
         if name in ("git", *HOSTS, *PUBLISHERS):
             # only a git, gh or glab word ends one: a publisher's may be a value
-            # (`gh -R npm pr merge`)
-            end = min(len(names), i + TEXT_WORDS + 1)
-            ends = ("git", *HOSTS)
+            # (`gh -R npm pr merge`). A publisher's own words go on past a git word,
+            # which may be the command it runs (`uv run git $X`)
+            # A run ends where the reader's words do: the blank-split copy after them
+            # repeats the command, words before this one too
+            end = min(len(read) if i < len(read) else len(names), i + TEXT_WORDS + 1)
+            ends = HOSTS if name in PUBLISHERS else ("git", *HOSTS)
             end = next((k for k in range(i + 1, end) if names[k] in ends), end)
-            cmd = shell_cmd.Cmd(
-                [], [shell_cmd.literal(t) for t in [name, *texts[i + 1 : end]]]
-            )
+            cmd = shell_cmd.Cmd([], [shell_cmd.literal(name), *words[i + 1 : end]])
             cmd.loose = True  # words in no known order: outward_cmd reads them loosely
             out.append(cmd)
     return out
+
+
+def _text_word(token: str) -> shell_cmd.Word:
+    """Return a blank-split token, its ends trimmed, as a word: computed if it expands.
+
+    A `$` or backtick anywhere in the token marks it, its own `$V` trimmed to `V` too.
+    """
+    w = shell_cmd.Word()
+    w.add(
+        "exp" if re.search(r"[$`]", token) else "q",
+        re.sub(r"^[$(`'\"]+|[)`'\";&|]+$", "", token),
+    )
+    return w
 
 
 def _ff_only(args: Sequence[shell_cmd.Word]) -> bool:
