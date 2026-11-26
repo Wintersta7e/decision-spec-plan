@@ -24,10 +24,10 @@ run `criteria_check.py` on the one spec file.)
   groups `<t>` needs. It lives in `<planning-dir>/route-budget.json`, so a new lead session of
   the route keeps it and its answer. Ask the user in the sentence it prints (`user-questions.md`)
   — one question: an AskUserQuestion answered earlier in the turn that records the figure counts
-  (F93); at S, tell them and go on. The hook holds every `exec-` dispatch until the user has
-  answered after the record in the session that made it (at S, never), and again once the
-  route's spend since passes 125% of the estimate: record the remaining work's figure, say what
-  ran over and why, and wait again. Waves, a later group's re-sizing and a context-stopped
+  (F93); at S, tell them the first figure and go on. The hook holds every `exec-` dispatch until
+  the user has answered after the record in the session that made it (at S, the first record
+  never), and again once the route's spend since the first record passes 125% of the latest
+  total: record the route's new total, say what ran over and why, and wait again. Waves, a later group's re-sizing and a context-stopped
   group's successor ask nothing new. **Why:** one run quoted its Stage 5 figure half a minute
   after its first dispatches, from the older group median five times too high; in another, a
   wave ran 42% over and the headcount rule never fired; in one window 58 of 121 questions were

@@ -72,11 +72,13 @@ agent of the stages left — in <planning-dir>/route-budget.json, one budget a r
 (execution.md). As a PreToolUse hook (Registration, below), it then holds the lead's
 dispatch of an `exec-` agent until the phase has a budget and the user has answered
 after it in the lead session that recorded it — or answered an AskUserQuestion earlier
-in the turn that records it, so ask, then record, and the one answer is enough (F93); at
-rung S a recorded figure is enough. The answer is kept with the record, so a new lead
-session of the route asks nothing again. It holds again once the spend since the record
-— the route's leads, their agents but those naming another phase, and hook sessions —
-passes 125% of the estimate (F74), and holds an `exec-` agent whose name names another
+in the turn that records it, so ask, then record, and the one answer is enough (F93); an
+answer is a budget question's, or a prompt after the lead named the figure. At rung S
+the first recorded figure is enough; a later record is a raise, the route's new total,
+asked at every rung. The answer is kept with the record, so a new lead session of the
+route asks nothing again. It holds again once the spend since the first record — the
+route's leads, their agents but those naming another phase, and hook sessions — passes
+125% of the latest total (F74), and holds an `exec-` agent whose name names another
 phase, which that spend leaves out. A session whose transcript holds no prompt the user
 typed (headless `claude -p`) has no answer to wait for, so the hold lets its own
 dispatches through, never another session's, and keeps no answer: record the budget

@@ -19,7 +19,7 @@ Every ask follows this: a decision call, a scope question, a budget, a push.
   panel ("Scratch 7 sins run"); a round of 14 mostly-infrastructure decisions was approved and
   disowned a minute later (F89).
 - **A budget ask is the sentence `--budget` prints.** It has the recorded figure, the reason
-  against and a smaller option, and covers the route's work left — one ask a route, at the
+  against and a smaller option, and covers the route's total — one ask a route, at the
   go-ahead, never a wave or a group (F74, F93). It opens with the asks the figure does not
   deliver — deferred by a U-ruling, or no plan row serves them (`scope_check.py --asks`) — or says
   it delivers every ask; a "done" report opens the same way (`execution.md`, Report; F89).

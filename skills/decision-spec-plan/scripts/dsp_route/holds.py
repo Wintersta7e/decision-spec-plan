@@ -252,20 +252,33 @@ def round_fails(r: pathlib.Path, marker: Mapping[str, object]) -> str | None:
 
 
 def base_hold(
-    planning_dir: StrPath, route: RouteArgs, found: list[Budget]
+    event: Mapping[str, object],
+    planning_dir: StrPath,
+    route: RouteArgs,
+    found: list[Budget],
 ) -> str | None:
     """Return what moved under the round, unless the user's latest choice covers it.
 
     What moved is report.moved_under's. Pin and merge cover any move, catch-up the
-    moves it was recorded with (F91).
+    moves it was recorded with (F91). A choice is an answered `--base` record: one the
+    lead recorded and never asked covers nothing (F74).
     """
     from .report import round_moved
 
     # a check that raises holds nothing, and leaves the budget's own checks standing
     moved = checked(round_moved, planning_dir, route)
-    choice = next((b for b in reversed(found) if b.get("base")), None)
+    if not moved:
+        return None
+    choice = next(
+        (
+            b
+            for b in reversed(found)
+            if b.get("base") and (b.get("answered") or _answer(event, b))
+        ),
+        None,
+    )
     how = choice.get("base") if choice else None
-    if not moved or how in ("pin", "merge"):
+    if how in ("pin", "merge"):
         return None
     if how == "catch-up" and choice and set(moved) <= set(choice.get("moved") or []):
         return None
@@ -289,7 +302,7 @@ def _answer(event: Mapping[str, object], b: Budget) -> str | None:
     # (headless `claude -p`).
     recorder = b.get("session") or ""
     rec = session_transcripts(recorder)
-    answered = answered_since(rec, b["at"]) if rec else None
+    answered = answered_since(rec, b["at"], b["estimate"], b["label"]) if rec else None
     if answered == b["at"] and recorder != event.get("session_id"):
         return None
     return answered
@@ -313,9 +326,10 @@ def gate_dispatch(event: Mapping[str, object], entry: RegistryEntry) -> int:
     """Hold an `exec-` or `hunt-` dispatch to the budget; give an `exec-` one its ETA.
 
     Held until the route's budget is recorded and the user answered it in the lead
-    session that recorded it — at S, recorded is enough — and once the route's spend
-    since passes 125% of it (execution.md, F74); an allowed one gets its ETA (F83). One
-    budget a route: a hand-over to a new lead session keeps it (F74).
+    session that recorded it — at S, the first record is enough — and once the route's
+    spend since its first record passes 125% of the latest total (execution.md,
+    F74); an allowed one gets its ETA (F83). One budget a route: a hand-over to a new
+    lead session keeps it (F74).
 
     Returns:
         The hook's exit code, always 0.
@@ -328,7 +342,7 @@ def gate_dispatch(event: Mapping[str, object], entry: RegistryEntry) -> int:
     record = f'`python3 {SCRIPT} --budget "<route>" --estimate <M>`'
     if not found:
         return deny(
-            f"phase {phase} has no budget. Price the route's work left per costs.md "
+            f"phase {phase} has no budget. Price the route's total per costs.md "
             "(the lead, every review and agent of the stages left, the task groups at "
             "the group median, a seven-sins review at L's phase end), record it with "
             f"{record}, tell the user the figure and wait for their answer — at S, "
@@ -345,9 +359,12 @@ def gate_dispatch(event: Mapping[str, object], entry: RegistryEntry) -> int:
         )
     paths = leads(event, path)
     head = f"budget '{b['label']}' ({b['estimate']:g}M, recorded {b['at']})"
-    if held := base_hold(entry["planning_dir"], route, found):
+    if held := base_hold(event, entry["planning_dir"], route, found):
         return deny(f"{head}: {held}")
-    if not (b.get("answered") or marker.get("rung") == "S"):
+    # at S the first figure is told, not asked; a raise or a base choice is asked at
+    # every rung: a re-record once reset the 125% window unasked (F74)
+    told = len(found) == 1 and not b.get("base") and marker.get("rung") == "S"
+    if not (b.get("answered") or told):
         answered = _answer(event, b)
         if not answered:
             return deny(_unanswered(event, b, head, record))
@@ -356,12 +373,15 @@ def gate_dispatch(event: Mapping[str, object], entry: RegistryEntry) -> int:
             # session asks nothing again; a headless session's pass is its own and is
             # never kept
             save_budget(entry["planning_dir"], marker, {**b, "answered": answered})
-    used = spend(paths, b["at"], phase)
+    # one budget a route: spend counts from its first record, and a raise moves only
+    # the ceiling, never the base (F74)
+    used = spend(paths, found[0]["at"], phase)
     if used > b["estimate"] * 1e6 * SLACK:
         return deny(
-            f"{head}: {used / 1e6:.1f}M spent since — more than 25% over. Record the "
-            f"remaining work's figure with {record}, tell the user what ran over and "
-            "why, and wait for their answer (F74)."
+            f"{head}: {used / 1e6:.1f}M spent since the first record "
+            f"({found[0]['at']}) — more than 25% over. Record the route's new total "
+            f"with {record}, tell the user what ran over and why, and wait for their "
+            "answer (F74)."
         )
     # an ETA is task-group arithmetic: a hunt gets none
     if not name.startswith(HUNT):

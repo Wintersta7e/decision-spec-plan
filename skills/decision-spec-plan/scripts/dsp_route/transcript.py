@@ -16,11 +16,23 @@ import tempfile
 from collections.abc import Callable, Container, Iterable, Iterator, Mapping
 from typing import TypedDict
 
-from .common import REGISTRY, StrPath, as_dict, as_list, git, load_json, parse_json
+from .common import (
+    REGISTRY,
+    StrPath,
+    as_dict,
+    as_list,
+    git,
+    is_return,
+    load_json,
+    parse_json,
+)
 
 PROJECTS = pathlib.Path.home() / ".claude" / "projects"
 # How close a figure in an answer must be to the estimate to name it.
 FIGURE_TOLERANCE = 1e-9
+# A figure `<n>M`, or a range `<a>–<b>M` / `<a>-<b>M`; not a number inside an id
+# (`p1-15M`).
+FIGURE = re.compile(r"(?<![\w.–-])(\d+(?:\.\d+)?)(?:\s*[–-]\s*(\d+(?:\.\d+)?))?\s*M\b")
 # How much of an agent transcript's end context() reads for its latest turn.
 TAIL_BYTES = 262_144
 
@@ -498,54 +510,124 @@ def skill_loaded(transcript_path: StrPath) -> bool:
     )
 
 
-def answered_this_turn(session: str, estimate: float) -> str | None:
-    """Return when the user answered an AskUserQuestion naming the figure, else None.
+def names_figure(text: str, estimate: float) -> bool:
+    """Return whether text names `<estimate>M`, alone or in a range `a–bM` with it."""
+    for m in FIGURE.finditer(text):
+        low = float(m[1])
+        high = float(m[2]) if m[2] else low
+        if low - FIGURE_TOLERANCE <= estimate <= high + FIGURE_TOLERANCE:
+            return True
+    return False
 
-    The answer is one in the lead's current turn that names `<estimate>M`.
 
-    Why: a lead that asked "raise the budget to 45M?" and recorded it after the answer
-    was held for a second answer, and that question sat 1 h 52 min while finished groups
-    waited (F93).
+def _blocks_text(content: object) -> str:
+    """Return a message content's text: the string, or its text blocks joined."""
+    blocks = as_list(content)
+    if blocks is None:
+        return str(content or "")
+    return " ".join(
+        str(b.get("text") or "") for item in blocks if (b := as_dict(item)) is not None
+    )
+
+
+def _budget_answer(result: Mapping[str, object], estimate: float, label: str) -> bool:
+    """Return whether an AskUserQuestion result answers the budget's figure.
+
+    A question that names "budget" or the record's label, and whose text or answer
+    names the figure: a design question's answer that happens to name a number
+    covers nothing (F74).
     """
-    answered = None
-    for path in session_transcripts(session):
+    for question, answer in (as_dict(result.get("answers")) or {}).items():
+        if ("budget" in question.lower() or (label and label in question)) and (
+            names_figure(f"{question} {answer}", estimate)
+        ):
+            return True
+    return False
+
+
+def _replies(
+    paths: Iterable[pathlib.Path], estimate: float, label: str
+) -> Iterator[tuple[str, str | None, bool]]:
+    """Yield (kind, stamp, covers) of each turn's end and each reply of the user's.
+
+    Kind is `end`, `answer` (to an AskUserQuestion) or `prompt` (typed); covers says
+    whether it answers the figure: a budget question's answer naming it, or a typed
+    prompt — an agent's return is none — after the lead's text that named it.
+    """
+    for path in paths:
+        said = ""
         for r in read_records(path):
             message = as_dict(r.get("message"))
-            result = as_dict(r.get("toolUseResult"))
             if r.get("type") == "assistant" and message is not None:
+                said = _blocks_text(message.get("content")).strip() or said
                 if message.get("stop_reason") == "end_turn":
-                    answered = None
-            elif result is not None and "answers" in result:
-                # unescaped: `≈5M` dumped as `≈5M` read as 22485M
-                figures = [
-                    m[1]
-                    for m in re.finditer(
-                        r"(\d+(?:\.\d+)?)\s*M\b", json.dumps(result, ensure_ascii=False)
-                    )
-                ]
-                if any(abs(float(f) - estimate) < FIGURE_TOLERANCE for f in figures):
-                    answered = _text(r.get("timestamp"))
+                    yield "end", None, False
+                continue
+            if not human(r):
+                continue
+            stamp = _text(r.get("timestamp"))
+            result = as_dict(r.get("toolUseResult"))
+            if result is not None and "answers" in result:
+                yield "answer", stamp, _budget_answer(result, estimate, label)
+                continue
+            attachment = as_dict(r.get("attachment")) or {}
+            prompt = attachment.get("prompt") or (message or {}).get("content")
+            yield (
+                "prompt",
+                stamp,
+                not is_return(_blocks_text(prompt)) and names_figure(said, estimate),
+            )
+
+
+def turn_answer(
+    paths: Iterable[pathlib.Path], estimate: float, label: str
+) -> str | None:
+    """Return when the current turn of these transcripts answered the figure, else None.
+
+    A budget question's answer in the turn, or the typed prompt that opened it after
+    the lead's text that named the figure (F74).
+    """
+    answered, opened = None, False
+    for kind, stamp, covers in _replies(paths, estimate, label):
+        if kind == "end":
+            answered, opened = None, False
+            continue
+        if covers and (kind == "answer" or not opened):
+            answered = stamp
+        opened = opened or kind == "prompt"
     return answered
 
 
-def answered_since(paths: Iterable[pathlib.Path], since: str) -> str | None:
-    """Return when the user first prompted or answered from `since` on, else None.
+def answered_this_turn(session: str, estimate: float, label: str) -> str | None:
+    """Return when the user answered the figure in the lead's current turn, else None.
 
-    In these transcripts of the lead session that recorded a budget. An answer in
-    another lead session never counts: "read the handoff and proceed" there once
-    approved a figure that session never told (F74). No prompt of the user's anywhere
-    (headless `claude -p`, or a changed transcript format) answers at `since`: the hold
-    never waits on it.
+    Why: a lead that asked "raise the budget to 45M?" and recorded it after the answer
+    was held for a second answer, and that question sat 1 h 52 min while finished groups
+    waited (F93); a design question's answer that named 47M was once taken for the
+    budget's (F74).
+    """
+    return turn_answer(session_transcripts(session), estimate, label)
+
+
+def answered_since(
+    paths: Iterable[pathlib.Path], since: str, estimate: float, label: str
+) -> str | None:
+    """Return when the user first answered the figure from `since` on, else None.
+
+    In these transcripts of the lead session that recorded a budget, by the rule of
+    turn_answer, in any turn: a prompt counts only after the lead told the figure — the
+    hook proves the user saw it. An answer in another lead session never counts: "read
+    the handoff and proceed" there once approved a figure that session never told
+    (F74). No prompt of the user's anywhere (headless `claude -p`, or a changed
+    transcript format) answers at `since`: the hold never waits on it.
     """
     ever = False
-    for path in paths:
-        for r in read_records(path):
-            if r.get("type") == "assistant" or not human(r):
-                continue
-            ever = True
-            stamp = _text(r.get("timestamp"))
-            if (stamp or "") >= since:
-                return stamp or since
+    for kind, stamp, covers in _replies(paths, estimate, label):
+        if kind == "end":
+            continue
+        ever = True
+        if covers and (stamp or "") >= since:
+            return stamp or since
     return None if ever else since
 
 
