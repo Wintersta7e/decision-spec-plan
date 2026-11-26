@@ -83,6 +83,16 @@ class Fingerprint(support.Sandbox):
             seen.append(self.digest(repo))
             self.ok(f"{what} changes it", seen[-1] not in seen[:-1], seen)
 
+    def test_remote_tracking_refs_ignored(self) -> None:
+        """A fetch moves only `refs/remotes/`, no hunter's slip: the digest holds."""
+        repo = self.init_repo(self.T / "fp")
+        _ = self.git("-C", repo, "commit", "-q", "--allow-empty", "-m", "a")
+        before = self.digest(repo)
+        _ = self.git("-C", repo, "update-ref", "refs/remotes/origin/main", "HEAD")
+        self.ok("a remote-tracking ref", self.digest(repo) == before)
+        _ = self.git("-C", repo, "update-ref", "refs/x/main", "HEAD")
+        self.ok("any other ref still counts", self.digest(repo) != before)
+
     def test_not_a_repository(self) -> None:
         """A directory that is no git repository exits 2."""
         (self.T / "plain").mkdir()
