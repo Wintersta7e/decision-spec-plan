@@ -109,9 +109,11 @@ wakes it when the job ends (F92). It holds the lead's `exec-` dispatch while
 `decision_check.py --verifier` wrote. It numbers each user message to the lead and
 holds an `exec-` dispatch, and sends the lead's Stop back once, until each has a line
 in `<planning-dir>/asks.md`; PreCompact keeps the unlisted ones in the summary (F105).
-Its Stop also goes back once when a fenced block in the lead's last message would fail
-pasted: a WSL stop among other lines, a prompt program followed by its input, a `cd` or
-`git -C` to a missing directory (F107). Inside a `hunt-` agent it refuses a commit, a
+Its Stop also goes back once when a fenced block or an inline `! cmd` span in the lead's
+last message would fail pasted: a WSL stop among other lines, a prompt program followed
+by its input, a `cd` or `git -C` to a missing directory or a relative one from off the
+repository root, a Windows drive program in a WSL shell's block, a push to a remote
+whose push URL is disabled (F107). Inside a `hunt-` agent it refuses a commit, a
 `git config` write, an inline alias and an edit-tool write into the route's repository
 outside the planning dir, and where bubblewrap runs it rewrites every other Bash call to
 run under `bwrap` with that repository and its git common dir read-only in the kernel;
