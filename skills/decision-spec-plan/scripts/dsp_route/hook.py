@@ -143,12 +143,18 @@ def _lead_dispatch(
 def _outward_hold(event: Mapping[str, object], entry: RegistryEntry) -> int | None:
     """Return the deny or ask of an outward action, else None (F81).
 
-    A check that raised has read nothing, so the call may be outward: it asks, the lead
-    and an agent alike, where checked's None once let it pass.
+    A check that raised has read nothing, so the call may be outward: it is held as an
+    outward match is (an agent denied, the lead asked), where checked's None passed it.
     """
     from .outward import outward
 
     act, error = failed_closed(outward, event, entry)
+    if error and event.get("agent_id"):
+        return deny(
+            f"the outward-action check failed on this command ({error}), so it may act "
+            "on the hosted repository or a registry, and a route agent never runs one: "
+            "name it in your return and the lead asks the user (F81)."
+        )
     if error:
         return deny(
             f"the outward-action check failed on this command ({error}), so it may act "

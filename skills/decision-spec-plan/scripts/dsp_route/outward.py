@@ -12,10 +12,14 @@ Shapes held past the inert forms (F81):
 - in text the reader cannot follow, every computed word may be a publisher's verb;
 - a shell's computed `--` body, script path or stdin may run any command, and an `eval`
   or shell word counts only where it runs one (`echo eval` is data);
-- fail closed: a shell's `-c` body or a computed `eval` is read wherever it is in the
-  words, a walk that raises leaves the line to the word reader, and a check that raises
-  asks (hook.py).
-Not held: a computed command name (`$S`, `$PY -m pytest`) — a backstop, not a sandbox.
+- fail closed: a shell's `-c` body and a computed `eval` body are read wherever they are
+  in the words, a walk that raises leaves the line to the word reader, and a check that
+  raises denies an agent and asks the lead (hook.py).
+Not held, known gaps (a backstop, not a sandbox): a computed command name (`$S`, `$PY -m
+  pytest`); wrapper options the runner tables do not parse (`sudo -Eu`, `sudo --user`,
+  `env --default-signal=`); `su -c` and `ssh` bodies; a `git -c alias.*=!…`; a script
+  the reader cannot open (a missing path) and `source "$F"`; `gh pr create`/`issue
+  create`.
 """
 
 import functools
