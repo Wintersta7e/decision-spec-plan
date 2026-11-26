@@ -13,6 +13,8 @@ import sys
 from .common import git
 
 USAGE = "usage: route_state.py --fingerprint <repo>"
+# A for-each-ref line's tab and the remote-tracking namespace (a refname has no tab).
+REMOTE = "\trefs/remotes/"
 
 
 def _files(root: pathlib.Path) -> list[tuple[str, bytes]]:
@@ -26,7 +28,8 @@ def _files(root: pathlib.Path) -> list[tuple[str, bytes]]:
 def fingerprint(repo: pathlib.Path) -> str:
     """Return the sha256 over repo's git state that a hunter's slip would change.
 
-    HEAD, every ref (`for-each-ref`), the stash count, `status --porcelain=v1
+    HEAD, every ref (`for-each-ref`) but the remote-tracking ones (a fetch moves
+    them, no hunter's slip), the stash count, `status --porcelain=v1
     --ignored -z`, the repository's own config: the config file in the git common
     dir, `config --local` and `--worktree --includes --list --show-origin` with the
     bytes of every file they name (included ones too), and `config.worktree` even
@@ -60,6 +63,8 @@ def fingerprint(repo: pathlib.Path) -> str:
         ),
     ):
         code, out = git(repo, *args)
+        if name == "refs":
+            out = "\n".join(r for r in out.splitlines() if REMOTE not in r)
         part(name, f"{code}\n{out}".encode())
         if name.endswith("config") and code == 0:
             # -z: origin NUL key-and-value NUL, pair after pair
