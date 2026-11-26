@@ -243,6 +243,51 @@ class TestCheck(support.Sandbox):
             r.out,
         )
 
+    def test_edited_named_in_plan(self) -> None:
+        """An edited acceptance test the plan's text names passes, still printed.
+
+        Its mapping row is no plan to edit it: there `::test_rule` names what it
+        checks, as a row naming a file is no plan to delete it.
+        """
+        tb = self.tcrepo()
+        repo = tb / "repo"
+        _ = self.write(
+            tb / "plans/p1-01-x.md",
+            "# p1-01-x\n- Task 2 tightens `test_named`'s bound.\n\n"
+            "| Id | Task | Test file |\n|---|---|---|\n"
+            "| AC-P1-1-1 | 1 | `tests/test_ac.py::test_rule` |\n",
+        )
+        ac = self.write(
+            repo / "tests/test_ac.py",
+            "def test_rule():\n    assert rule() == 3\n\n\n"
+            "def test_named():\n    assert took() < 10\n",
+        )
+        self.base(repo)
+        _ = self.write(ac, ac.read_text().replace("< 10", "< bound()", 1))
+        self.base(repo, "named")
+        named = self.git("-C", repo, "log", "-1", "--format=%h")
+        out = self.check(tb / "plans", "HEAD~1..HEAD", repo)
+        self.ok(
+            "test_check: an edited test the plan names passes, marked",
+            out.code == 0
+            and grep(
+                out.out,
+                f"EDITED   tests/test_ac.py  {named}  (named in p1-01-x.md)",
+                x=True,
+            ),
+            f"exit {out.code}: {out.out}",
+        )
+        _ = self.write(ac, ac.read_text().replace("== 3", "> 0", 1))
+        self.base(repo, "unnamed")
+        out = self.check(tb / "plans", "HEAD~2..HEAD", repo)
+        self.ok(
+            "test_check: an edited test only its mapping row names fails",
+            out.code == 1
+            and grep(out.out, r"^EDITED   tests/test_ac.py  ")
+            and not grep(out.out, "named in"),
+            f"exit {out.code}: {out.out}",
+        )
+
     def test_redefined_test(self) -> None:
         """An assertion dropped beside a test's changed signature.
 

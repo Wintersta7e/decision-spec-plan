@@ -36,12 +36,14 @@ rewritten in place offsets the line it replaced, and a removed test's own are it
 REMOVED line.
 
 A DELETED or REMOVED line passes when a plan matching `--glob` names it: the path, or
-the test's name standing alone. A SKIP, FEWER or EDITED line, or a deleted acceptance
-test file, never passes: the lead rules each one, since a plan that names a skip does
-not say the test it hides was meant to fail. Not caught: an assertion loosened in place
-outside an acceptance test file, a test body emptied there, assertions dropped from a
-test inside a source file (a Rust `mod tests`), a test excluded by the runner's
-configuration.
+the test's name standing alone. An EDITED line passes when a plan's text outside its
+mapping tables names, standing alone, every test its commits change (a change sits in
+the last test defined before it); it still prints, marked `(named in <plan>)`. A SKIP
+or FEWER line, or a deleted acceptance test file, never passes: the lead rules each one,
+since a plan that names a skip does not say the test it hides was meant to fail. Not
+caught: an assertion loosened in place outside an acceptance test file, a test body
+emptied there, assertions dropped from a test inside a source file (a Rust `mod
+tests`), a test excluded by the runner's configuration.
 
 Usage:
     test_check.py <plans-dir> --diff <base>..<head>|<base>...<head> [--repo <repo>]
@@ -114,6 +116,7 @@ ASSERT = re.compile(
     r"|t\.(?:Error|Fatal)f?|require\.\w+)\s*\("
 )
 HUNK = re.compile(r"^@@ -\d+(?:,\d+)? \+(\d+)")
+OLD_HUNK = re.compile(r"^@@ -(\d+)")
 
 
 def git(repo: str, *args: str) -> str:
@@ -248,6 +251,19 @@ def named(text: str, word: str) -> re.Match[str] | None:
     return re.search(rf"(?<![\w./-]){re.escape(word)}(?![\w/-]|\.\w)", text)
 
 
+def named_in(prose: dict[str, str], tests: set[str | None]) -> list[str]:
+    """The plans whose prose names the tests, when each test is named; else [].
+
+    A change in no test (None) is named by no plan.
+    """
+    if None in tests:
+        return []
+    by = {t: [p for p, text in prose.items() if named(text, t)] for t in tests if t}
+    if not by or not all(by.values()):
+        return []
+    return sorted({p for found in by.values() for p in found})
+
+
 def acceptance_files(plans: str) -> set[str]:
     """The test files a mapping table's rows map, `::test` cut off.
 
@@ -280,14 +296,78 @@ def acceptance_files(plans: str) -> set[str]:
     return files
 
 
-def edited(repo: str, rng: str, path: str, now: str | None = None) -> list[str]:
+def mapping_free(plan: str) -> str:
+    """The plan's text without the rows of its mapping tables.
+
+    A row mapping an id to `tests/x.py::test_y` names what the test checks, not a plan
+    to edit it: a table whose header's second cell starts with "Task", as
+    acceptance_files reads it.
+    """
+    kept: list[str] = []
+    header: list[str] | None = None
+    for line in plan.splitlines():
+        if not line.startswith("|"):
+            header = None
+        elif header is None:
+            header = [c.strip() for c in line.strip().strip("|").split("|")]
+        elif len(header) > TEST_COL and header[1].lower().startswith("task"):
+            continue
+        kept.append(line)
+    return "\n".join(kept)
+
+
+def tests_by_line(text: str) -> list[str | None]:
+    """The test each line of text sits in, by line: the last one defined before it.
+
+    A test marker's own line (`#[test]`, `@Test`) sits in none: it may open the next.
+    """
+    armed = {"-": False}
+    current: str | None = None
+    out: list[str | None] = []
+    for line in text.splitlines():
+        if name := defined_test(line, "-", armed):
+            current = name
+        out.append(None if ATTR.match(line) else current)
+    return out
+
+
+def changed_tests(repo: str, commit: str, diff: list[str]) -> set[str | None]:
+    """The tests a commit's -U0 diff lines change, None for a change in no test."""
+    found: set[str | None] = set()
+    by_line: list[str | None] = []
+    old = 0
+    for ln in diff:
+        if ln.startswith("--- "):
+            path = header_path(ln[4:])
+            text = git(repo, "show", f"{commit}^:{path}") if path else ""
+            by_line = tests_by_line(text)
+        elif m := OLD_HUNK.match(ln):
+            old = int(m[1])
+        elif ln.startswith("-"):
+            if changes_test(ln[1:]):
+                found.add(by_line[old - 1] if 0 < old <= len(by_line) else None)
+            old += 1
+    return found
+
+
+def changes_test(text: str) -> bool:
+    """Whether a removed line is an assertion or a test's defining line (no comment)."""
+    return bool(
+        (ASSERT.search(text) or NAME.match(text) or ATTR.match(text))
+        and not text.lstrip().startswith(COMMENT)
+    )
+
+
+def edited(
+    repo: str, rng: str, path: str, now: str | None = None
+) -> list[tuple[str, set[str | None]]]:
     """The commits of the range, oldest first, that rewrite `path`'s tests once written.
 
     A commit counts when it changes or removes an assertion or a test's defining line of
     `path` after it was written: a file the base lacks is written by its first commit,
     which is never one. An import widened for a test added beside it is not. `now` is
     the path the range renames it to inside the test paths: the rename itself changes
-    nothing.
+    nothing. Each commit comes with the tests it changes.
     """
     base = rng.partition("..")[0]
     paths = [path, now] if now else [path]
@@ -297,17 +377,22 @@ def edited(repo: str, rng: str, path: str, now: str | None = None) -> list[str]:
     commits = commits.split()[::-1]
     if not git(repo, "ls-tree", base, "--", path).strip():
         commits = commits[1:]
-    out: list[str] = []
+    out: list[tuple[str, set[str | None]]] = []
     for c in commits:
-        diff = git(repo, "diff", "-U0", "-M", f"{c}^", c, "--", *paths).splitlines()
-        if any(
-            ln.startswith("-")
-            and not ln.startswith("--- ")
-            and (ASSERT.search(ln[1:]) or NAME.match(ln[1:]) or ATTR.match(ln[1:]))
-            and not ln[1:].lstrip().startswith(COMMENT)
-            for ln in diff
-        ):
-            out.append(c)
+        diff = git(
+            repo,
+            "diff",
+            "-U0",
+            "-M",
+            "--src-prefix=a/",
+            "--dst-prefix=b/",
+            f"{c}^",
+            c,
+            "--",
+            *paths,
+        ).splitlines()
+        if tests := changed_tests(repo, c, diff):
+            out.append((c, tests))
     return out
 
 
@@ -330,10 +415,11 @@ def main() -> int:
     _ = ap.add_argument("--repo", default=".")
     _ = ap.add_argument("--glob", default="*.md")
     args = ap.parse_args(namespace=Args())
-    plans = "\n".join(
-        f.read_text(errors="replace")
+    texts = {
+        f.name: f.read_text(errors="replace")
         for f in sorted(pathlib.Path(args.plans_dir).glob(args.glob))
-    )
+    }
+    plans = "\n".join(texts.values())
 
     status = git(args.repo, "diff", "--name-status", "-M", "-z", args.diff).split("\0")
     if not [s for s in status if s]:
@@ -381,12 +467,16 @@ def main() -> int:
         for f, n in sorted(fewer.items())
         if n > 0 and f not in gone
     ]
-    bad += [
-        f"EDITED   {f}  {' '.join(cs)}"
-        for f in sorted(accept - gone)
-        if (cs := edited(args.repo, args.diff, f, moved.get(f)))
-    ]
-    for b in bad:
+    prose = {name: mapping_free(text) for name, text in texts.items()}
+    passed: list[str] = []
+    for f in sorted(accept - gone):
+        if cs := edited(args.repo, args.diff, f, moved.get(f)):
+            line = f"EDITED   {f}  {' '.join(c for c, _ in cs)}"
+            if where := named_in(prose, set[str | None]().union(*(t for _, t in cs))):
+                passed.append(f"{line}  (named in {', '.join(where)})")
+            else:
+                bad.append(line)
+    for b in [*bad, *passed]:
         print(b)
     print(
         f"{len(bad)} deleted test files, removed tests, added skips, dropped "
