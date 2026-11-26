@@ -36,6 +36,8 @@ RUNNER = re.compile(r"\b(?:windows|macos)-(?:latest|\d[\w.-]*)\b")
 # How many routes a session left its entry keeps: the way back to a route that
 # recorded no event.
 PREVIOUS_MAX = 8
+# How recently an other route's lead was active for --activate to name the route.
+RECENT_S = 48 * 3600
 
 
 def foreign_runners(repo: StrPath) -> list[str]:
@@ -242,7 +244,11 @@ def _register(
 
 
 def _print_other_routes(session: str, path: pathlib.Path) -> None:
-    """Print each other route on this account, with when its lead was last active."""
+    """Print each other route on this account, with when its lead was last active.
+
+    One whose lead was last active over RECENT_S ago is only counted: every marker a
+    route left listed by name buried the live ones (R6).
+    """
     # Activity = the newest write to any registered lead's transcript for that route; a
     # route restarted in a new session has two registry entries.
     latest: dict[str, float] = {}
@@ -252,11 +258,48 @@ def _print_other_routes(session: str, path: pathlib.Path) -> None:
         seen = [p.stat().st_mtime for p in session_transcripts(sid)]
         seen = seen or [pathlib.Path(e["marker"]).stat().st_mtime]
         latest[e["planning_dir"]] = max(*seen, latest.get(e["planning_dir"], 0))
+    now = time.time()
+    older = [now - t for t in latest.values() if now - t > RECENT_S]
     for planning_dir, t in latest.items():
+        if now - t <= RECENT_S:
+            print(
+                f"other route on this account: {planning_dir} (lead last active "
+                f"{ago(now - t)} ago) — it shares the weekly and second-model quota"
+            )
+    if older:
         print(
-            f"other route on this account: {planning_dir} (lead last active "
-            f"{ago(time.time() - t)} ago) — it shares the weekly and second-model quota"
+            f"{len(older)} older route markers (oldest {ago(max(older))}) — end each "
+            "from its own session with --end"
         )
+
+
+def end(a: RouteArgs) -> int:
+    """Retire this planning dir's route: its marker and every entry that names it.
+
+    Every session's registry entry, not only this one's: a route restarted in a new
+    session has two (R6).
+
+    Returns:
+        The exit code: 2 outside a repository, else 0.
+    """
+    planning = str(pathlib.Path(a.planning_dir).resolve())
+    path = marker_path(pathlib.Path(a.repo or a.planning_dir).resolve(), planning)
+    if path is None:
+        print(f"--end: {a.repo or a.planning_dir} is not inside a git repository")
+        return 2
+    removed: list[pathlib.Path] = []
+    for f in sorted(REGISTRY.glob("*.json")):
+        if load_json(f).get("marker") == str(path):
+            f.unlink(missing_ok=True)
+            removed.append(f)
+    if path.exists():
+        path.unlink()
+        removed.insert(0, path)
+    for f in removed:
+        print(f"removed {f}")
+    if not removed:
+        print(f"--end: no route marker or registry entry for {planning}")
+    return 0
 
 
 def new_run() -> str:

@@ -653,5 +653,67 @@ class RunIdentity(support.Route):
         )
 
 
+class OldRoutes(support.Route):
+    """--activate names a recent other route and counts old ones; --end retires one."""
+
+    activate: ClassVar[bool] = False
+
+    def other(self, session: str, age_s: float) -> Path:
+        """Register session on a route of its own whose lead was active age_s ago."""
+        plan = self.T / f"plan-{session}"
+        marker = self.write(self.T / f"marker-{session}.json", "{}\n")
+        self.touch(marker, -age_s)
+        self.touch(self.HOME / f".claude/projects/p/{session}.jsonl", -age_s)
+        entry: dict[str, object] = {
+            "marker": str(marker),
+            "planning_dir": str(plan),
+            "ledger": {},
+        }
+        _ = self.write(self.reg / f"{session}.json", json.dumps(entry) + "\n")
+        return plan
+
+    @property
+    def reg(self) -> Path:
+        """The registry of hook entries."""
+        return self.HOME / ".claude/dsp-routes"
+
+    def test_old_routes_and_end(self) -> None:
+        """A 1 h-old route by name, a 5-day-old one counted; --end removes the route."""
+        recent, old = self.other("s7", 3600), self.other("s8", 5 * 86400)
+        r = self.activate_route()
+        self.ok(
+            "the 1 h-old route is named",
+            support.grep(r.out, f"other route on this account: {recent} .*1h ago"),
+            r.out,
+        )
+        self.ok("the 5-day-old route is not named", str(old) not in r.out, r.out)
+        self.ok(
+            "the 5-day-old route is counted",
+            support.grep(
+                r.out,
+                "1 older route markers (oldest 5d) — end each from its own session "
+                "with --end",
+            ),
+            r.out,
+        )
+        # the route restarted in a second session: both entries name its marker
+        _ = self.write(self.reg / "s2.json", (self.reg / "s1.json").read_text())
+        r = self.py(RS, self.P, "--phase", "1", "--repo", self.R, "--end")
+        self.ok("--end exits 0", r.code == 0, r.out)
+        self.ok("--end removes the marker", not self.MK(self.R).exists(), r.out)
+        self.ok(
+            "--end removes every entry naming it, no other",
+            sorted(p.name for p in self.reg.glob("*.json")) == ["s7.json", "s8.json"],
+            sorted(p.name for p in self.reg.glob("*.json")),
+        )
+        self.ok(
+            "--end prints what it removed",
+            support.grep(r.out, "removed .*s1\\.json")
+            and support.grep(r.out, "removed .*s2\\.json")
+            and support.grep(r.out, f"removed .*{self.MK(self.R).name}"),
+            r.out,
+        )
+
+
 if __name__ == "__main__":
     _ = unittest.main()

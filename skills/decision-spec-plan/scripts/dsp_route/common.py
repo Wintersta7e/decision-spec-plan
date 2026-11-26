@@ -122,6 +122,7 @@ class RouteArgs(argparse.Namespace):
     sins: Literal["on", "off"] | None = None
     ci_harness: str | None = None
     activate: bool = False
+    end: bool = False
     next: bool = False
     group_size: int = 5
 
@@ -290,6 +291,12 @@ def parser(description: str | None = None) -> argparse.ArgumentParser:
         action="store_true",
         help="also write these arguments to <git-common-dir>/dsp-route-<id>.json (one "
         "per planning dir) and register this session",
+    )
+    _ = ap.add_argument(
+        "--end",
+        action="store_true",
+        help="end the route: remove this planning dir's marker and every session's "
+        "registry entry that names it, and print each removed",
     )
     _ = ap.add_argument(
         "--next",
