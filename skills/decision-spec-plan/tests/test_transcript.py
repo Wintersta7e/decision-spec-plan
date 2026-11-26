@@ -393,8 +393,12 @@ class FigureAnswers(unittest.TestCase):
         # another figure, or a figure in an id, is not this one
         assert self.turn(text(1, "≈16–18M — go ahead?"), typed(2, "go")) is None
         assert self.turn(text(1, "lane p1-15M?"), typed(2, "go")) is None
-        # an agent's return is no answer
-        for prompt in ('<teammate-message teammate_id="a">done</teammate-message>',):
+        # an agent's return, a peer's message and the limit prompt are no answer
+        for prompt in (
+            '<teammate-message teammate_id="a">done</teammate-message>',
+            '<cross-session-message from="x">done</cross-session-message>',
+            "Your claude.ai usage limit has reset. Continue?",
+        ):
             assert self.turn(text(1, "15M?"), typed(2, prompt)) is None, prompt
         # only the prompt that opened the current turn
         later = (text(1, "15M?"), typed(2, "go"), text(3, "done"), typed(4, "next"))

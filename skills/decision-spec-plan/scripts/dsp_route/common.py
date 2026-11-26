@@ -28,7 +28,15 @@ SKILL = SKILL_DIR / "SKILL.md"
 # How an agent's return opens the lead's turn as a prompt. A teammate's message does not
 # fire UserPromptSubmit (measured, Claude Code 2.1.296-2.1.299); the lead's next tool
 # call reports it.
-RETURNS = ("<agent-message", "<teammate-message", "<task-notification")
+RETURNS = (
+    "<agent-message",
+    "<teammate-message",
+    "<task-notification",
+    # another session's message: a peer's, never the user's
+    "<cross-session-message",
+)
+# Claude Code's own prompt once a usage limit resets: no message of the user's.
+LIMIT_RESET = "Your claude.ai usage limit has reset."
 # Stage 5 agents are named `exec-<plan-id>-<group>` (execution.md); an agent's id is
 # `a<name>-<hash>`.
 EXEC = "exec-"
@@ -165,8 +173,13 @@ def save_budget(
 
 
 def is_return(prompt: object) -> bool:
-    """Return whether a prompt is an agent's return: its head holds one of RETURNS."""
-    return any(t in str(prompt or "").strip()[:500] for t in RETURNS)
+    """Return whether a prompt is no message of the user's.
+
+    An agent's or a peer's return (its head holds one of RETURNS), or the usage-limit
+    prompt.
+    """
+    head = str(prompt or "").strip()[:500]
+    return head.startswith(LIMIT_RESET) or any(t in head for t in RETURNS)
 
 
 def ago(seconds: float) -> str:
