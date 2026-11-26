@@ -164,6 +164,18 @@ class OutwardActions(support.Route):
             "ask:push=1", leadbash("s1", "docker buildx build -o TYPE=image,push=1 .")
         )
         _ = self.hook("silent", leadbash("s1", "./gradlew clean build test"))
+        # a local read or a static script or tool: its computed word is an argument (F2)
+        _ = self.hook(
+            "silent",
+            leadbash(
+                "s1",
+                "cargo tree $X; uv run pytest $X; npm run test:unit -- $X; "
+                "docker inspect $C",
+            ),
+        )
+        _ = self.hook(
+            "ask:docker exec c \\$ACTION", leadbash("s1", "docker exec c $ACTION")
+        )
         deep = "$(" * 1500 + "gh -R npm pr merge 5" + ")" * 1500
         _ = self.hook("ask:acts on the hosted repository", leadbash("s1", deep))
 
@@ -345,8 +357,26 @@ ARGUMENTS = (
     "cargo clippy $ARGS",
     "npm test $1",
     "pnpm test $1",
+    # local reads and runs held as publishes in a usage analysis (F2): a cargo or
+    # container read, a static package script, a static tool under uv
+    "cargo tree $X",
+    "cargo metadata --format-version $V",
+    "uv run pytest $X",
+    "uv run ruff check $X",
+    "npm run test:unit -- $X",
+    "pnpm run lint $X",
+    "yarn run build $X",
+    "bun run dev $X",
+    "docker inspect $C",
+    "docker ps $X",
+    "docker logs -f $C",
+    "docker images $X",
+    "podman inspect $C",
+    "podman logs $C",
+    "docker compose ps $X",
+    "docker compose logs $S",
 )
-ARGUMENT_FORMS = 7
+ARGUMENT_FORMS = 23
 # ...and still outward: a computed subcommand, the verb itself, a tool whose every word
 # may be a task or goal, and a computed word after any subcommand off the inert list —
 # one that runs another (`npm run $X`), opens a publish (`yarn npm $V`, `docker build
@@ -373,8 +403,37 @@ STILL_OUTWARD = (
     "docker plugin $X",
     "helm chart $X",
     "cargo run $X",
+    # ...and past the two-word inert forms: an option before the script or tool, a
+    # tool that runs a computed command, a compose subcommand that runs one
+    "npm run --silent $X",
+    "uv run --with x $X",
+    "uv run $T",
+    "uv run python3.12 $X",
+    "uv run /bin/sh $X",
+    "uv run npx $X",
+    "uv run timeout 5 $X",
+    "uv run npm $V",
+    "docker compose exec c $X",
+    "docker compose run $X",
+    "docker run img $X",
+    "podman exec c $X",
+    "docker --context x inspect $C",
 )
-STILL_OUTWARD_FORMS = 20
+STILL_OUTWARD_FORMS = 33
+# Spec §1.6.2: every real publish and each command whose computed word may still be
+# one, held past the inert forms above; `docker exec`'s later words are a command (R8)
+STILL_HELD = (
+    "cargo publish",
+    "npm publish",
+    "npm run $X",
+    "uv publish",
+    "uv run bash $X",
+    "docker push reg/app:1",
+    "docker build --push -t reg/app .",
+    "docker $V",
+    "docker exec c $ACTION",
+)
+STILL_HELD_FORMS = 9
 
 
 class ComputedArguments(unittest.TestCase):
@@ -386,10 +445,11 @@ class ComputedArguments(unittest.TestCase):
 
         assert len(ARGUMENTS) == ARGUMENT_FORMS
         assert len(STILL_OUTWARD) == STILL_OUTWARD_FORMS
+        assert len(STILL_HELD) == STILL_HELD_FORMS
         for command in ARGUMENTS:
             with self.subTest(command):
                 assert outward_in(command) is None
-        for command in STILL_OUTWARD:
+        for command in (*STILL_OUTWARD, *STILL_HELD):
             with self.subTest(command):
                 assert outward_in(command) is not None
 

@@ -53,22 +53,65 @@ REVIEW_SHAPE_MUTATION = re.compile(
 # any other it may be the verb: a subcommand may run another (`npm run $X`), open a
 # publish with a later word (`yarn npm $V`, `docker build --push`), or take every
 # positional word as a task (`gradle build $T`, `mvn clean $GOAL`); a false match
-# only asks.
+# only asks. A container's `exec` or `run` stays off: its later words are a command
+# (R8).
 INERT = {
-    "cargo": {"test", "build", "check", "clippy", "fmt", "doc", "bench", "nextest"},
+    "cargo": {
+        "test",
+        "build",
+        "check",
+        "clippy",
+        "fmt",
+        "doc",
+        "bench",
+        "nextest",
+        "tree",
+        "metadata",
+    },
     **{tool: {"test"} for tool in ("npm", "pnpm", "yarn", "bun")},
+    **{tool: {"inspect", "ps", "logs", "images"} for tool in ("docker", "podman")},
 }
+# The tools a `uv run` may start that run a computed word as a command: a shell, an
+# interpreter, a wrapper or a package runner (`uv run bash $X`) stays a verb.
+RUNNERS = re.compile(
+    r"(?:sh|bash|zsh|dash|ksh|fish|csh|tcsh|env|xargs|sudo|npx|uvx|bunx|pnpx"
+    r"|python[\d.]*|node|perl|ruby)"
+)
 
 
-def _argued(tool: str, words: Sequence[shell_cmd.Word]) -> bool:
-    """Return whether the words after a PUBLISHERS command's first are its arguments.
+def _pair(tool: str, sub: str, second: shell_cmd.Word) -> bool:
+    """Return whether `tool sub second` is a two-word inert form.
 
-    So when that first word is a static INERT subcommand of the tool. A word before
-    it that may be an option's value or a toolchain (`pnpm --filter x $V`, `cargo
-    +nightly $X`) leaves every computed word a verb.
+    A package script (`npm run test:unit`), a static tool under uv that runs no
+    computed command (RUNNERS, shell_cmd.WRAPPERS), or a compose read (`docker
+    compose ps`). An option before the script or tool may take the next word as its
+    value, so it leaves the form off.
+    """
+    t = second.text
+    if not second.static or t.startswith("-"):
+        return False
+    if sub == "run" and tool in ("npm", "pnpm", "yarn", "bun"):
+        return True
+    if sub == "run" and tool == "uv":
+        name = t.rpartition("/")[2]
+        return not (RUNNERS.fullmatch(name) or name in shell_cmd.WRAPPERS)
+    return tool == "docker" and sub == "compose" and t in ("ps", "logs")
+
+
+def _argued(tool: str, words: Sequence[shell_cmd.Word]) -> int | None:
+    """Return the index of a PUBLISHERS command's first argument word, or None.
+
+    Its words (after its name) from 1 on are arguments when the first is a static
+    INERT subcommand of the tool, from 2 on when the first two are a two-word inert
+    form (_pair). A word before it that may be an option's value or a toolchain
+    (`pnpm --filter x $V`, `cargo +nightly $X`) leaves every computed word a verb.
     """
     first = words[0] if words else None
-    return bool(first and first.static and first.text in INERT.get(tool, ()))
+    if not (first and first.static):
+        return None
+    if first.text in INERT.get(tool, ()):
+        return 1
+    return 2 if len(words) > 1 and _pair(tool, first.text, words[1]) else None
 
 
 def publish_word(tool: str, w: shell_cmd.Word, *, argument: bool = False) -> bool:
@@ -160,9 +203,9 @@ def outward_cmd(cmd: shell_cmd.Cmd) -> bool:
     """Return whether cmd, from a `gh`, `git` or publisher's word on, acts outward."""
     if cmd.name in PUBLISHERS:
         rest = cmd.words[1:]
-        argued = _argued(cmd.name, rest)
+        start = _argued(cmd.name, rest)
         return any(
-            publish_word(cmd.name, w, argument=argued and i > 0)
+            publish_word(cmd.name, w, argument=start is not None and i >= start)
             for i, w in enumerate(rest)
         )
     if cmd.name == "gh":

@@ -96,6 +96,22 @@ class GuardNoGateLog(support.Route):
         _ = g(2, wt, "git $'\\x70ush' origin feature")
         _ = g(0, wt, "true && bash -c 'cd /no-such-dir-dsp && git push origin feature'")
 
+    def test_quoted_data(self) -> None:
+        """A `printf` argument or redirection target that names a push is data (F8)."""
+        # a usage analysis measured this shape held as a push (spec §1.6.3); a script
+        # with no git command beside it
+        script = self.write(self.T / "status.sh", "echo ok\n")
+        probe = (
+            "printf '%s\\n' 'Msg3 | the user asked to \"force push\" with git' "
+            ">> asks.md && bash {} status"
+        )
+        _ = self.guard(0, self.R, probe.format(script))
+        _ = self.guard(0, self.R, 'echo "git push --force origin main" >> asks.md')
+        _ = self.guard(0, self.R, "printf x > 'git push origin main'")
+        # ...and the probe reads the script it runs: one that pushes is held
+        pushes = self.write(self.T / "pushes.sh", "git push origin main\n")
+        _ = self.guard(HELD, self.R, probe.format(pushes))
+
 
 class GuardGateLogs(support.Route):
     """A route of s1 on R with the gate logs section 152 leaves.
