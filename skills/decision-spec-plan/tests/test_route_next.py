@@ -36,7 +36,26 @@ def plan(tasks: int) -> str:
     )
 
 
-class Next(support.Route):
+class _Next(support.Route):
+    """`--next` and its printed calls, for the classes below."""
+
+    def next_(self, *extra: object) -> support.Result:
+        """`--next` of phase 1 on R, by session s1."""
+        return self.py(
+            RS, self.P, "--phase", "1", "--repo", self.R, "--next", *extra, session="s1"
+        )
+
+    def calls(self, out: str) -> dict[str, dict[str, object]]:
+        """The printed Agent calls by name."""
+        found = (
+            cast("dict[str, object]", json.loads(ln))
+            for ln in out.splitlines()
+            if ln.startswith("  {")
+        )
+        return {str(c["name"]): c for c in found}
+
+
+class Next(_Next):
     """Phase 1 of R: four plans, lane p1-01 mid-plan on its own branch."""
 
     @override
@@ -61,21 +80,6 @@ class Next(support.Route):
             cls.P / "lanes/p1-04-checkpoint.md", f"Task 1 done.\nFinal SHA: {sha}\n"
         )
         _ = cls.write(cls.LEAD, jline({"type": "user"}) + "\n")
-
-    def next_(self, *extra: object) -> support.Result:
-        """`--next` of phase 1 on R, by session s1."""
-        return self.py(
-            RS, self.P, "--phase", "1", "--repo", self.R, "--next", *extra, session="s1"
-        )
-
-    def calls(self, out: str) -> dict[str, dict[str, object]]:
-        """The printed Agent calls by name."""
-        found = (
-            cast("dict[str, object]", json.loads(ln))
-            for ln in out.splitlines()
-            if ln.startswith("  {")
-        )
-        return {str(c["name"]): c for c in found}
 
     def agent(self, name: str, *, ended: bool) -> None:
         """A subagent transcript of the lead's, by name, finished or still working."""
@@ -169,6 +173,67 @@ class Next(support.Route):
         for top, want in cases.items():
             got = lane_dir(Path(top), "p1-01")
             self.ok(f"{top}: {got}", got == want, f"want {want}")
+
+
+class NextGreen(_Next):
+    """Lane p1-01 green at its checkpoint; p1-02 a wave later with no Depends on."""
+
+    @override
+    @classmethod
+    def setUpClass(cls) -> None:
+        """Write the plans, the brief, and lane p1-01's commit, checkpoint and gate."""
+        super().setUpClass()
+        _ = cls.write(
+            cls.P / "plans/p1-00-index.md",
+            "| Plan | Wave | Depends on |\n|---|---|---|\n"
+            "| p1-01 | 1 | — |\n| p1-02 | 2 | — |\n",
+        )
+        for i, n in (("01", 3), ("02", 2)):
+            _ = cls.write(cls.P / f"plans/p1-{i}-x.md", plan(n))
+        _ = cls.write(cls.P / "GROUP-BRIEF-p1.md", "# brief\n")
+        lane = cls.T / "repo-p1-01"
+        _ = cls.git("-C", cls.R, "worktree", "add", "-q", "-b", "p1-01", lane)
+        _ = cls.write(lane / "a.txt", "a\n")
+        _ = cls.git("-C", lane, "add", "a.txt")
+        _ = cls.git("-C", lane, "commit", "-qm", "feat: task 2")
+        cls.SHA: str = cls.rev(lane)
+        _ = cls.write(
+            cls.P / "lanes/p1-01-gate.log", f"sha={cls.SHA} dirty=0\nexit=0\n"
+        )
+        _ = cls.write(cls.LEAD, jline({"type": "user"}) + "\n")
+
+    def checkpoint(self, after: str) -> None:
+        """Lane p1-01's checkpoint, its `Next task:` line saying after."""
+        _ = self.write(
+            self.P / "lanes/p1-01-checkpoint.md",
+            f"Tasks 1-2 done.\nNext task: {after}\nFinal SHA: {self.SHA}\n",
+        )
+
+    def test_green(self) -> None:
+        """A green lane with a task left gets its call; with none it is ready."""
+        self.checkpoint("3")
+        r = self.next_()
+        mid = str(self.calls(r.out).get("exec-p1-01-g1", {}).get("prompt", ""))
+        self.ok("green with a next task: its call", "Your tasks: 3." in mid, r.out)
+        self.ok(
+            "a later wave waits for an open earlier one",
+            "p1-02: waits for p1-01" in r.out and "exec-p1-02" not in r.out,
+            r.out,
+        )
+        self.checkpoint("none")
+        r = self.next_()
+        self.ok(
+            "green with none left: ready, no call",
+            "p1-01: green gate" in r.out and not self.calls(r.out),
+            r.out,
+        )
+        # at rung S with no plan index, the one plan is the index
+        self.rm(self.P / "plans/p1-00-index.md")
+        self.rm(self.P / "plans/p1-02-x.md")
+        self.checkpoint("3")
+        r = self.next_("--rung", "S")
+        mid = str(self.calls(r.out).get("exec-p1-01-g1", {}).get("prompt", ""))
+        self.ok("at S the one plan is read", "Your tasks: 3." in mid, r.out)
 
 
 if __name__ == "__main__":
