@@ -93,6 +93,21 @@ class NoRouteThenActivate(support.Route):
             "/Skill tool/",
             self.asks("run this through decision-spec-plan", "no-skill.jsonl"),
         )
+        # F10: only a request to run the route loads it, never the skill as a subject
+        for prompt in (
+            "use dsp for this",
+            "Use the dsp plugin on the export bug",
+            "dsp this, please",
+            "/decision-spec-plan phase 2",
+        ):
+            _ = self.hook("/Skill tool/", self.asks(prompt, "no-skill.jsonl"))
+        for prompt in (
+            "inspect our dsp skill",
+            "the dsp skill loads slowly",
+            "why do decision-spec-plan's hooks hold so much?",
+            "use dsp-deep for the review",
+        ):
+            _ = self.hook("silent", self.asks(prompt, "no-skill.jsonl"))
         _ = self.hook(
             "silent",
             self.asks("use dsp to find why the export drops rows", "skill.jsonl"),
