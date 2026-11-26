@@ -84,8 +84,8 @@ The route's working vocabulary, in reading order. Ids in `code` are the literal 
   push also needs a gate log naming it, except `<commit>:refs/heads/<branch>` to a branch other
   than main — the push that starts the CI run.
 - **Budget hold** — `route_state.py --budget` records the route's estimate, once, at the go-ahead;
-  the hook holds `exec-` dispatches until the user answers (at S, never), and asks again past 125%
-  of the estimate.
+  the hook holds `exec-` dispatches until the user answers (at S, the first record never), and
+  asks again past 125% of the latest total, spend counted from the first record.
 - **Units (M)** — the route's cost unit, about a million Opus-input-equivalent tokens
   (`costs.md`).
 

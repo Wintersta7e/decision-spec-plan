@@ -138,7 +138,7 @@ class TwoRoutes(support.Route):
         _ = self.py(
             RS, "--budget", "w9", "--estimate", "1", "--groups", "9", session="s5"
         )
-        _ = self.write(l5, human(1) + "\n")
+        _ = self.write(l5, support.said(1, "w9: 1M?") + "\n" + human(1) + "\n")
         # 5M by the first route's other lead
         self.append(home / ".claude/projects/p/s9.jsonl", used(2, "u9", 5000000))
         _ = self.hook(

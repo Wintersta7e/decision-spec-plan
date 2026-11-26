@@ -21,6 +21,8 @@ from typing import Required, TypedDict
 
 from typing_extensions import override
 
+from dsp_route import transcript
+
 SCRIPT = pathlib.Path(__file__).resolve().parents[1] / "scripts" / "route_state.py"
 SESSION = "s-shape"
 PREFIX = "transcript format:"
@@ -318,6 +320,103 @@ class ActivateShapeCheck(unittest.TestCase):
             _ = r["message"].pop("stop_reason", None)
         line = self.assert_flags(records, "ETAs", "the context stop")
         assert line.count("the budget hold") == 1
+
+
+def stamp(n: int) -> str:
+    """A timestamp n seconds into a fixed minute."""
+    return f"2026-01-01T00:00:{n:02d}.000Z"
+
+
+def text(n: int, said: str) -> dict[str, object]:
+    """The lead's text that ends its turn, at stamp(n)."""
+    return {
+        "type": "assistant",
+        "timestamp": stamp(n),
+        "message": {
+            "role": "assistant",
+            "stop_reason": "end_turn",
+            "content": [{"type": "text", "text": said}],
+        },
+    }
+
+
+def typed(n: int, prompt: str) -> dict[str, object]:
+    """The user's typed prompt, at stamp(n)."""
+    return {
+        "type": "user",
+        "timestamp": stamp(n),
+        "origin": {"kind": "human"},
+        "message": {"role": "user", "content": prompt},
+    }
+
+
+def asked(n: int, question: str, answer: str) -> dict[str, object]:
+    """The user's answer to an AskUserQuestion, at stamp(n)."""
+    return {
+        "type": "user",
+        "timestamp": stamp(n),
+        "toolUseResult": {
+            "questions": [{"question": question}],
+            "answers": {question: answer},
+        },
+        "message": {
+            "role": "user",
+            "content": [{"type": "tool_result", "tool_use_id": "q", "content": "ok"}],
+        },
+    }
+
+
+class FigureAnswers(unittest.TestCase):
+    """An answer covers a budget's figure only when it is about that figure (F74)."""
+
+    def lead(self, records: tuple[dict[str, object], ...]) -> pathlib.Path:
+        """A lead transcript of records in a directory removed after the test."""
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        path = pathlib.Path(tmp.name, "lead.jsonl")
+        _ = path.write_text("".join(json.dumps(r) + "\n" for r in records))
+        return path
+
+    def turn(self, *records: dict[str, object]) -> str | None:
+        """When records' current turn answered `w2`'s 15M, else None."""
+        return transcript.turn_answer([self.lead(records)], 15, "w2")
+
+    def since(self, *records: dict[str, object]) -> str | None:
+        """When records answered `w2`'s 15M from stamp(5) on, else None."""
+        return transcript.answered_since([self.lead(records)], stamp(5), 15, "w2")
+
+    def test_a_typed_go_after_the_stated_figure_answers(self) -> None:
+        """A typed go after the stated figure or range answers it."""
+        assert self.turn(text(1, "≈14–16M — go ahead?"), typed(2, "go")) == stamp(2)
+        assert self.turn(text(1, "w2 at 14-16M?"), typed(2, "go")) == stamp(2)
+        assert self.turn(text(1, "15M, go?"), typed(2, "go")) == stamp(2)
+        # another figure, or a figure in an id, is not this one
+        assert self.turn(text(1, "≈16–18M — go ahead?"), typed(2, "go")) is None
+        assert self.turn(text(1, "lane p1-15M?"), typed(2, "go")) is None
+        # an agent's return is no answer
+        for prompt in ('<teammate-message teammate_id="a">done</teammate-message>',):
+            assert self.turn(text(1, "15M?"), typed(2, prompt)) is None, prompt
+        # only the prompt that opened the current turn
+        later = (text(1, "15M?"), typed(2, "go"), text(3, "done"), typed(4, "next"))
+        assert self.turn(*later) is None
+
+    def test_only_a_budget_question_answers(self) -> None:
+        """A design question's answer that names the number covers nothing."""
+        design = "Which design: option A (15M of rework) or option B?"
+        assert self.turn(typed(1, "go"), asked(2, design, "Option A, 15M")) is None
+        budget = "Raise the budget to 15M?"
+        assert self.turn(typed(1, "go"), asked(2, budget, "Yes")) == stamp(2)
+        label = "w2: the route's total — go ahead?"
+        assert self.turn(typed(1, "go"), asked(2, label, "Yes, ≈14–16M")) == stamp(2)
+
+    def test_the_gate_counts_a_reply_to_the_figure(self) -> None:
+        """After the record, a prompt counts only once the figure was told before it."""
+        assert self.since(text(6, "the plan is ready"), typed(7, "go")) is None
+        assert self.since(text(6, "w2: 15M total?"), typed(7, "go")) == stamp(7)
+        # an answer before the record is not this record's
+        assert self.since(text(1, "15M?"), typed(2, "go")) is None
+        # headless: no prompt of the user's at all passes at the record
+        assert self.since(text(6, "running")) == stamp(5)
 
 
 if __name__ == "__main__":

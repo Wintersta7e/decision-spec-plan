@@ -1391,6 +1391,22 @@ def human(offset: float) -> str:
     )
 
 
+def said(offset: float, text: str) -> str:
+    """The lead's text that ends its turn, `offset` seconds from now."""
+    return jline(
+        {
+            "type": "assistant",
+            "timestamp": ts(offset),
+            "message": {
+                "id": f"said{offset}",
+                "role": "assistant",
+                "stop_reason": "end_turn",
+                "content": [{"type": "text", "text": text}],
+            },
+        }
+    )
+
+
 def peer(offset: float) -> str:
     """A message another session sent, `offset` seconds from now."""
     return jline(

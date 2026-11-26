@@ -267,11 +267,10 @@ class Budget(support.Route):
             and last.get("label") == "w1"
             and last.get("groups") == GROUPS
             and last.get("phase") == "1"
-            and support.grep(r.out, "spend from now passes 12.5M")
+            and support.grep(r.out, "spend since its first record passes 12.5M")
             and support.grep(
                 r.out,
-                "Ask exactly: \"w1: 10M for phase 1's work left "
-                "— the lead, its reviews",
+                "Ask exactly: \"w1: 10M for phase 1's total — the lead, its reviews",
                 F=True,
             ),
             r.out,
@@ -281,7 +280,10 @@ class Budget(support.Route):
         _ = self.hook("deny:has not answered", self.dispatch("exec-p1-01-a", "t1"))
         self.append(s9, human(1))  # an answer in another lead session of the route
         _ = self.hook("deny:has not answered", self.dispatch("exec-p1-01-a", "t1"))
+        # an answer is the user's prompt after the lead told the figure (F74)
         self.append(lead, human(1))
+        _ = self.hook("deny:has not answered", self.dispatch("exec-p1-01-a", "t1"))
+        self.append(lead, support.said(1, "w1: 10M — go ahead?"), human(1))
         _ = self.hook(
             "/^ETA exec-p1-01-a: none yet — no task group of this route has finished/",
             self.dispatch("exec-p1-01-a", "t1"),
@@ -317,12 +319,13 @@ class Budget(support.Route):
             env=no_bwrap,
         )
         _ = self.budget("w2", "--estimate", "0.01", "--groups", "9")
-        self.append(lead, human(1))
+        self.append(lead, support.said(1, "w2: 0.01M?"), human(1))
         self.append(lead, used(2, "u1", 11000))
         _ = self.hook("/^ETA exec-p1-06-a/", self.dispatch("exec-p1-06-a", "t6"))
         self.append(lead, used(2, "u2", 2000))
         _ = self.hook(
-            "deny:budget .w2. .*0.0M spent since — more than 25% over",
+            "deny:budget .w2. .*0.0M spent since the first record .* more than 25% "
+            "over",
             self.dispatch("exec-p1-06-a", "t6"),
         )  # the spend
         _ = self.hook(
@@ -371,7 +374,7 @@ class Budget(support.Route):
             "again from this one",
             self.dispatch("exec-p1-07-a", "t7"),
         )
-        self.append(s9, human(2))
+        self.append(s9, support.said(2, "w3: 50M?"), human(2))
         _ = self.hook("/^ETA exec-p1-07-a/", self.dispatch("exec-p1-07-a", "t7"))
         # an agent named for another phase is that phase's work, left out of this spend
         _ = self.hook(
@@ -433,16 +436,18 @@ class Budget(support.Route):
         self.append(lead, endturn(0))
         _ = self.budget("w6", "--estimate", "50", "--groups", "9")
         _ = self.hook("deny:has not answered", self.dispatch("exec-p1-07-a", "t7"))
-        # at S the figure is told with the plan, not asked: 58 of 121 questions in one
-        # window were budget asks, 50 approved as offered (F74)
+        # at S only the first figure is told (OneBudget): a raise is asked, as a
+        # re-record once reset the 125% window unasked (F74)
         _ = self.activate_route("--rung", "S")
         out = self.budget("s1-round", "--estimate", "50").out
         self.ok(
-            "--budget at S says to tell the figure and go on",
-            support.grep(out, "At S, tell the user this figure with the plan and go on")
-            and not support.grep(out, "Ask exactly"),
+            "--budget on a raise at S asks",
+            support.grep(out, "Ask exactly")
+            and not support.grep(out, "At S, tell the user"),
             out,
         )
+        _ = self.hook("deny:has not answered", self.dispatch("exec-p1-07-a", "t7"))
+        self.append(lead, support.said(1, "s1-round: 50M?"), human(1))
         _ = self.hook("/^ETA exec-p1-07-a/", self.dispatch("exec-p1-07-a", "t7"))
         # the lane's plan names its gates' minutes: the ETA carries them (F83)
         _ = self.write(
@@ -457,7 +462,7 @@ class Budget(support.Route):
         )
         _ = self.activate_route("--rung", "M")
         _ = self.budget("w6", "--estimate", "50", "--groups", "9")
-        self.append(lead, human(3))
+        self.append(lead, support.said(3, "w6: 50M?"), human(3))
 
     def etas_of_finished_agents(self) -> None:
         """A dispatch's ETA is the median of its kind's finished agents (F83)."""
@@ -528,6 +533,125 @@ class Budget(support.Route):
         )
         for f in subagents.glob("agent-f[67].*"):
             f.unlink()
+
+
+class OneBudget(support.Route):
+    """One budget a route: spend from its first record, every raise answered (F74)."""
+
+    def dispatch(self) -> str:
+        """A PreToolUse of the lead's Agent call that dispatches a task group."""
+        return ev(
+            "PreToolUse",
+            "s1",
+            '"tool_name":"Agent","tool_input":{"name":"exec-p1-01-a"},'
+            f'"tool_use_id":"t1","transcript_path":"{self.LEAD}"',
+        )
+
+    def records(self, *records: dict[str, object]) -> None:
+        """The planning dir's budget file holding records, the lead's prompt before."""
+        _ = self.write(self.LEAD, human(-3600) + "\n")
+        _ = self.write(
+            self.P / "route-budget.json", json.dumps({"budgets": list(records)})
+        )
+
+    @staticmethod
+    def record(
+        label: str, estimate: float, at: float, **extra: str
+    ) -> dict[str, object]:
+        """A budget record of phase 1 by s1, `at` seconds from now."""
+        return {
+            "label": label,
+            "estimate": estimate,
+            "phase": "1",
+            "at": ts(at),
+            "session": "s1",
+            **extra,
+        }
+
+    def test_spend_counts_from_the_first_record(self) -> None:
+        """AC-P12-1-1, -4: a raise moves the ceiling, never the base."""
+        _ = self.activate_route("--rung", "M")
+        first = self.record("w1", 10, -600, answered=ts(-590))
+        self.records(first, self.record("w2", 20, -300))
+        # 15M spent between the two records
+        self.append(self.LEAD, used(-450, "u1", 15_000_000))
+        _ = self.hook("deny:has not answered", self.dispatch())
+        self.append(
+            self.LEAD,
+            support.said(-200, "w2: raise phase 1's total to 20M — go ahead?"),
+            human(-100),
+        )
+        _ = self.hook("/^ETA exec-p1-01-a/", self.dispatch())
+        # 11M after the raise: 26M since the first record is over 125% of 20M
+        self.append(self.LEAD, used(-50, "u2", 11_000_000))
+        _ = self.hook(
+            f"deny:budget .w2. .*26.0M spent since the first record \\({first['at']}\\)"
+            " — more than 25% over.*the route's new total",
+            self.dispatch(),
+        )
+        out = self.py(RS, "--budget", "w3", "--estimate", "30", session="s1").out
+        self.ok(
+            "--budget on a raise prints the total and the spend so far",
+            support.grep(
+                out,
+                f"raise: 30M total for phase 1; 26.0M spent since {first['at']} "
+                "(first record 10M)",
+                F=True,
+            )
+            and support.grep(
+                out,
+                "Ask exactly: \"w3: raise phase 1's total to 30M (26.0M spent so far) "
+                '— go ahead?"',
+                F=True,
+            ),
+            out,
+        )
+
+    def test_a_raise_at_s_needs_an_answer(self) -> None:
+        """AC-P12-1-2: at S only the first record goes on unanswered."""
+        _ = self.activate_route("--rung", "S")
+        self.records(self.record("w1", 10, -600))
+        _ = self.hook("/^ETA exec-p1-01-a/", self.dispatch())
+        self.records(self.record("w1", 10, -600), self.record("w2", 20, -300))
+        _ = self.hook("deny:has not answered", self.dispatch())
+        # a typed prompt with no figure told before it is no answer
+        self.append(self.LEAD, support.said(-200, "the plan is ready"), human(-100))
+        _ = self.hook("deny:has not answered", self.dispatch())
+        out = self.py(RS, "--budget", "w3", "--estimate", "30", session="s1").out
+        self.ok(
+            "--budget on a raise at S asks",
+            support.grep(out, "Ask exactly")
+            and not support.grep(out, "At S, tell the user"),
+            out,
+        )
+
+    def test_an_answer_names_the_figure(self) -> None:
+        """AC-P12-1-3: a go after the stated range answers; a design answer not."""
+        _ = self.activate_route("--rung", "M")
+        self.records(self.record("w1", 10, -600, answered=ts(-590)))
+        self.append(
+            self.LEAD,
+            support.said(-20, "w2: ≈14–16M for phase 1's total — go ahead?"),
+            human(-10),
+        )
+        out = self.py(RS, "--budget", "w2", "--estimate", "15", session="s1").out
+        self.ok(
+            "--budget after the stated range and a typed go asks nothing",
+            out.startswith("budget recorded") and not support.grep(out, "Ask exactly"),
+            out,
+        )
+        self.append(
+            self.LEAD,
+            endturn(-5),
+            human(-4),
+            auq(-3, "Which design: option A (15M of rework) or option B?"),
+        )
+        out = self.py(RS, "--budget", "w3", "--estimate", "15", session="s1").out
+        self.ok(
+            "--budget after a design answer naming the figure asks",
+            support.grep(out, "Ask exactly"),
+            out,
+        )
 
 
 ROUTE_SPEND = """import pathlib, sys
@@ -728,13 +852,14 @@ class RouteOfItsOwn(support.Sandbox):
         # one budget a route, held on its spend, never on its count of exec- dispatches:
         # the successor of a group the context stop ended asked the user again (F74)
         self.hbudget("hw", "--estimate", "50", "--groups", "1")
-        self.append(hlead, human(2))
+        self.append(hlead, support.said(2, "hw: 50M?"), human(2))
         _ = self.hook("/^ETA exec-p1-01-a/", self.hdispatch("exec-p1-01-a", "r2"))
         self.append(hlead, sent(3, "r2", "exec-p1-01-a"))
         _ = self.hook("/^ETA exec-p1-02-a/", self.hdispatch("exec-p1-02-a", "r3"))
         # each gate fails on its own: a ledger check that raises still leaves the budget
         # hold
         time.sleep(4)  # past the records stamped up to 3 s ahead above
+        self.append(hlead, endturn(3))  # a turn that did not tell the figure
         self.hbudget("hw2", "--estimate", "50", "--groups", "4")
         (decisions / "00-index.md").mkdir()
         _ = self.hook("deny:has not answered", self.hdispatch("exec-p1-02-a", "r3"))
@@ -842,7 +967,7 @@ class RouteOfItsOwn(support.Sandbox):
         # a project named alike whose sessions ran no one knows where is not the route's
         # spend
         self.hbudget("hw3", "--estimate", "1", "--groups", "9")
-        self.append(hlead, human(1))
+        self.append(hlead, support.said(1, "hw3: 1M?"), human(1))
         other = cast(
             "dict[str, object]", json.loads(crec(2, "z1", 3000000, "", "sdk-cli"))
         )
@@ -900,7 +1025,13 @@ class BaseMoved(support.Sandbox):
                 f'"tool_use_id":"t1","transcript_path":"{lead}"',
             )
 
-        def budget(label: str, *extra: str) -> str:
+        def answer(label: str) -> None:
+            # stamped now: one ahead would answer the next record of the same figure
+            self.append(lead, support.said(0, f"{label}: 10M?"), human(0))
+
+        def budget(label: str, *extra: str, answered: bool = True) -> str:
+            # a turn that did not tell the figure: the record waits for an answer
+            self.append(lead, endturn(0))
             out = self.py(
                 RS,
                 "--budget",
@@ -912,7 +1043,8 @@ class BaseMoved(support.Sandbox):
                 merge=True,
             ).out
             time.sleep(1)
-            self.append(lead, human(1))
+            if answered:
+                answer(label)
             return out
 
         def upstream() -> None:
@@ -943,7 +1075,13 @@ class BaseMoved(support.Sandbox):
         # caught up to that move, not to the next one
         upstream()
         _ = self.hook("deny:main lacks 2 commits", dispatch())
-        _ = budget("w4", "--base", "pin")
+        # a pin the user never answered is no choice (F74)
+        _ = budget("w4", "--base", "pin", answered=False)
+        _ = self.hook(
+            "deny:(?s)what this round was planned on moved.*main lacks 2 commits",
+            dispatch(),
+        )
+        answer("w4")
         _ = self.hook("/^ETA exec-p1-01-a/", dispatch())
         # a later figure keeps the user's choice
         upstream()

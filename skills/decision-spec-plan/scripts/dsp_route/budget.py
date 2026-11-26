@@ -1,5 +1,5 @@
 # SPDX-License-Identifier: MIT
-"""--budget: record the route's estimate.
+"""--budget: record the route's total; a later record is a raise of it.
 
 The hook then holds the lead's `exec-` dispatches to it (execution.md, F74).
 """
@@ -17,6 +17,7 @@ from .common import (
     SLACK,
     Budget,
     RouteArgs,
+    budgets,
     checked,
     load_json,
     route_args,
@@ -70,14 +71,18 @@ def _args(argv: Sequence[str]) -> BudgetArgs:
     """Return the parsed arguments of --budget."""
     ap = argparse.ArgumentParser(
         prog="route_state.py --budget",
-        description="Record the route's estimate: the lead, every review and agent of "
-        "the stages left (execution.md).",
+        description="Record the route's total: the lead, every review and agent of "
+        "the stages left (execution.md); a later record raises it.",
     )
     _ = ap.add_argument(
-        "--budget", required=True, metavar="LABEL", help="the route, or the work left"
+        "--budget", required=True, metavar="LABEL", help="the route's label"
     )
     _ = ap.add_argument(
-        "--estimate", type=float, required=True, help="M units, priced per costs.md"
+        "--estimate",
+        type=float,
+        required=True,
+        help="M units: the route's total, priced per costs.md — on a raise the new "
+        "total, never the work left",
     )
     _ = ap.add_argument(
         "--groups",
@@ -134,13 +139,44 @@ def _print_fit(a: BudgetArgs, session: str) -> None:
         )
 
 
+def _print_raise(
+    a: BudgetArgs, earlier: list[Budget], marker: pathlib.Path
+) -> float | None:
+    """Print a raise's line; return the route's spend since its first record.
+
+    None when the phase had no record before this one. A raise is the route's new
+    total: one count from the first record, so a re-record never resets the window
+    (F74).
+    """
+    if not earlier:
+        return None
+    from .holds import leads, spend
+
+    first = earlier[0]
+    spent = spend(leads({}, marker), first["at"], first["phase"])
+    print(
+        f"raise: {a.estimate:g}M total for phase {first['phase']}; "
+        f"{spent / 1e6:.1f}M spent since {first['at']} (first record "
+        f"{first['estimate']:g}M)"
+    )
+    return spent
+
+
 def _print_ask(
-    a: BudgetArgs, phase: str, marker: Mapping[str, object], answered: str | None
+    a: BudgetArgs,
+    phase: str,
+    marker: Mapping[str, object],
+    answered: str | None,
+    spent: float | None,
 ) -> None:
-    """Print what the lead tells the user about the recorded figure."""
+    """Print what the lead tells the user about the recorded figure.
+
+    `spent` is the route's spend since its first record on a raise, None on the first.
+    """
     then = (
-        f"again once the route's spend from now passes {a.estimate * SLACK:.3g}M; a "
-        "new lead session of the route keeps this figure and its answer."
+        "again once the route's spend since its first record passes "
+        f"{a.estimate * SLACK:.3g}M; a new lead session of the route keeps this figure "
+        "and its answer."
     )
     if answered:
         print(
@@ -148,7 +184,8 @@ def _print_ask(
             "that answer stands for this figure, so the hook lets exec- dispatches "
             "through, and holds them " + then
         )
-    elif marker.get("rung") == "S":
+    elif marker.get("rung") == "S" and spent is None and not a.base:
+        # at S only the first figure is told: a raise or a base choice is asked (F74)
         print(
             "At S, tell the user this figure with the plan and go on: the hook does "
             "not wait for an answer, and holds exec- dispatches " + then
@@ -160,10 +197,16 @@ def _print_ask(
         )
         # the figure asked is the figure recorded: an ask of 0.5M against a record of
         # 0.8M was no answer to it, and cost a second ask (F93)
+        ask = (
+            f"{a.estimate:g}M for phase {phase}'s total — the lead, its reviews and "
+            "agents"
+            if spent is None
+            else f"raise phase {phase}'s total to {a.estimate:g}M "
+            f"({spent / 1e6:.1f}M spent so far)"
+        )
         print(
-            f"Ask exactly: \"{a.budget}: {a.estimate:g}M for phase {phase}'s work left "
-            '— the lead, its reviews and agents — go ahead?", with the strongest '
-            "reason against it and an option to run less."
+            f'Ask exactly: "{a.budget}: {ask} — go ahead?", with the strongest reason '
+            "against it and an option to run less."
         )
 
 
@@ -207,13 +250,15 @@ def budget(argv: Sequence[str]) -> int:
     moved = checked(round_moved, own, route) or []
     if a.base:
         record["base"], record["moved"] = a.base, moved
-    if answered := answered_this_turn(session, a.estimate):
+    if answered := answered_this_turn(session, a.estimate, a.budget):
         record["answered"] = answered
+    earlier = budgets(own, marker, phase)
     save_budget(own, marker, record)
     print(
         f"budget recorded: {a.budget} — {a.estimate:g}M, phase {phase}, at "
         f"{record['at']}, in {own / BUDGETS}"
     )
+    spent = _print_raise(a, earlier, path)
     _print_fit(a, session)
     if moved and not a.base:
         print(
@@ -224,5 +269,5 @@ def budget(argv: Sequence[str]) -> int:
             "holds exec- dispatches until you record the answer with --base "
             "pin|catch-up|merge."
         )
-    _print_ask(a, phase, marker, answered)
+    _print_ask(a, phase, marker, answered, spent)
     return 0
