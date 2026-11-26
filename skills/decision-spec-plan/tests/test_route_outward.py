@@ -5,6 +5,8 @@ The lead's `route_state.py --hook` asks the user each time, read as bash reads t
 command (F81).
 """
 
+import pathlib
+import tempfile
 import unittest
 
 from typing_extensions import override
@@ -209,12 +211,19 @@ class OutwardActions(support.Route):
         # 2026-10-31)
         _ = self.hook(
             "silent",
-            leadbash("s1", "X=$(ls); bash -c $X; node -e a.push(1); gh cache delete 5"),
+            leadbash("s1", "echo ls | bash; node -e a.push(1); gh cache delete 5"),
         )
         _ = self.hook("silent", leadbash("s1", "source ./env.sh; git push origin main"))
         _ = self.hook(
-            "silent", leadbash("s1", "eval $X; gh pr view 5; git log --grep merge")
+            "silent",
+            leadbash("s1", "echo ls | bash; gh pr view 5; git log --grep merge"),
         )
+        # ...but a computed `eval` or `-c` body may be any command: it asks
+        _ = self.hook(
+            "ask:bash.*computed",
+            leadbash("s1", "X=$(ls); bash -c $X; gh cache delete 5"),
+        )
+        _ = self.hook("ask:eval", leadbash("s1", "eval $X; gh pr view 5"))
         # a script file the command runs is read: an outward action in it asks
         _ = self.write(t / "scripts/merge.sh", "gh pr merge 7 --squash\n")
         _ = self.hook(
@@ -304,8 +313,10 @@ class ReviewPosts(support.Route):
                 r"review.*\*\*Review\*\*.*templates.md §1.*F104",
                 tool("Bash", command),
             )
-        for command in (POSTS[0], POSTS[3], POSTS[9]):
+        for command in (POSTS[0], POSTS[3]):
             _ = self.hook("silent", tool("Bash", command))
+        # a computed `-c` body may be any command: it asks as an outward action
+        _ = self.hook("ask:bash. running a computed string", tool("Bash", POSTS[9]))
         _ = self.hook("ask:gh api", tool("Bash", POSTS[6]))
         _ = self.hook(
             "ask:gh api", tool("Bash", "gh api repos/o/r/pulls/5/comments -f body=ok")
@@ -341,8 +352,10 @@ class ReviewPosts(support.Route):
             "> **Verdict**: approve\n\n## Coverage\n| File | Read |\n|---|---|\n"
             "| `src/app.py` | Read in full |\n\n- `pytest -q` exit=0 — it imports\n"
         )
-        for command in (POSTS[0], POSTS[3], POSTS[9]):
+        for command in (POSTS[0], POSTS[3]):
             _ = self.hook("silent", tool("Bash", command))
+        # a computed `-c` body may be any command: it asks as an outward action
+        _ = self.hook("ask:bash. running a computed string", tool("Bash", POSTS[9]))
         _ = self.hook("ask:gh api", tool("Bash", POSTS[6]))
         _ = self.hook("silent", tool("mcp__gitlab__create_note"))
 
@@ -373,11 +386,10 @@ ARGUMENTS = (
     "podman logs $C",
     "docker compose ps $X",
     "docker compose logs $S",
-    # ...and in text the reader cannot follow, past an `eval`
-    "eval $Z; npm test $1",
-    "eval $Z; docker run -v $PWD:/a -e K=$K img",
+    # a shell's static `-c` body is read as bash reads it
+    "bash -c 'cargo test'",
 )
-ARGUMENT_FORMS = 23
+ARGUMENT_FORMS = 22
 # ...and still outward: a computed subcommand, the verb itself, a tool whose every word
 # may be a task or goal, and a computed word after any subcommand off the inert list —
 # one that runs another (`npm run $X`), opens a publish (`yarn npm $V`, `docker build
@@ -450,8 +462,27 @@ STILL_HELD = (
     # passed as no publish
     "eval $Z; npm $V",
     "git $Y; npm $V",
+    # a uv tool given by path may be any program, and `coverage run` runs any script
+    "uv run ./x/pytest $X",
+    "uv run /tmp/x/pytest $X",
+    "uv run coverage run $X",
+    # a computed `eval` or shell `-c` body may be any command, under a wrapper too;
+    # a shell body past a command's first word is read as text
+    "eval $Z",
+    "eval $Z; cargo test $V",
+    'eval "npm $V"',
+    'bash -c "$C"',
+    'sh -ec "$C"',
+    'sudo bash -c "$C"',
+    'xargs -I{} sh -c "$C"',
+    "sudo bash -c 'npm publish'",
+    # in text the reader cannot follow, every computed word may be the verb
+    "eval $Z; npm test $1",
+    "eval $Z; docker run -v $PWD:/a -e K=$K img",
+    "git $Y; cargo test $V",
+    "git $Y; docker run -v $PWD:/a img",
 )
-STILL_HELD_FORMS = 19
+STILL_HELD_FORMS = 34
 
 
 class ComputedArguments(unittest.TestCase):
@@ -470,6 +501,16 @@ class ComputedArguments(unittest.TestCase):
         for command in (*STILL_OUTWARD, *STILL_HELD):
             with self.subTest(command):
                 assert outward_in(command) is not None
+
+    def test_computed_script_body(self) -> None:
+        """A script's computed `eval` is held; a script of local work passes."""
+        from dsp_route.outward import outward_in  # the hook imports it lazily (TID253)
+
+        with tempfile.TemporaryDirectory(prefix="dsp-test-") as d:
+            _ = (pathlib.Path(d) / "ship.sh").write_text('cargo test\neval "$CMD"\n')
+            _ = (pathlib.Path(d) / "check.sh").write_text("cargo test\n")
+            assert outward_in("bash ship.sh", d) is not None
+            assert outward_in("bash check.sh", d) is None
 
 
 if __name__ == "__main__":
