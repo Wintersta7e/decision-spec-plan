@@ -178,20 +178,20 @@ def _pre_tool_use(
         from .agent import agent_pre
 
         return checked(agent_pre, event, session, entry) or 0
-    if event.get("tool_name") in EDITS:
+    if event.get("tool_name") in (*EDITS, "Bash"):
         from .lead_edits import edit_hold
 
         if held := checked(edit_hold, event, session, entry):
-            return deny(held[1], held[0])
+            return deny(held)
     return _lead_dispatch(event, session, entry)
 
 
 def _post_tool_use_line(
     event: Mapping[str, object], session: str, entry: RegistryEntry
 ) -> str | None:
-    """Return the unthrottled PostToolUse line: the answers' tally; count lead edits."""
+    """Return the unthrottled PostToolUse line: the answers' tally; count lead files."""
     tool = event.get("tool_name")
-    if tool in EDITS:
+    if tool in (*EDITS, "Bash"):
         from .lead_edits import record_edit
 
         _ = checked(record_edit, event, session, entry)
@@ -504,20 +504,20 @@ def hook() -> int:
     whole report and what to re-read. Each names the skill's files changed since the
     session read them. After an AskUserQuestion, unthrottled, PostToolUse tallies
     whether each answer took the recommended option, and says so past TAKE_RATE of the
-    last TAKE_WINDOW. Once the phase has a budget, PreToolUse holds the lead's edit of a
-    third repository file of its own — denied in a lane's worktree, asked in the main
-    checkout — and PostToolUse counts the files whose edit ran: execution is a fresh
-    group's (F68). Each user message is numbered and owed a line in the ask list: an
-    `exec-` dispatch is held and the lead's Stop sent back once until each has one,
-    and PreCompact tells the summary to keep the unlisted ones verbatim (F105). The
-    lead's Stop is also sent back once when a command its last message hands the user
-    fails when pasted (F107). Inside a `hunt-` agent PreToolUse refuses a commit, a
-    `git config` write, an inline alias and an edit-tool write into the route's
-    repository outside the planning dir, and runs every other Bash call under bubblewrap
-    with that repository read-only (agent.hunter_pre); it holds the lead's `hunt-`
-    dispatch to the budget as an `exec-` one, with no ETA, and says when bubblewrap
-    cannot run: a backstop against a slip, not a sandbox, that checks spend at the
-    dispatch and reserves nothing (F109).
+    last TAKE_WINDOW. From the route's activation, PreToolUse denies the lead's write of
+    a third repository file of its own — by an edit tool or a Bash command, in the main
+    checkout as in a lane's worktree — and PostToolUse counts the files whose write ran:
+    execution is a fresh group's (F68). Each user message is numbered and owed a line
+    in the ask list: an `exec-` dispatch is held and the lead's Stop sent back once
+    until each has one, and PreCompact tells the summary to keep the unlisted ones
+    verbatim (F105). The lead's Stop is also sent back once when a command its last
+    message hands the user fails when pasted (F107). Inside a `hunt-` agent PreToolUse
+    refuses a commit, a `git config` write, an inline alias and an edit-tool write into
+    the route's repository outside the planning dir, and runs every other Bash call
+    under bubblewrap with that repository read-only (agent.hunter_pre); it holds the
+    lead's `hunt-` dispatch to the budget as an `exec-` one, with no ETA, and says when
+    bubblewrap cannot run: a backstop against a slip, not a sandbox, that checks spend
+    at the dispatch and reserves nothing (F109).
 
     Returns:
         The hook's exit code: 2 sends an agent back to its running job, else 0.
