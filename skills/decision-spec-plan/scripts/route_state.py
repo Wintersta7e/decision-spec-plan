@@ -50,14 +50,16 @@ are off: each lets every call through on a shape it cannot find. `--ci-harness <
 names a suite CI runs that the local full gate does not; push_guard.py then also wants,
 per pushed commit, a gate log whose first 20 lines hold `harness=<label>` (F90).
 
---next prints, for each lane of the plan index that can take a task group now, the
-Agent call to send as it stands: its name (`exec-<plan-id>-g<k>`), the phase's group
-brief (`<planning-dir>/GROUP-BRIEF-p<P>.md`; no call while it is missing or keeps an
-ADAPT slot), the plan, the group's tasks (from the checkpoint's `Next task:` line,
-`--group-size` of them), the worktree, checkpoint and rulings file, and the ETA. Every
-other lane gets why it takes none: merged, a plan it waits for, an `exec-` agent of it
-out (unfinished, its transcript written in the last 30 min), a red or running gate, a
-green one for the integrator (F48, F102).
+--next prints, for each lane of the plan index (at rung S with no index, of the one
+plan) that can take a task group now, the Agent call to send as it stands: its name
+(`exec-<plan-id>-g<k>`), the phase's group brief (`<planning-dir>/GROUP-BRIEF-p<P>.md`;
+no call while it is missing or keeps an ADAPT slot), the plan, the group's tasks (from
+the checkpoint's `Next task:` line, `--group-size` of them), the worktree, checkpoint
+and rulings file, and the ETA. Every other lane gets why it takes none: merged, a plan
+it waits for (every open plan of an earlier wave too), an `exec-` agent of it out
+(unfinished, its transcript written in the last 30 min), a red or running gate, a green
+one at `Next task: none` for the integrator (F48, F102); a green lane with a task left
+gets its next group's call.
 
 --fingerprint prints one sha256 over a repository's git state: HEAD, its refs, the stash
 count, `git status --porcelain=v1 --ignored -z`, its own config (the local and

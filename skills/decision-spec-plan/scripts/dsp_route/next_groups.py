@@ -1,9 +1,11 @@
 # SPDX-License-Identifier: MIT
 """--next: the Agent call of each lane that can take a task group now (execution.md).
 
-A lane takes one when every plan it waits for is merged, no `exec-<plan-id>-` agent of
-it is out, its gate is not red or running, and its plan has a task left: from the
-checkpoint's `Next task:` line, or the plan's first task before any checkpoint. Each
+A lane takes one when every plan it waits for is merged (an earlier wave's too), no
+`exec-<plan-id>-` agent of it is out, its gate is not red or running, and its plan has
+a task left: from the checkpoint's `Next task:` line, or the plan's first task before
+any checkpoint. A green lane is ready for its integrator only at `Next task: none`. At
+rung S with no plan index, the one plan file is the index. Each
 call names the phase's group brief, which carries the standing rules; a brief with an
 unfilled `ADAPT` slot prints no call. The lead sends each call as printed and writes
 only its rulings; every other lane gets a line saying why it takes none (F48, F102).
@@ -88,10 +90,27 @@ def _worktree(state: "State", lane: "Lane", repo: str) -> str:
     return str(lane_dir(pathlib.Path(repo).resolve(), lane["plan"]))
 
 
+def _done(checkpoint: pathlib.Path) -> bool:
+    """Return whether the checkpoint says `Next task: none`."""
+    if not checkpoint.exists():
+        return False
+    m = NEXT.search(checkpoint.read_text(errors="replace"))
+    return m is not None and m[1].lower() == "none"
+
+
 def _why_not(
-    lane: "Lane | None", waits: list[str], merged: set[str], out: list[str]
+    lane: "Lane | None",
+    waits: list[str],
+    merged: set[str],
+    out: list[str],
+    *,
+    done: bool,
 ) -> str | None:
-    """Return why the lane takes no group now, None when it takes one."""
+    """Return why the lane takes no group now, None when it takes one.
+
+    A green lane whose checkpoint names a next task (not done) takes its group: called
+    ready, its next group was never dispatched.
+    """
     if lane and lane["state"] == "merged":
         return "merged"
     if left := [w for w in waits if w not in merged]:
@@ -99,6 +118,8 @@ def _why_not(
     if out:
         return f"out: {', '.join(out)}"
     state = lane["state"] if lane else "queued"
+    if state == "ready" and not done:
+        return None
     return {
         "red": "red gate at its SHA — rule it before another group (dsp-deep's "
         "no-progress rule)",
@@ -202,6 +223,36 @@ def _call(
     )
 
 
+def _plan_ids(state: "State", index: pathlib.Path) -> list[str]:
+    """Return the plan ids --next reads: the index's; at rung S with none, the one plan.
+
+    A rung-S round writes one plan and may write no index; read from the index alone,
+    its lane had no call.
+    """
+    ids = state["plans"]["index_ids"]
+    files = list(state["plans"]["files"])
+    if not ids and state["rung"] == "S" and not index.exists() and len(files) == 1:
+        return files
+    return ids
+
+
+def _waits(state: "State", plan: str) -> list[str]:
+    """Return the plans the plan waits for: its dependencies and every earlier wave's.
+
+    A plan whose `Depends on` cell is empty still runs after the waves before its own.
+    """
+    waves = state["waves"]
+    if (w := waves.get(plan)) is None:
+        return []
+    mine = w["wave_no"]
+    earlier = {
+        p
+        for p, o in waves.items()
+        if mine is not None and o["wave_no"] is not None and o["wave_no"] < mine
+    }
+    return sorted({*w["waits_for"], *earlier})
+
+
 def next_groups(a: RouteArgs) -> int:
     """Print each lane's Agent call or why it takes none; 2 without a usable brief."""
     brief = pathlib.Path(a.planning_dir) / f"GROUP-BRIEF-p{a.phase}.md"
@@ -222,7 +273,8 @@ def next_groups(a: RouteArgs) -> int:
     lanes = {ln["plan"]: ln for ln in state["lanes"] if ln["id"] == ln["plan"]}
     merged = {p for p, ln in lanes.items() if ln["state"] == "merged"}
     lines: list[str] = []
-    for i in state["plans"]["index_ids"]:
+    base = pathlib.Path(a.planning_dir)
+    for i in _plan_ids(state, base / "plans" / f"p{a.phase}-00-index.md"):
         plan = f"p{a.phase}-{i}"
         lane = lanes.get(plan)
         out = [
@@ -230,8 +282,9 @@ def next_groups(a: RouteArgs) -> int:
             for n, age in agents.items()
             if age is not None and n.startswith(f"{EXEC}{plan}-")
         ]
-        waits = w["waits_for"] if (w := state["waves"].get(plan)) else []
-        if why := _why_not(lane, waits, merged, out):
+        checkpoint = base / "lanes" / f"{lane['id'] if lane else plan}-checkpoint.md"
+        why = _why_not(lane, _waits(state, plan), merged, out, done=_done(checkpoint))
+        if why:
             lines.append(f"{plan}: {why}")
         else:
             lines.append(_call(a, state, lane, agents) if lane else f"{plan}: no lane")
