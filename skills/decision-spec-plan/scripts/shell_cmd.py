@@ -826,11 +826,14 @@ def _shell(name: str, words: list[Word], assigns: list[Assign]) -> Iterator[Even
         t = words[i].text
         shell_c |= not t.startswith("--") and "c" in t
         i += 2 if t in SHELL_VALUED else 1
+    # `--` ends the options: the next word is the `-c` string or the script
+    if i < len(words) and words[i].text == "--":
+        i += 1
     if shell_c and i < len(words) and words[i].static:
         yield "open", None
         yield from _prefixed(assigns, _parse(scan(words[i].text)[0]))
         yield "close", None
-    elif shell_c or i >= len(words) or words[i].text in ("-", "--"):
+    elif shell_c or i >= len(words) or words[i].text == "-":
         what = f"`{name}` running a computed string or stdin"
         yield "opaque", Opaque(what, words=words[i:], assigns=assigns)
     else:
@@ -891,6 +894,15 @@ def _command(words: list[Word]) -> Iterator[Event]:
             return
         break
     yield "cmd", Cmd(assigns, words)
+
+
+def command_events(words: list[Word]) -> list[Event]:
+    """Return the events of one simple command's words, as events() reads a command.
+
+    For a command another runs (`sudo bash -c '…'`): its shell, `eval` and wrappers
+    unwrapped.
+    """
+    return list(_command(words))
 
 
 def _nesting(words: list[Word]) -> int:
