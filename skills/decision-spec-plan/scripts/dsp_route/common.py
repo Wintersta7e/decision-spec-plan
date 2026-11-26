@@ -427,6 +427,18 @@ def checked(check: Callable[[*Ts], T], *args: *Ts) -> T | None:
         return None
 
 
+def failed_closed(check: Callable[[*Ts], T], *args: *Ts) -> tuple[T | None, str | None]:
+    """Return `check(*args)` and None, or None and the type of what it raised.
+
+    For a check whose failure must not pass the call (the outward check): checked's
+    None read as "nothing outward" and let a command the reader raised on through.
+    """
+    try:
+        return check(*args), None
+    except (Exception, SystemExit) as e:  # noqa: BLE001
+        return None, type(e).__name__
+
+
 def deny(reason: str, decision: str = "deny") -> int:
     """Print the PreToolUse hook output that denies (or asks about) the call; 0.
 

@@ -293,17 +293,21 @@ def _runs(
 ) -> tuple[list[shell_cmd.Cmd], bool]:
     """Return the commands of each shell or `eval` c runs, and whether one is unread.
 
-    Only where c's words name a command (_positions): `sudo bash -c '…'`, `xargs sh -c
-    "$C"`, read as bash reads them.
+    Where c's words name a command (_positions: `sudo bash -c '…'`, `xargs sh -c "$C"`)
+    and, whatever the options before it, at each shell's `-c` body and computed `eval`
+    (_body): the runner tables misread `sudo -Eu root bash -c "$C"`, which passed.
     """
     out: list[shell_cmd.Cmd] = []
     unread = False
-    for i in _positions(c.words):
-        if _basename(c.words[i].text) in ("eval", *shell_cmd.SHELLS):
+    at = _positions(c.words)
+    for i, w in enumerate(c.words):
+        if (i in at and _basename(w.text) in ("eval", *shell_cmd.SHELLS)) or (
+            _shell_body(c.words, i) is not None
+        ):
             ran, missed = _walk(shell_cmd.command_events(c.words[i:]), read, here, env)
             out += ran
             unread |= missed
-    return out, unread
+    return [*out, *_body(c.words)], unread
 
 
 def _cmd(
@@ -388,7 +392,8 @@ def bash_commands(
     deep. A part that cannot be read — stdin or an unreadable script fed to a shell, a
     computed `bash -c` or `eval`, a computed git subcommand — adds the command's words
     (text_commands), and a computed body a Body (_body_of); None when the reader fails
-    on the command (nesting too deep): the caller then reads the words. A computed
+    on the command (nesting too deep) or a part of the walk raises: the caller then
+    reads the words, where a raise once read as no command at all. A computed
     command name the command's own assignments do not fill (`$PY -m pytest`) has only
     its own words read so: read with the whole text, a commit message naming `gh release
     create` beside it was held.
@@ -396,8 +401,11 @@ def bash_commands(
     if (parsed := _read(command)) is None:
         return None
     found, twice = parsed
-    # the command's own `NAME=value` assignments (`G=gh; $G pr merge 5`)
-    out, unread = _walk(found, _Text(command, depth, twice), cwd, {})
+    try:
+        # the command's own `NAME=value` assignments (`G=gh; $G pr merge 5`)
+        out, unread = _walk(found, _Text(command, depth, twice), cwd, {})
+    except Exception:  # noqa: BLE001 — a part the walk fails on leaves the line unread
+        return None
     return out + text_commands(command) if unread else out
 
 

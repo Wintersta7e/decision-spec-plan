@@ -11,7 +11,10 @@ Shapes held past the inert forms (F81):
 - a computed `eval` or shell `-c` body (`eval $Z`, `sudo bash -c "$C"`) may run any;
 - in text the reader cannot follow, every computed word may be a publisher's verb;
 - a shell's computed `--` body, script path or stdin may run any command, and an `eval`
-  or shell word counts only where it runs one (`echo eval` is data).
+  or shell word counts only where it runs one (`echo eval` is data);
+- fail closed: a shell's `-c` body or a computed `eval` is read wherever it is in the
+  words, a walk that raises leaves the line to the word reader, and a check that raises
+  asks (hook.py).
 Not held: a computed command name (`$S`, `$PY -m pytest`) — a backstop, not a sandbox.
 """
 
