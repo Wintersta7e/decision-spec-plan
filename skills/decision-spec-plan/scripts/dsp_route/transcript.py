@@ -25,6 +25,7 @@ from .common import (
     is_return,
     load_json,
     parse_json,
+    routes,
 )
 
 PROJECTS = pathlib.Path.home() / ".claude" / "projects"
@@ -298,6 +299,16 @@ def event_transcript(event: Mapping[str, object]) -> pathlib.Path | None:
     """Return the transcript file a hook event names, resolved, or None."""
     path = pathlib.Path(_text(event.get("transcript_path")) or "")
     return path.resolve() if path.suffix == ".jsonl" and path.is_file() else None
+
+
+def leads(event: Mapping[str, object], marker: pathlib.Path) -> list[pathlib.Path]:
+    """Return the route's lead transcripts: this session's and any other registered."""
+    own = event_transcript(event)
+    found = [own] if own else []
+    for sid, e in routes():
+        if e.get("marker") == str(marker):
+            found += [p.resolve() for p in session_transcripts(sid)]
+    return list(dict.fromkeys(found))
 
 
 def find_lead(project: pathlib.Path | None, session: str | None) -> pathlib.Path:

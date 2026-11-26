@@ -23,7 +23,14 @@ from .common import (
     route_args,
     save_budget,
 )
-from .transcript import answered_this_turn, now, project_sessions, session_transcripts
+from .spending import spend
+from .transcript import (
+    answered_this_turn,
+    leads,
+    now,
+    project_sessions,
+    session_transcripts,
+)
 
 # --budget sizes groups by the project's task groups of this many days back
 FIT_DAYS = 14
@@ -150,8 +157,6 @@ def _print_raise(
     """
     if not earlier:
         return None
-    from .holds import leads, spend
-
     first = earlier[0]
     spent = spend(leads({}, marker), first["at"], first["phase"])
     print(

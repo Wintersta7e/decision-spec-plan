@@ -79,7 +79,7 @@ layers = [
   "hook",
   "next_groups",
   "activate | agent | asks | budget | fingerprint | gate_log | handed | holds | inject | jobs | lead_edits | outward",
-  "commands | record | report | switch | transcript",
+  "commands | record | report | spending | switch | transcript",
   "common",
 ]
 
