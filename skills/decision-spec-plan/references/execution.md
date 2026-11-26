@@ -184,7 +184,8 @@ Once every lane of a wave has reported, dispatch one fresh `dsp-deep` **wave int
    exits 0: a file outside the lane's plan stops that lane's merge and is recorded; **you** revert it
    or ask the user (F89). `test_check.py` with the same arguments must exit 0 too: a test file
    deleted or a test removed that the plan does not name, a skip added, assertions dropped, or an
-   acceptance test's assertion changed after it was written stops the merge, and **you** rule each
+   acceptance test's assertion changed after it was written in a test the plan's text does not name
+   stops the merge, and **you** rule each
    line — restore the test, or record why the plan's intent covers it in the lane's rulings file
    (`lanes/<plan-id>-rulings.md`, quoting the line), so a re-dispatched integrator merges past
    the lines ruled there (F99). The lane's green gate cannot show what it stopped testing.
