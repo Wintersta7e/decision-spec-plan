@@ -32,40 +32,21 @@ from .common import (
     load_json,
     parse_json,
     route_args,
-    routes,
     save_budget,
 )
+from .spending import phases, spend
 from .transcript import (
     answered_since,
     ended_run,
-    event_transcript,
     finished_spans,
+    leads,
     session_transcripts,
 )
-
-# The phase an agent's name names (`harvest-code-p9`, `exec-p9-01-a`, `dec-p9-D1`): that
-# phase's work, not another's budget's.
-PHASE_OF = re.compile(r"(?<![A-Za-z0-9])p(\d+)(?=-|$)")
 
 
 def _tool_input(event: Mapping[str, object]) -> dict[str, object]:
     """Return a hook event's tool input, {} without one."""
     return as_dict(event.get("tool_input")) or {}
-
-
-def _phases(name: str) -> set[str]:
-    """Return the phases an agent's name names."""
-    return {m[1] for m in PHASE_OF.finditer(name)}
-
-
-def leads(event: Mapping[str, object], marker: pathlib.Path) -> list[pathlib.Path]:
-    """Return the route's lead transcripts: this session's and any other registered."""
-    own = event_transcript(event)
-    found = [own] if own else []
-    for sid, e in routes():
-        if e.get("marker") == str(marker):
-            found += [p.resolve() for p in session_transcripts(sid)]
-    return list(dict.fromkeys(found))
 
 
 def dead_recipient(event: Mapping[str, object], entry: RegistryEntry) -> str | None:
@@ -84,28 +65,6 @@ def dead_recipient(event: Mapping[str, object], entry: RegistryEntry) -> str | N
         "min. Dispatch a fresh agent with its brief, told to continue from its file's "
         "end (SKILL.md, F64)."
     )
-
-
-def spend(paths: Iterable[pathlib.Path], since: str, phase: str) -> float:
-    """Return the units these leads, their agents and hook sessions spent since `since`.
-
-    The route's budget prices the lead and every review and agent (F74) — but a lead's
-    prompt written again after it sat idle past the cache's life: that is the wait for
-    the user's answer, and one such rewrite after a 3 h wait tipped a wave over (F93).
-    An agent whose name names another phase (`harvest-code-p9`, `exec-p9-01-a`) is that
-    phase's: another phase's harvest and decision round in the same lead session made 8
-    of 20 over-budget holds false (F74). A hook session counts once: the leads' searches
-    overlap when one ran outside the repository or in a worktree.
-    """
-    import usage_report
-
-    total, seen = 0.0, set[pathlib.Path]()
-    for path in paths:
-        lead, agents, sdk = usage_report.route_cost(path, since, seen=seen)
-        total += lead["units"] - lead["idle"]
-        total += sum(a["units"] for a in agents if _phases(a["name"]) <= {str(phase)})
-        total += sum(s["units"] for s in sdk)
-    return total
 
 
 def s_harvester(event: Mapping[str, object], entry: RegistryEntry) -> bool:
@@ -350,7 +309,7 @@ def gate_dispatch(event: Mapping[str, object], entry: RegistryEntry) -> int:
         )
     b = found[-1]
     name = str(_tool_input(event).get("name") or "")
-    if _phases(name) - {str(phase)}:
+    if phases(name) - {str(phase)}:
         # spend() leaves another phase's agents out, so one dispatched here would run
         # uncounted
         return deny(
