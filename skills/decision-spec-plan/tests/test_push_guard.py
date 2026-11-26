@@ -15,14 +15,21 @@ from typing import TYPE_CHECKING
 from typing_extensions import override
 
 import support
-from support import RS, grep
+from support import RS, Result, grep
 
 if TYPE_CHECKING:
     from pathlib import Path
 
 GREEN = "sha={} dirty=0\nok\nexit=0\n"
 HELD = 2  # the exit code of a held push
-FAST = 2  # the seconds a line of 3,000 git commands may take to read
+FAST = 2  # the seconds a line of 3,000 git commands may take to read, at least
+LONG = 3000  # the git commands of that line
+# the bound's multiple of a one-command guard run timed just before: a slower machine
+# (a loaded CI runner, 3.11) scales it, a fast one keeps FAST
+CALIBRATED = 20
+SLOWED = 10  # how many times slower the scaling test's shim makes the guard
+# a startup shim that sleeps the seconds in SHIM_SLEEP, loaded through PYTHONPATH
+SHIM = "import os, time\ntime.sleep(float(os.environ.get('SHIM_SLEEP', '0')))\n"
 OUTSIDE = tempfile.gettempdir()  # a cwd in no repository
 
 
@@ -138,6 +145,45 @@ class GuardGateLogs(support.Route):
         cls.t: str = str(cls.T)
         cls.wt: str = f"{cls.t}/wt"
         cls.lanes: Path = lanes
+
+    def timed_guard(self, commands: int, sleep: float = 0.0) -> tuple[float, Result]:
+        """The seconds the guard takes on a line of commands git commands, and its run.
+
+        Timed untraced: coverage's tracer, which reaches each script through the
+        COVERAGE_ variables, tripled the guard's time on 3.11 and failed CI. sleep
+        starts the guard that much later, through a shim on PYTHONPATH.
+        """
+        event = {"tool_input": {"command": "git x; " * commands}, "cwd": self.wt}
+        untraced = [k for k in self.env if k.startswith("COVERAGE_")]
+        env: dict[str, str] = {}
+        if sleep:
+            shim = self.T / "slow-shim"
+            _ = self.write(shim / "sitecustomize.py", SHIM)
+            env = {"PYTHONPATH": str(shim), "SHIM_SLEEP": str(sleep)}
+        start = time.monotonic()
+        r = self.py(
+            support.GUARD, input=json.dumps(event), merge=True, unset=untraced, env=env
+        )
+        return time.monotonic() - start, r
+
+    def test_bound_scales_with_the_machine(self) -> None:
+        """On a machine SLOWED times slower, the fixed bound fails and the scaled holds.
+
+        The shim sleeps each run (SLOWED - 1) times its own unslowed time, more where
+        that would leave the long line under FAST (R11).
+        """
+        calibration, _ = self.timed_guard(1)
+        took, _ = self.timed_guard(LONG)
+        factor = max(SLOWED, 2 * FAST / took)
+        slow_calibration, _ = self.timed_guard(1, (factor - 1) * calibration)
+        slow, r = self.timed_guard(LONG, (factor - 1) * took)
+        bound = max(FAST, CALIBRATED * slow_calibration)
+        self.ok(
+            f"slowed {factor:.0f}x: {slow:.1f} s fails the fixed {FAST} s bound and "
+            f"passes the scaled {bound:.1f} s",
+            r.code == 0 and slow >= FAST and slow < bound,
+            f"exit {r.code}: {r.out[:600]}",
+        )
 
     def test_logs_and_holds(self) -> None:
         """A green log of the commit clears its push; a hold names each log and why."""
@@ -683,17 +729,13 @@ class GuardGateLogs(support.Route):
         self.ok(
             "a bare git -C is no guard crash", not grep(out, "the guard failed"), out
         )
-        # every command is read now, so a long line of git commands stays fast. Timed
-        # untraced: coverage's tracer, which reaches each script through the COVERAGE_
-        # variables, tripled the guard's time on 3.11 and failed CI
-        event = {"tool_input": {"command": "git x; " * 3000}, "cwd": str(wt)}
-        untraced = [k for k in self.env if k.startswith("COVERAGE_")]
-        start = time.monotonic()
-        r = self.py(support.GUARD, input=json.dumps(event), merge=True, unset=untraced)
-        took = time.monotonic() - start
+        # every command is read now, so a long line of git commands stays fast
+        calibration, _ = self.timed_guard(1)
+        took, r = self.timed_guard(LONG)
+        bound = max(FAST, CALIBRATED * calibration)
         self.ok(
-            f"3,000 git commands in one line are read in {took:.1f} s",
-            r.code == 0 and not r.out and took < FAST,
+            f"3,000 git commands in one line are read in {took:.1f} s (< {bound:.1f})",
+            r.code == 0 and not r.out and took < bound,
             f"exit {r.code}: {r.out[:600]}",
         )
         # a CI harness's log is no full gate; a marker that names no planning dir holds
