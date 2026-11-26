@@ -8,7 +8,7 @@ call's `model` (omitted: the session's) and `effort`. Announce each role's pair 
 headcount (SKILL.md, "Pick a rung"); the user may overrule any before the first dispatch. The second
 model keeps its own configuration.
 
-| Role | Default | The cheaper pair (`model: "sonnet"`, `effort: "medium"`) |
+| Role | Default | The cheaper pair (`model: "sonnet"`, `effort: "high"`) |
 |---|---|---|
 | Framing, seam, S and docs reviews as an agent; the seven-sins reviewers | the session's model and effort | never: a Sonnet docs review passed a commit message that a deep review rated Major (F88) |
 | Decision agents | the session's model and effort | only a narrow docs or convention decision that cites no code fact and places no other decision's output: a Sonnet placement ruling (which commit holds what) drew a seam blocker and was rewritten (F88) |
@@ -24,7 +24,7 @@ decision, conflicting hypotheses, a cross-component seam), less for the cheaper 
 measured run used `xhigh` for every role, so a session at `high` is itself unmeasured (run set I):
 record each agent's model and effort with its cost in the handoff (`usage_report.py` prints both). A Workflow script picks
 the pair with `agentType: 'decision-spec-plan:dsp-deep'` (the session's model and effort) or `'decision-spec-plan:dsp-mechanical'`
-(Sonnet, medium) in the `agent()` options. **Why `dsp-deep` is a named agent:** `general-purpose` carries every tool schema and the skill listing, so its first turn started
+(Sonnet, high) in the `agent()` options. **Why `dsp-deep` is a named agent:** `general-purpose` carries every tool schema and the skill listing, so its first turn started
 at 29.5k tokens against 15.1k for `dsp-deep` (same headless session, same prompt, 2026-10-06;
 40.8k for `general-purpose` from an interactive session; another machine: 55.9k against 40.9k), and every later turn re-sends the difference. A role that needs a
 tool outside the list (a browser MCP) is dispatched as `general-purpose`.

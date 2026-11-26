@@ -71,6 +71,23 @@ class PluginFiles(support.Sandbox):
             "dsp-mechanical carries dsp-deep's role rules", deep != "" and deep == mech
         )
 
+    def test_mechanical_tier_at_high_effort(self) -> None:
+        """dsp-mechanical runs Sonnet at high effort; prompts.md's cheaper pair too."""
+        head = (PLUGIN / "agents/dsp-mechanical.md").read_text().split("---\n")[1]
+        prompts = (PLUGIN / "references/prompts.md").read_text()
+        self.ok(
+            "dsp-mechanical's frontmatter: model sonnet, effort high, described so",
+            re.search(r"^effort: high$", head, re.MULTILINE)
+            and re.search(r"^model: sonnet$", head, re.MULTILINE)
+            and "Sonnet-at-high role" in head,
+            head,
+        )
+        self.ok(
+            "prompts.md's cheaper pair names effort high",
+            '(`model: "sonnet"`, `effort: "high"`)' in prompts
+            and 'effort: "medium"' not in prompts,
+        )
+
     def test_wiring(self) -> None:
         """The manifest's name, the hook registrations and the qualified agent names."""
         # its hooks run this plugin's scripts on every event the route needs, and a

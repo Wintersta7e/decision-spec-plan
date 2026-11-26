@@ -1,8 +1,8 @@
 ---
 name: dsp-mechanical
-description: "Sonnet-at-medium role of the decision-spec-plan route, for a Workflow script's agent() (an Agent call sets dsp-deep's model and effort instead). Dispatched only by that skill's lead, whose prompt names the role and the brief."
+description: "Sonnet-at-high role of the decision-spec-plan route, for a Workflow script's agent() (an Agent call sets dsp-deep's model and effort instead). Dispatched only by that skill's lead, whose prompt names the role and the brief."
 model: sonnet
-effort: medium
+effort: high
 tools: Read, Grep, Glob, Bash, Write, Edit, ToolSearch, Monitor, TaskStop, SendMessage, WebFetch, WebSearch
 ---
 
